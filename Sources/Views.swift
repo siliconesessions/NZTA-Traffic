@@ -1,0 +1,800 @@
+import SwiftUI
+
+enum TrafficTab: String, CaseIterable, Identifiable {
+    case cameras = "Traffic Cameras"
+    case events = "Road Events"
+    case vms = "VMS Signs"
+    case about = "About"
+
+    var id: String {
+        rawValue
+    }
+}
+
+struct ContentView: View {
+    @StateObject private var store = TrafficStore()
+    @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
+    @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    @State private var selectedTab: TrafficTab = .cameras
+    @State private var selectedRegion = ""
+    @State private var highwayFilter = ""
+    @State private var searchFilter = ""
+    @State private var selectedCamera: TrafficCamera?
+    @State private var autoRefreshTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            filters
+            Divider()
+            tabPicker
+            Divider()
+            tabContent
+        }
+        .frame(minWidth: 980, minHeight: 680)
+        .background(Color.primary.opacity(0.025))
+        .task {
+            await store.loadAllData()
+        }
+        .onAppear {
+            refreshIntervalSeconds = clampedRefreshInterval
+            configureAutoRefresh()
+        }
+        .onDisappear {
+            autoRefreshTask?.cancel()
+        }
+        .onChange(of: autoRefreshEnabled) {
+            configureAutoRefresh()
+        }
+        .onChange(of: refreshIntervalSeconds) {
+            refreshIntervalSeconds = clampedRefreshInterval
+            configureAutoRefresh()
+        }
+        .sheet(item: $selectedCamera) { camera in
+            CameraPreviewView(camera: camera, cacheToken: store.imageCacheToken)
+        }
+    }
+
+    private var clampedRefreshInterval: Int {
+        min(600, max(30, refreshIntervalSeconds))
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "car.fill")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.blue)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("NZTA Traffic")
+                    .font(.title2.weight(.semibold))
+                Text("Live cameras, road events, and VMS signs across New Zealand")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if store.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("Last Updated")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(store.lastUpdated?.formatted(date: .abbreviated, time: .standard) ?? "Not yet")
+                    .font(.caption.weight(.medium))
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+        .background(.background)
+    }
+
+    private var filters: some View {
+        HStack(alignment: .bottom, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Region")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Picker("Region", selection: $selectedRegion) {
+                    Text("All Regions").tag("")
+                    ForEach(store.allRegions, id: \.self) { region in
+                        Text(region).tag(region)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 210)
+            }
+
+            FilterTextField(title: "Highway", placeholder: "SH1, SH16", text: $highwayFilter)
+                .frame(width: 160)
+
+            FilterTextField(title: "Search", placeholder: "Search locations", text: $searchFilter)
+                .frame(minWidth: 240)
+
+            Button {
+                Task {
+                    await store.loadAllData()
+                }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(store.isRefreshing)
+
+            Spacer(minLength: 10)
+
+            Toggle("Auto-refresh", isOn: $autoRefreshEnabled)
+                .toggleStyle(.switch)
+
+            Stepper(value: $refreshIntervalSeconds, in: 30...600, step: 30) {
+                Text("\(clampedRefreshInterval) sec")
+                    .font(.callout.monospacedDigit())
+                    .frame(width: 70, alignment: .trailing)
+            }
+            .disabled(!autoRefreshEnabled)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(.background)
+    }
+
+    private var tabPicker: some View {
+        Picker("Section", selection: $selectedTab) {
+            ForEach(TrafficTab.allCases) { tab in
+                Text(tab.rawValue).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(.background)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .cameras:
+            CamerasTabView(
+                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                isLoading: store.isLoading(.cameras),
+                errorMessage: store.errors[.cameras],
+                cacheToken: store.imageCacheToken,
+                onPreview: { selectedCamera = $0 }
+            )
+        case .events:
+            RoadEventsTabView(
+                events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                isLoading: store.isLoading(.events),
+                errorMessage: store.errors[.events]
+            )
+        case .vms:
+            VMSTabView(
+                signs: store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                isLoading: store.isLoading(.vms),
+                errorMessage: store.errors[.vms]
+            )
+        case .about:
+            AboutView()
+        }
+    }
+
+    private func configureAutoRefresh() {
+        autoRefreshTask?.cancel()
+
+        guard autoRefreshEnabled else {
+            autoRefreshTask = nil
+            return
+        }
+
+        let seconds = clampedRefreshInterval
+        autoRefreshTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+                } catch {
+                    return
+                }
+
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                await store.loadAllData()
+            }
+        }
+    }
+}
+
+struct FilterTextField: View {
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+}
+
+struct CamerasTabView: View {
+    let cameras: [TrafficCamera]
+    let isLoading: Bool
+    let errorMessage: String?
+    let cacheToken: Int
+    let onPreview: (TrafficCamera) -> Void
+
+    private var onlineCount: Int {
+        cameras.filter(\.isOnline).count
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
+                }
+
+                if isLoading && cameras.isEmpty {
+                    LoadingView(title: "Loading traffic cameras...")
+                } else if cameras.isEmpty {
+                    EmptyStateView(systemImage: "video.slash", title: "No cameras found matching your filters")
+                } else {
+                    StatsRow(stats: [
+                        StatItem(title: "Total Cameras", value: "\(cameras.count)", tint: .black),
+                        StatItem(title: "Online", value: "\(onlineCount)", tint: .green)
+                    ])
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
+                        ForEach(cameras) { camera in
+                            CameraCard(camera: camera, cacheToken: cacheToken) {
+                                onPreview(camera)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+struct RoadEventsTabView: View {
+    let events: [RoadEvent]
+    let isLoading: Bool
+    let errorMessage: String?
+
+    private var closures: Int {
+        events.filter(\.isClosure).count
+    }
+
+    private var delays: Int {
+        events.filter(\.hasDelays).count
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
+                }
+
+                if isLoading && events.isEmpty {
+                    LoadingView(title: "Loading road events...")
+                } else if events.isEmpty {
+                    EmptyStateView(systemImage: "exclamationmark.triangle", title: "No events found matching your filters")
+                } else {
+                    StatsRow(stats: [
+                        StatItem(title: "Total Events", value: "\(events.count)", tint: .black),
+                        StatItem(title: "Road Closures", value: "\(closures)", tint: .red),
+                        StatItem(title: "Delays", value: "\(delays)", tint: .orange)
+                    ])
+
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(events) { event in
+                            RoadEventCard(event: event)
+                        }
+                    }
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+struct VMSTabView: View {
+    let signs: [VMSSign]
+    let isLoading: Bool
+    let errorMessage: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
+                }
+
+                if isLoading && signs.isEmpty {
+                    LoadingView(title: "Loading VMS signs...")
+                } else if signs.isEmpty {
+                    EmptyStateView(systemImage: "signpost.right", title: "No VMS signs found matching your filters")
+                } else {
+                    StatsRow(stats: [
+                        StatItem(title: "Active VMS Signs", value: "\(signs.count)", tint: .orange)
+                    ])
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 16)], spacing: 16) {
+                        ForEach(signs) { sign in
+                            VMSCard(sign: sign)
+                        }
+                    }
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+struct CameraCard: View {
+    let camera: TrafficCamera
+    let cacheToken: Int
+    let onPreview: () -> Void
+
+    var body: some View {
+        Button(action: onPreview) {
+            VStack(alignment: .leading, spacing: 0) {
+                AsyncImage(url: camera.thumbnailURL(cacheToken: cacheToken)) { phase in
+                    ZStack {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.08))
+
+                        switch phase {
+                        case .empty:
+                            ProgressView()
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            CameraPlaceholder(text: camera.isOnline ? "Image unavailable" : "Offline")
+                        @unknown default:
+                            CameraPlaceholder(text: "Image unavailable")
+                        }
+                    }
+                    .frame(height: 170)
+                    .clipped()
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    Text(camera.displayName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    if let description = camera.description {
+                        Text(description)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    if let routeLine = camera.routeLine {
+                        Label(routeLine, systemImage: "location.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    HStack(spacing: 8) {
+                        if let region = camera.regionName {
+                            Badge(text: region, tint: .black)
+                        }
+                        if !camera.isOnline {
+                            Badge(text: camera.underMaintenance ? "Maintenance" : "Offline", tint: .red)
+                        }
+                    }
+                }
+                .padding(14)
+            }
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct CameraPlaceholder: View {
+    let text: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "video.slash")
+                .font(.title2)
+            Text(text)
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
+struct CameraPreviewView: View {
+    let camera: TrafficCamera
+    let cacheToken: Int
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(camera.displayName)
+                        .font(.title3.weight(.semibold))
+                    if let description = camera.description {
+                        Text(description)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            AsyncImage(url: camera.imageURL(cacheToken: cacheToken)) { phase in
+                ZStack {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+
+                    switch phase {
+                    case .empty:
+                        ProgressView()
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    case .failure:
+                        CameraPlaceholder(text: "Image unavailable")
+                    @unknown default:
+                        CameraPlaceholder(text: "Image unavailable")
+                    }
+                }
+            }
+            .frame(minWidth: 760, minHeight: 470)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(20)
+    }
+}
+
+struct RoadEventCard: View {
+    let event: RoadEvent
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(impactColor)
+                .frame(width: 5)
+
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(event.displayTitle)
+                        .font(.headline)
+                        .lineLimit(nil)
+
+                    Spacer()
+
+                    if let impact = event.impact {
+                        Badge(text: impact, tint: impactColor)
+                    }
+                }
+
+                if let location = event.locationArea {
+                    Label(location, systemImage: "location.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let comments = event.eventComments {
+                    Text(comments)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let alternativeRoute = event.alternativeRouteText {
+                    Text("Alternative Route: \(alternativeRoute)")
+                        .font(.callout.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Divider()
+
+                EventMetaGrid(event: event)
+            }
+            .padding(16)
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private var impactColor: Color {
+        if event.isClosure {
+            return .red
+        }
+        if event.hasDelays {
+            return .orange
+        }
+        if event.impact?.range(of: "caution", options: .caseInsensitive) != nil {
+            return .yellow
+        }
+        return .gray
+    }
+}
+
+struct EventMetaGrid: View {
+    let event: RoadEvent
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+            if let eventType = event.eventType {
+                SmallMeta(text: eventType, systemImage: "tag")
+            }
+            if let started = formatTrafficDate(event.startDate) {
+                SmallMeta(text: "Started: \(started)", systemImage: "clock")
+            }
+            if let expected = formatTrafficDate(event.expectedResolution) {
+                SmallMeta(text: "Expected: \(expected)", systemImage: "calendar")
+            }
+            if let source = event.informationSource {
+                SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
+            }
+            if let status = event.status {
+                SmallMeta(text: status, systemImage: "checkmark.circle")
+            }
+        }
+    }
+}
+
+struct SmallMeta: View {
+    let text: String
+    let systemImage: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+    }
+}
+
+struct VMSCard: View {
+    let sign: VMSSign
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(sign.displayName, systemImage: "location.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
+                    .lineLimit(2)
+                Spacer()
+                if let region = sign.regionName {
+                    Text(region)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.white.opacity(0.58))
+                }
+            }
+
+            Text(sign.formattedMessage.uppercased())
+                .font(.system(size: 21, weight: .bold, design: .monospaced))
+                .foregroundStyle(Color(red: 1.0, green: 0.74, blue: 0.18))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: 92)
+                .lineLimit(nil)
+
+            if let updated = formatTrafficDate(sign.lastMessageUpdate ?? sign.lastUpdate) {
+                Text("Updated \(updated)")
+                    .font(.caption2)
+                    .foregroundStyle(Color.white.opacity(0.52))
+            }
+        }
+        .padding(18)
+        .background(Color(red: 0.09, green: 0.13, blue: 0.18))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(red: 0.28, green: 0.34, blue: 0.42), lineWidth: 3)
+        )
+    }
+}
+
+struct AboutView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                AboutSection(title: "About This App") {
+                    Text("NZTA Traffic is a native macOS app for viewing live New Zealand state highway cameras, road events, and Variable Message Sign content.")
+                }
+
+                AboutSection(title: "Data Sources") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        BulletText("Traffic Cameras: /cameras/all")
+                        BulletText("Road Events: /events/all/-1")
+                        BulletText("VMS Signs: /signs/vms/all")
+                    }
+                }
+
+                AboutSection(title: "Direct API Access") {
+                    Text("The app calls the NZTA Traffic and Travel REST API v4 directly with URLSession and an Accept: application/json header. It does not use browser CORS proxies, a local web server, or bundled HTML.")
+                }
+
+                AboutSection(title: "Attribution") {
+                    Text("Traffic and travel information is provided by Waka Kotahi NZ Transport Agency and participating regional councils. Always drive to current conditions and follow road signs and instructions.")
+                }
+            }
+            .font(.body)
+            .foregroundStyle(.primary)
+            .padding(28)
+            .frame(maxWidth: 820, alignment: .leading)
+        }
+    }
+}
+
+struct AboutSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+            content
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+        }
+    }
+}
+
+struct BulletText: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .frame(width: 5, height: 5)
+                .foregroundStyle(.secondary)
+            Text(text)
+        }
+    }
+}
+
+struct StatsRow: View {
+    let stats: [StatItem]
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(stats) { stat in
+                StatCard(stat: stat)
+            }
+        }
+    }
+}
+
+struct StatItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let value: String
+    let tint: Color
+}
+
+struct StatCard: View {
+    let stat: StatItem
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(stat.value)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            Text(stat.title)
+                .font(.caption.weight(.medium))
+                .opacity(0.9)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 14)
+        .background(stat.tint)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct Badge: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(tint == .yellow ? .black : .white)
+            .background(tint)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+struct ErrorBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+            Text(message)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(14)
+        .background(Color.red.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.red.opacity(0.25), lineWidth: 1)
+        )
+    }
+}
+
+struct LoadingView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text(title)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 360)
+    }
+}
+
+struct EmptyStateView: View {
+    let systemImage: String
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary.opacity(0.45))
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 360)
+    }
+}

@@ -1,0 +1,4 @@
+build/
+Resources/*.iconset/
+
+.DS_Store
