@@ -385,6 +385,10 @@ struct VMSSign: Decodable, Identifiable, Hashable {
         formatVMSMessage(currentMessage)
     }
 
+    var hasDisplayMessage: Bool {
+        formattedMessage.caseInsensitiveCompare("No message") != .orderedSame
+    }
+
     var mapCoordinate: CLLocationCoordinate2D? {
         validatedCoordinate(latitude: latitude, longitude: longitude)
     }

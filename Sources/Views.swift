@@ -530,8 +530,8 @@ private enum TrafficMapFeature: Identifiable {
             return camera.underMaintenance ? "Maintenance" : "Offline"
         case .event(let event, _):
             return event.impact ?? event.eventType ?? "Road Event"
-        case .vms:
-            return "VMS Sign"
+        case .vms(let sign, _):
+            return sign.hasDisplayMessage ? "VMS Sign" : "No message"
         }
     }
 
@@ -564,8 +564,8 @@ private enum TrafficMapFeature: Identifiable {
                 return .yellow
             }
             return .gray
-        case .vms:
-            return .blue
+        case .vms(let sign, _):
+            return sign.hasDisplayMessage ? .blue : .gray
         }
     }
 }
