@@ -16,6 +16,20 @@ This universal build supports Apple Silicon and Intel Macs and requires macOS 15
 
 ## Build
 
+### Xcode
+
+Open `NZTATraffic.xcodeproj` in Xcode and run the shared `NZTA Traffic` scheme.
+
+To build from Terminal with Xcode:
+
+```sh
+xcodebuild -project NZTATraffic.xcodeproj -scheme "NZTA Traffic" -configuration Release -destination 'generic/platform=macOS' build
+```
+
+The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.plist`, and `Resources/NZTATraffic.icns`. It preserves the current bundle name `NZTA Traffic.app` and executable name `NZTATraffic`.
+
+### Shell Script
+
 ```sh
 ./build_app.sh
 ```

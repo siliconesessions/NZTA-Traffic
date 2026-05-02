@@ -1,0 +1,285 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1A2B3C4D5E6F700000000001 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000011 /* Models.swift */; };
+		1A2B3C4D5E6F700000000002 /* NZTATrafficApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000012 /* NZTATrafficApp.swift */; };
+		1A2B3C4D5E6F700000000003 /* TrafficAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000013 /* TrafficAPIService.swift */; };
+		1A2B3C4D5E6F700000000004 /* TrafficStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000014 /* TrafficStore.swift */; };
+		1A2B3C4D5E6F700000000005 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000015 /* Views.swift */; };
+		1A2B3C4D5E6F700000000006 /* NZTATraffic.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1A2B3C4D5E6F700000000011 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000012 /* NZTATrafficApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NZTATrafficApp.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000013 /* TrafficAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficAPIService.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000014 /* TrafficStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficStore.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000015 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = NZTATraffic.icns; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000022 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NZTA Traffic.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A2B3C4D5E6F700000000031 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000032 /* build_app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_app.sh; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000033 /* package_dmg.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = package_dmg.sh; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1A2B3C4D5E6F700000000040 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1A2B3C4D5E6F700000000050 = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F700000000060 /* Sources */,
+				1A2B3C4D5E6F700000000061 /* Resources */,
+				1A2B3C4D5E6F700000000070 /* Products */,
+				1A2B3C4D5E6F700000000031 /* README.md */,
+				1A2B3C4D5E6F700000000032 /* build_app.sh */,
+				1A2B3C4D5E6F700000000033 /* package_dmg.sh */,
+			);
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F700000000060 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F700000000012 /* NZTATrafficApp.swift */,
+				1A2B3C4D5E6F700000000011 /* Models.swift */,
+				1A2B3C4D5E6F700000000013 /* TrafficAPIService.swift */,
+				1A2B3C4D5E6F700000000014 /* TrafficStore.swift */,
+				1A2B3C4D5E6F700000000015 /* Views.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F700000000061 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F700000000020 /* Info.plist */,
+				1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */,
+				1A2B3C4D5E6F700000000022 /* AppIcon.png */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F700000000070 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1A2B3C4D5E6F700000000080 /* NZTA Traffic */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZTA Traffic" */;
+			buildPhases = (
+				1A2B3C4D5E6F700000000090 /* Sources */,
+				1A2B3C4D5E6F700000000040 /* Frameworks */,
+				1A2B3C4D5E6F700000000091 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "NZTA Traffic";
+			productName = "NZTA Traffic";
+			productReference = 1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1A2B3C4D5E6F700000000081 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					1A2B3C4D5E6F700000000080 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTATraffic" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1A2B3C4D5E6F700000000050;
+			productRefGroup = 1A2B3C4D5E6F700000000070 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1A2B3C4D5E6F700000000080 /* NZTA Traffic */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1A2B3C4D5E6F700000000091 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A2B3C4D5E6F700000000006 /* NZTATraffic.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A2B3C4D5E6F700000000090 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A2B3C4D5E6F700000000002 /* NZTATrafficApp.swift in Sources */,
+				1A2B3C4D5E6F700000000001 /* Models.swift in Sources */,
+				1A2B3C4D5E6F700000000003 /* TrafficAPIService.swift in Sources */,
+				1A2B3C4D5E6F700000000004 /* TrafficStore.swift in Sources */,
+				1A2B3C4D5E6F700000000005 /* Views.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1A2B3C4D5E6F7000000000B0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F7000000000B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "-";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		1A2B3C4D5E6F7000000000B2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = NZTATraffic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.NZTATrafficMac;
+				PRODUCT_NAME = "NZTA Traffic";
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F7000000000B3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				EXECUTABLE_NAME = NZTATraffic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.NZTATrafficMac;
+				PRODUCT_NAME = "NZTA Traffic";
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZTA Traffic" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F7000000000B2 /* Debug */,
+				1A2B3C4D5E6F7000000000B3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTATraffic" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F7000000000B0 /* Debug */,
+				1A2B3C4D5E6F7000000000B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1A2B3C4D5E6F700000000081 /* Project object */;
+}
