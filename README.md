@@ -76,8 +76,9 @@ The app requires internet access for live NZTA data and camera images. It uses t
 
 - Cameras, road events, VMS signs, and About tabs.
 - Map tab with switchable camera, road event, and VMS sign layers.
+- macOS Help menu item with detailed in-app help.
 - Region, highway, and search filters shared across the data tabs.
 - Manual refresh and persisted auto-refresh interval.
 - Camera thumbnail grid with larger preview sheet.
 - Road event severity sorting, closure and delay stats, comments, routes, dates, and metadata.
-- VMS sign cards with `[nl]` and `[np]` message tokens rendered as line breaks.
+- VMS sign cards with source display-control tokens rendered as readable messages.
