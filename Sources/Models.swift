@@ -121,17 +121,7 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
-        guard let latitude,
-              let longitude,
-              latitude.isFinite,
-              longitude.isFinite,
-              (-90.0...90.0).contains(latitude),
-              (-180.0...180.0).contains(longitude),
-              !(latitude == 0 && longitude == 0) else {
-            return nil
-        }
-
-        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        validatedCoordinate(latitude: latitude, longitude: longitude)
     }
 
     var routeLine: String? {
@@ -199,8 +189,11 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let eventModified: String?
     let eventType: String?
     let expectedResolution: String?
+    let geometry: String?
     let impact: String?
     let informationSource: String?
+    let latitude: Double?
+    let longitude: Double?
     let locationArea: String?
     let locations: String?
     let planned: Bool?
@@ -227,8 +220,11 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         eventModified = cleanText(container.decodeLossyString(forKey: .eventModified))
         eventType = cleanText(container.decodeLossyString(forKey: .eventType))
         expectedResolution = cleanText(container.decodeLossyString(forKey: .expectedResolution))
+        geometry = cleanText(container.decodeLossyString(forKey: .geometry))
         impact = cleanText(container.decodeLossyString(forKey: .impact))
         informationSource = cleanText(container.decodeLossyString(forKey: .informationSource))
+        latitude = container.decodeLossyDouble(forKey: .latitude)
+        longitude = container.decodeLossyDouble(forKey: .longitude)
         locationArea = cleanText(container.decodeLossyString(forKey: .locationArea))
         locations = cleanText(container.decodeLossyString(forKey: .locations))
         planned = container.decodeLossyBool(forKey: .planned)
@@ -255,6 +251,11 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
 
     var hasDelays: Bool {
         impact?.range(of: "delay", options: .caseInsensitive) != nil
+    }
+
+    var mapCoordinate: CLLocationCoordinate2D? {
+        validatedCoordinate(latitude: latitude, longitude: longitude)
+            ?? coordinateFromWKTGeometry(geometry)
     }
 
     var severityRank: Int {
@@ -316,8 +317,11 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         case eventModified
         case eventType
         case expectedResolution
+        case geometry
         case impact
         case informationSource
+        case latitude
+        case longitude
         case locationArea
         case locations
         case planned
@@ -379,6 +383,14 @@ struct VMSSign: Decodable, Identifiable, Hashable {
 
     var formattedMessage: String {
         formatVMSMessage(currentMessage)
+    }
+
+    var hasDisplayMessage: Bool {
+        formattedMessage.caseInsensitiveCompare("No message") != .orderedSame
+    }
+
+    var mapCoordinate: CLLocationCoordinate2D? {
+        validatedCoordinate(latitude: latitude, longitude: longitude)
     }
 
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
@@ -484,6 +496,63 @@ func joinNonEmpty(_ values: [String?], separator: String = " ") -> String? {
     return parts.isEmpty ? nil : parts.joined(separator: separator)
 }
 
+func validatedCoordinate(latitude: Double?, longitude: Double?) -> CLLocationCoordinate2D? {
+    guard let latitude,
+          let longitude,
+          latitude.isFinite,
+          longitude.isFinite,
+          (-90.0...90.0).contains(latitude),
+          (-180.0...180.0).contains(longitude),
+          !(latitude == 0 && longitude == 0) else {
+        return nil
+    }
+
+    return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+}
+
+func coordinateFromWKTGeometry(_ geometry: String?) -> CLLocationCoordinate2D? {
+    guard let geometry = cleanText(geometry) else {
+        return nil
+    }
+
+    let pattern = #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return nil
+    }
+
+    let source = geometry as NSString
+    let matches = regex.matches(in: geometry, range: NSRange(location: 0, length: source.length))
+
+    var minLatitude = Double.greatestFiniteMagnitude
+    var maxLatitude = -Double.greatestFiniteMagnitude
+    var minLongitude = Double.greatestFiniteMagnitude
+    var maxLongitude = -Double.greatestFiniteMagnitude
+    var validCoordinateCount = 0
+
+    for match in matches where match.numberOfRanges >= 3 {
+        guard let longitude = Double(source.substring(with: match.range(at: 1))),
+              let latitude = Double(source.substring(with: match.range(at: 2))),
+              validatedCoordinate(latitude: latitude, longitude: longitude) != nil else {
+            continue
+        }
+
+        minLatitude = min(minLatitude, latitude)
+        maxLatitude = max(maxLatitude, latitude)
+        minLongitude = min(minLongitude, longitude)
+        maxLongitude = max(maxLongitude, longitude)
+        validCoordinateCount += 1
+    }
+
+    guard validCoordinateCount > 0 else {
+        return nil
+    }
+
+    return validatedCoordinate(
+        latitude: (minLatitude + maxLatitude) / 2,
+        longitude: (minLongitude + maxLongitude) / 2
+    )
+}
+
 func trafficNZURL(from path: String?, cacheToken: Int? = nil) -> URL? {
     guard var path = cleanText(path) else {
         return nil
@@ -516,11 +585,20 @@ func formatVMSMessage(_ message: String?) -> String {
     var formatted = cleanText(message) ?? ""
     formatted = formatted.replacingOccurrences(of: "[nl]", with: "\n", options: .caseInsensitive)
     formatted = formatted.replacingOccurrences(of: "[np]", with: "\n\n", options: .caseInsensitive)
+    formatted = formatted.replacingOccurrences(
+        of: #"\[[a-z]+\d*\]"#,
+        with: " ",
+        options: [.regularExpression, .caseInsensitive]
+    )
     formatted = formatted.replacingOccurrences(of: "\r\n", with: "\n")
     formatted = formatted.replacingOccurrences(of: "\r", with: "\n")
     formatted = formatted
         .components(separatedBy: "\n")
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .map { line in
+            line
+                .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         .joined(separator: "\n")
 
     while formatted.contains("\n\n\n") {

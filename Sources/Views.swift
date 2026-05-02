@@ -3,9 +3,9 @@ import SwiftUI
 
 enum TrafficTab: String, CaseIterable, Identifiable {
     case cameras = "Traffic Cameras"
-    case cameraMap = "Camera Map"
     case events = "Road Events"
     case vms = "VMS Signs"
+    case trafficMap = "Map"
     case about = "About"
 
     var id: String {
@@ -169,14 +169,6 @@ struct ContentView: View {
                 cacheToken: store.imageCacheToken,
                 onPreview: { selectedCamera = $0 }
             )
-        case .cameraMap:
-            CameraMapTabView(
-                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
-                isLoading: store.isLoading(.cameras),
-                errorMessage: store.errors[.cameras],
-                cacheToken: store.imageCacheToken,
-                onPreview: { selectedCamera = $0 }
-            )
         case .events:
             RoadEventsTabView(
                 events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
@@ -188,6 +180,19 @@ struct ContentView: View {
                 signs: store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter),
                 isLoading: store.isLoading(.vms),
                 errorMessage: store.errors[.vms]
+            )
+        case .trafficMap:
+            TrafficMapTabView(
+                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                vmsSigns: store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                camerasLoading: store.isLoading(.cameras),
+                eventsLoading: store.isLoading(.events),
+                vmsLoading: store.isLoading(.vms),
+                cameraErrorMessage: store.errors[.cameras],
+                eventErrorMessage: store.errors[.events],
+                vmsErrorMessage: store.errors[.vms],
+                onCameraPreview: { selectedCamera = $0 }
             )
         case .about:
             AboutView()
@@ -279,31 +284,131 @@ struct CamerasTabView: View {
     }
 }
 
-private let cameraMapInitialRegion = MKCoordinateRegion(
+private let trafficMapInitialRegion = MKCoordinateRegion(
     center: CLLocationCoordinate2D(latitude: -41.2865, longitude: 174.7762),
     span: MKCoordinateSpan(latitudeDelta: 14.5, longitudeDelta: 16.5)
 )
 
-struct CameraMapTabView: View {
+private enum TrafficMapLayer: String, CaseIterable, Identifiable {
+    case cameras = "Cameras"
+    case events = "Road Events"
+    case vms = "VMS Signs"
+
+    var id: String {
+        rawValue
+    }
+
+    var loadingTitle: String {
+        switch self {
+        case .cameras:
+            return "Loading traffic cameras..."
+        case .events:
+            return "Loading road events..."
+        case .vms:
+            return "Loading VMS signs..."
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .cameras:
+            return "No cameras found matching your filters"
+        case .events:
+            return "No road events found matching your filters"
+        case .vms:
+            return "No VMS signs found matching your filters"
+        }
+    }
+
+    var noCoordinatesTitle: String {
+        switch self {
+        case .cameras:
+            return "No filtered cameras have usable map coordinates"
+        case .events:
+            return "No filtered road events have usable map coordinates"
+        case .vms:
+            return "No filtered VMS signs have usable map coordinates"
+        }
+    }
+}
+
+struct TrafficMapTabView: View {
     let cameras: [TrafficCamera]
-    let isLoading: Bool
-    let errorMessage: String?
-    let cacheToken: Int
-    let onPreview: (TrafficCamera) -> Void
+    let events: [RoadEvent]
+    let vmsSigns: [VMSSign]
+    let camerasLoading: Bool
+    let eventsLoading: Bool
+    let vmsLoading: Bool
+    let cameraErrorMessage: String?
+    let eventErrorMessage: String?
+    let vmsErrorMessage: String?
+    let onCameraPreview: (TrafficCamera) -> Void
 
-    @State private var position = MapCameraPosition.region(cameraMapInitialRegion)
+    @State private var selectedLayer: TrafficMapLayer = .cameras
+    @State private var selectedDetail: TrafficMapDetail?
+    @State private var position = MapCameraPosition.region(trafficMapInitialRegion)
 
-    private var mappedCameras: [MappedTrafficCamera] {
-        cameras.compactMap { camera in
-            guard let coordinate = camera.mapCoordinate else {
-                return nil
+    private var features: [TrafficMapFeature] {
+        switch selectedLayer {
+        case .cameras:
+            return cameras.compactMap { camera in
+                guard let coordinate = camera.mapCoordinate else {
+                    return nil
+                }
+                return .camera(camera, coordinate)
             }
-            return MappedTrafficCamera(camera: camera, coordinate: coordinate)
+        case .events:
+            return events.compactMap { event in
+                guard let coordinate = event.mapCoordinate else {
+                    return nil
+                }
+                return .event(event, coordinate)
+            }
+        case .vms:
+            return vmsSigns.compactMap { sign in
+                guard let coordinate = sign.mapCoordinate else {
+                    return nil
+                }
+                return .vms(sign, coordinate)
+            }
+        }
+    }
+
+    private var totalCount: Int {
+        switch selectedLayer {
+        case .cameras:
+            return cameras.count
+        case .events:
+            return events.count
+        case .vms:
+            return vmsSigns.count
         }
     }
 
     private var unmappedCount: Int {
-        cameras.count - mappedCameras.count
+        totalCount - features.count
+    }
+
+    private var isLoading: Bool {
+        switch selectedLayer {
+        case .cameras:
+            return camerasLoading
+        case .events:
+            return eventsLoading
+        case .vms:
+            return vmsLoading
+        }
+    }
+
+    private var errorMessage: String? {
+        switch selectedLayer {
+        case .cameras:
+            return cameraErrorMessage
+        case .events:
+            return eventErrorMessage
+        case .vms:
+            return vmsErrorMessage
+        }
     }
 
     var body: some View {
@@ -315,57 +420,172 @@ struct CameraMapTabView: View {
                     .padding(.bottom, 12)
             }
 
-            if isLoading && cameras.isEmpty {
-                LoadingView(title: "Loading traffic camera map...")
-            } else if cameras.isEmpty {
-                EmptyStateView(systemImage: "map", title: "No cameras found matching your filters")
+            TrafficMapStatusBar(
+                selectedLayer: $selectedLayer,
+                totalCount: totalCount,
+                mappedCount: features.count,
+                unmappedCount: unmappedCount,
+                isLoading: isLoading,
+                onReset: {
+                    position = .region(trafficMapInitialRegion)
+                }
+            )
+
+            Divider()
+
+            if isLoading && totalCount == 0 {
+                LoadingView(title: selectedLayer.loadingTitle)
+            } else if totalCount == 0 {
+                EmptyStateView(systemImage: "map", title: selectedLayer.emptyTitle)
+            } else if features.isEmpty {
+                EmptyStateView(systemImage: "location.slash", title: selectedLayer.noCoordinatesTitle)
             } else {
-                CameraMapStatusBar(
-                    totalCount: cameras.count,
-                    mappedCount: mappedCameras.count,
-                    unmappedCount: unmappedCount,
-                    isLoading: isLoading,
-                    onReset: {
-                        position = .region(cameraMapInitialRegion)
-                    }
-                )
-
-                Divider()
-
-                if mappedCameras.isEmpty {
-                    EmptyStateView(systemImage: "location.slash", title: "No filtered cameras have usable map coordinates")
-                } else {
-                    Map(position: $position) {
-                        ForEach(mappedCameras) { mappedCamera in
-                            Annotation(mappedCamera.camera.displayName, coordinate: mappedCamera.coordinate, anchor: .bottom) {
-                                CameraMapMarker(camera: mappedCamera.camera) {
-                                    onPreview(mappedCamera.camera)
-                                }
+                Map(position: $position) {
+                    ForEach(features) { feature in
+                        Annotation(feature.title, coordinate: feature.coordinate, anchor: .bottom) {
+                            TrafficMapMarker(feature: feature) {
+                                select(feature)
                             }
                         }
                     }
-                    .mapControls {
-                        MapCompass()
-                        MapScaleView()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .mapControls {
+                    MapCompass()
+                    MapScaleView()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(item: $selectedDetail) { detail in
+            TrafficMapDetailView(detail: detail)
+        }
+    }
+
+    private func select(_ feature: TrafficMapFeature) {
+        switch feature {
+        case .camera(let camera, _):
+            onCameraPreview(camera)
+        case .event(let event, _):
+            selectedDetail = .event(event)
+        case .vms(let sign, _):
+            selectedDetail = .vms(sign)
+        }
     }
 }
 
-private struct MappedTrafficCamera: Identifiable {
-    let camera: TrafficCamera
-    let coordinate: CLLocationCoordinate2D
+private enum TrafficMapFeature: Identifiable {
+    case camera(TrafficCamera, CLLocationCoordinate2D)
+    case event(RoadEvent, CLLocationCoordinate2D)
+    case vms(VMSSign, CLLocationCoordinate2D)
 
     var id: String {
-        camera.id
+        switch self {
+        case .camera(let camera, _):
+            return "camera-\(camera.id)"
+        case .event(let event, _):
+            return "event-\(event.id)"
+        case .vms(let sign, _):
+            return "vms-\(sign.id)"
+        }
+    }
+
+    var coordinate: CLLocationCoordinate2D {
+        switch self {
+        case .camera(_, let coordinate),
+             .event(_, let coordinate),
+             .vms(_, let coordinate):
+            return coordinate
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .camera(let camera, _):
+            return camera.displayName
+        case .event(let event, _):
+            return event.displayTitle
+        case .vms(let sign, _):
+            return sign.displayName
+        }
+    }
+
+    var subtitle: String? {
+        switch self {
+        case .camera(let camera, _):
+            return camera.routeLine ?? camera.regionName
+        case .event(let event, _):
+            return event.locationArea ?? event.locations ?? event.regionName
+        case .vms(let sign, _):
+            return joinNonEmpty([sign.journey?.name ?? sign.way?.name, sign.direction], separator: " - ") ?? sign.regionName
+        }
+    }
+
+    var statusText: String {
+        switch self {
+        case .camera(let camera, _):
+            if camera.isOnline {
+                return "Online"
+            }
+            return camera.underMaintenance ? "Maintenance" : "Offline"
+        case .event(let event, _):
+            return event.impact ?? event.eventType ?? "Road Event"
+        case .vms(let sign, _):
+            return sign.hasDisplayMessage ? "VMS Sign" : "No message"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .camera(let camera, _):
+            return camera.isOnline ? "video.fill" : "video.slash"
+        case .event:
+            return "exclamationmark.triangle.fill"
+        case .vms:
+            return "signpost.right.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .camera(let camera, _):
+            if camera.isOnline {
+                return .green
+            }
+            return camera.underMaintenance ? .orange : .red
+        case .event(let event, _):
+            if event.isClosure {
+                return .red
+            }
+            if event.hasDelays {
+                return .orange
+            }
+            if event.impact?.range(of: "caution", options: .caseInsensitive) != nil {
+                return .yellow
+            }
+            return .gray
+        case .vms(let sign, _):
+            return sign.hasDisplayMessage ? .blue : .gray
+        }
     }
 }
 
-private struct CameraMapStatusBar: View {
+private enum TrafficMapDetail: Identifiable {
+    case event(RoadEvent)
+    case vms(VMSSign)
+
+    var id: String {
+        switch self {
+        case .event(let event):
+            return "event-\(event.id)"
+        case .vms(let sign):
+            return "vms-\(sign.id)"
+        }
+    }
+}
+
+private struct TrafficMapStatusBar: View {
+    @Binding var selectedLayer: TrafficMapLayer
     let totalCount: Int
     let mappedCount: Int
     let unmappedCount: Int
@@ -374,6 +594,15 @@ private struct CameraMapStatusBar: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            Picker("Map Layer", selection: $selectedLayer) {
+                ForEach(TrafficMapLayer.allCases) { layer in
+                    Text(layer.rawValue).tag(layer)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 360)
+
             Label("\(mappedCount) mapped", systemImage: "mappin.and.ellipse")
                 .font(.callout.weight(.medium))
 
@@ -407,39 +636,19 @@ private struct CameraMapStatusBar: View {
     }
 }
 
-private struct CameraMapMarker: View {
-    let camera: TrafficCamera
-    let onPreview: () -> Void
-
-    private var tint: Color {
-        if camera.isOnline {
-            return .green
-        }
-        if camera.underMaintenance {
-            return .orange
-        }
-        return .red
-    }
-
-    private var statusText: String {
-        if camera.isOnline {
-            return "Online"
-        }
-        if camera.underMaintenance {
-            return "Maintenance"
-        }
-        return "Offline"
-    }
+private struct TrafficMapMarker: View {
+    let feature: TrafficMapFeature
+    let onSelect: () -> Void
 
     var body: some View {
-        Button(action: onPreview) {
+        Button(action: onSelect) {
             ZStack {
                 Image(systemName: "mappin.circle.fill")
                     .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(feature.tint)
                     .shadow(color: .black.opacity(0.24), radius: 3, y: 2)
 
-                Image(systemName: camera.isOnline ? "video.fill" : "video.slash")
+                Image(systemName: feature.systemImage)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white)
                     .offset(y: -2)
@@ -448,8 +657,47 @@ private struct CameraMapMarker: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(camera.displayName) - \(statusText)")
-        .accessibilityLabel("\(camera.displayName), \(statusText)")
+        .help("\(feature.title) - \(feature.statusText)")
+        .accessibilityLabel("\(feature.title), \(feature.statusText)")
+    }
+}
+
+private struct TrafficMapDetailView: View {
+    let detail: TrafficMapDetail
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            ScrollView {
+                switch detail {
+                case .event(let event):
+                    RoadEventCard(event: event)
+                case .vms(let sign):
+                    VMSCard(sign: sign)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 720, height: 520)
+    }
+
+    private var title: String {
+        switch detail {
+        case .event(let event):
+            return event.displayTitle
+        case .vms(let sign):
+            return sign.displayName
+        }
     }
 }
 
@@ -821,7 +1069,7 @@ struct AboutView: View {
                 AboutSection(title: "Data Sources") {
                     VStack(alignment: .leading, spacing: 8) {
                         BulletText("Traffic Cameras: /cameras/all")
-                        BulletText("Road Events: /events/all/-1")
+                        BulletText("Road Events: /events/all/10")
                         BulletText("VMS Signs: /signs/vms/all")
                     }
                 }
@@ -980,5 +1228,12 @@ struct EmptyStateView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 360)
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+            .previewDisplayName("NZTA Traffic")
     }
 }

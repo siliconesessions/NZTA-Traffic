@@ -2,3 +2,5 @@ build/
 Resources/*.iconset/
 
 .DS_Store
+*.xcuserstate
+xcuserdata/

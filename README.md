@@ -16,6 +16,20 @@ This universal build supports Apple Silicon and Intel Macs and requires macOS 15
 
 ## Build
 
+### Xcode
+
+Open `NZTATraffic.xcodeproj` in Xcode and run the shared `NZTA Traffic` scheme.
+
+To build from Terminal with Xcode:
+
+```sh
+xcodebuild -project NZTATraffic.xcodeproj -scheme "NZTA Traffic" -configuration Release -destination 'generic/platform=macOS' build
+```
+
+The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.plist`, and `Resources/NZTATraffic.icns`. It preserves the current bundle name `NZTA Traffic.app` and executable name `NZTATraffic`.
+
+### Shell Script
+
 ```sh
 ./build_app.sh
 ```
@@ -55,12 +69,13 @@ The app requires internet access for live NZTA data and camera images. It uses t
 ## Endpoints
 
 - `https://trafficnz.info/service/traffic/rest/4/cameras/all`
-- `https://trafficnz.info/service/traffic/rest/4/events/all/-1`
+- `https://trafficnz.info/service/traffic/rest/4/events/all/10`
 - `https://trafficnz.info/service/traffic/rest/4/signs/vms/all`
 
 ## Features
 
 - Cameras, road events, VMS signs, and About tabs.
+- Map tab with switchable camera, road event, and VMS sign layers.
 - Region, highway, and search filters shared across the data tabs.
 - Manual refresh and persisted auto-refresh interval.
 - Camera thumbnail grid with larger preview sheet.
