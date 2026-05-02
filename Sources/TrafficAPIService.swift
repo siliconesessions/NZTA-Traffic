@@ -16,7 +16,7 @@ struct TrafficAPIService {
     }
 
     func fetchRoadEvents() async throws -> [RoadEvent] {
-        let payload: RoadEventsPayload = try await request("/events/all/-1")
+        let payload: RoadEventsPayload = try await request("/events/all/10")
         return payload.response.roadevent
     }
 

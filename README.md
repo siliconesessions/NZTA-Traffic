@@ -69,12 +69,13 @@ The app requires internet access for live NZTA data and camera images. It uses t
 ## Endpoints
 
 - `https://trafficnz.info/service/traffic/rest/4/cameras/all`
-- `https://trafficnz.info/service/traffic/rest/4/events/all/-1`
+- `https://trafficnz.info/service/traffic/rest/4/events/all/10`
 - `https://trafficnz.info/service/traffic/rest/4/signs/vms/all`
 
 ## Features
 
 - Cameras, road events, VMS signs, and About tabs.
+- Map tab with switchable camera, road event, and VMS sign layers.
 - Region, highway, and search filters shared across the data tabs.
 - Manual refresh and persisted auto-refresh interval.
 - Camera thumbnail grid with larger preview sheet.
