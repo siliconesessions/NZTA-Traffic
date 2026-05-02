@@ -1,7 +1,9 @@
+import MapKit
 import SwiftUI
 
 enum TrafficTab: String, CaseIterable, Identifiable {
     case cameras = "Traffic Cameras"
+    case cameraMap = "Camera Map"
     case events = "Road Events"
     case vms = "VMS Signs"
     case about = "About"
@@ -167,6 +169,14 @@ struct ContentView: View {
                 cacheToken: store.imageCacheToken,
                 onPreview: { selectedCamera = $0 }
             )
+        case .cameraMap:
+            CameraMapTabView(
+                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                isLoading: store.isLoading(.cameras),
+                errorMessage: store.errors[.cameras],
+                cacheToken: store.imageCacheToken,
+                onPreview: { selectedCamera = $0 }
+            )
         case .events:
             RoadEventsTabView(
                 events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
@@ -266,6 +276,180 @@ struct CamerasTabView: View {
             }
             .padding(24)
         }
+    }
+}
+
+private let cameraMapInitialRegion = MKCoordinateRegion(
+    center: CLLocationCoordinate2D(latitude: -41.2865, longitude: 174.7762),
+    span: MKCoordinateSpan(latitudeDelta: 14.5, longitudeDelta: 16.5)
+)
+
+struct CameraMapTabView: View {
+    let cameras: [TrafficCamera]
+    let isLoading: Bool
+    let errorMessage: String?
+    let cacheToken: Int
+    let onPreview: (TrafficCamera) -> Void
+
+    @State private var position = MapCameraPosition.region(cameraMapInitialRegion)
+
+    private var mappedCameras: [MappedTrafficCamera] {
+        cameras.compactMap { camera in
+            guard let coordinate = camera.mapCoordinate else {
+                return nil
+            }
+            return MappedTrafficCamera(camera: camera, coordinate: coordinate)
+        }
+    }
+
+    private var unmappedCount: Int {
+        cameras.count - mappedCameras.count
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let errorMessage {
+                ErrorBanner(message: errorMessage)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 18)
+                    .padding(.bottom, 12)
+            }
+
+            if isLoading && cameras.isEmpty {
+                LoadingView(title: "Loading traffic camera map...")
+            } else if cameras.isEmpty {
+                EmptyStateView(systemImage: "map", title: "No cameras found matching your filters")
+            } else {
+                CameraMapStatusBar(
+                    totalCount: cameras.count,
+                    mappedCount: mappedCameras.count,
+                    unmappedCount: unmappedCount,
+                    isLoading: isLoading,
+                    onReset: {
+                        position = .region(cameraMapInitialRegion)
+                    }
+                )
+
+                Divider()
+
+                if mappedCameras.isEmpty {
+                    EmptyStateView(systemImage: "location.slash", title: "No filtered cameras have usable map coordinates")
+                } else {
+                    Map(position: $position) {
+                        ForEach(mappedCameras) { mappedCamera in
+                            Annotation(mappedCamera.camera.displayName, coordinate: mappedCamera.coordinate, anchor: .bottom) {
+                                CameraMapMarker(camera: mappedCamera.camera) {
+                                    onPreview(mappedCamera.camera)
+                                }
+                            }
+                        }
+                    }
+                    .mapControls {
+                        MapCompass()
+                        MapScaleView()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct MappedTrafficCamera: Identifiable {
+    let camera: TrafficCamera
+    let coordinate: CLLocationCoordinate2D
+
+    var id: String {
+        camera.id
+    }
+}
+
+private struct CameraMapStatusBar: View {
+    let totalCount: Int
+    let mappedCount: Int
+    let unmappedCount: Int
+    let isLoading: Bool
+    let onReset: () -> Void
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Label("\(mappedCount) mapped", systemImage: "mappin.and.ellipse")
+                .font(.callout.weight(.medium))
+
+            Label("\(unmappedCount) without coordinates", systemImage: "location.slash")
+                .font(.callout)
+                .foregroundStyle(unmappedCount == 0 ? Color.secondary : Color.orange)
+
+            Text("\(totalCount) filtered")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Refreshing")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                onReset()
+            } label: {
+                Label("Reset Map", systemImage: "scope")
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(.background)
+    }
+}
+
+private struct CameraMapMarker: View {
+    let camera: TrafficCamera
+    let onPreview: () -> Void
+
+    private var tint: Color {
+        if camera.isOnline {
+            return .green
+        }
+        if camera.underMaintenance {
+            return .orange
+        }
+        return .red
+    }
+
+    private var statusText: String {
+        if camera.isOnline {
+            return "Online"
+        }
+        if camera.underMaintenance {
+            return "Maintenance"
+        }
+        return "Offline"
+    }
+
+    var body: some View {
+        Button(action: onPreview) {
+            ZStack {
+                Image(systemName: "mappin.circle.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .shadow(color: .black.opacity(0.24), radius: 3, y: 2)
+
+                Image(systemName: camera.isOnline ? "video.fill" : "video.slash")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .offset(y: -2)
+            }
+            .frame(width: 38, height: 38)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(camera.displayName) - \(statusText)")
+        .accessibilityLabel("\(camera.displayName), \(statusText)")
     }
 }
 

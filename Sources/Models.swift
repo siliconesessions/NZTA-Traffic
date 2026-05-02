@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 struct Region: Decodable, Hashable {
@@ -117,6 +118,20 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
 
     var isOnline: Bool {
         !offline && !underMaintenance
+    }
+
+    var mapCoordinate: CLLocationCoordinate2D? {
+        guard let latitude,
+              let longitude,
+              latitude.isFinite,
+              longitude.isFinite,
+              (-90.0...90.0).contains(latitude),
+              (-180.0...180.0).contains(longitude),
+              !(latitude == 0 && longitude == 0) else {
+            return nil
+        }
+
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 
     var routeLine: String? {
