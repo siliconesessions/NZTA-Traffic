@@ -581,11 +581,20 @@ func formatVMSMessage(_ message: String?) -> String {
     var formatted = cleanText(message) ?? ""
     formatted = formatted.replacingOccurrences(of: "[nl]", with: "\n", options: .caseInsensitive)
     formatted = formatted.replacingOccurrences(of: "[np]", with: "\n\n", options: .caseInsensitive)
+    formatted = formatted.replacingOccurrences(
+        of: #"\[[a-z]+\d*\]"#,
+        with: " ",
+        options: [.regularExpression, .caseInsensitive]
+    )
     formatted = formatted.replacingOccurrences(of: "\r\n", with: "\n")
     formatted = formatted.replacingOccurrences(of: "\r", with: "\n")
     formatted = formatted
         .components(separatedBy: "\n")
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .map { line in
+            line
+                .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         .joined(separator: "\n")
 
     while formatted.contains("\n\n\n") {
