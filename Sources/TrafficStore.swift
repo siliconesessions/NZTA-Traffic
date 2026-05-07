@@ -33,26 +33,47 @@ final class TrafficStore: ObservableObject {
         loadingSections.contains(section)
     }
 
+    var loadProgress: Double {
+        let total = Double(DataSection.allCases.count)
+        guard total > 0 else {
+            return 1
+        }
+        let remaining = Double(loadingSections.count)
+        return max(0, min(1, (total - remaining) / total))
+    }
+
     func loadAllData() async {
-        isRefreshing = true
         loadingSections = Set(DataSection.allCases)
         errors = [:]
+        isRefreshing = true
 
-        async let cameraResult = service.fetchCamerasResult()
-        async let eventResult = service.fetchRoadEventsResult()
-        async let signResult = service.fetchVMSSignsResult()
-
-        let results = await (cameraResult, eventResult, signResult)
-
-        apply(results.0, to: .cameras, keyPath: \.cameras)
-        apply(results.1, to: .events, keyPath: \.events)
-        apply(results.2, to: .vms, keyPath: \.vmsSigns)
+        async let camerasTask: () = loadCameras()
+        async let eventsTask: () = loadEvents()
+        async let signsTask: () = loadVMS()
+        _ = await (camerasTask, eventsTask, signsTask)
 
         allRegions = computeAllRegions()
-        loadingSections = []
         lastUpdated = Date()
         imageCacheToken = Int(Date().timeIntervalSince1970)
         isRefreshing = false
+    }
+
+    private func loadCameras() async {
+        let result = await service.fetchCamerasResult()
+        apply(result, to: .cameras, keyPath: \.cameras)
+        loadingSections.remove(.cameras)
+    }
+
+    private func loadEvents() async {
+        let result = await service.fetchRoadEventsResult()
+        apply(result, to: .events, keyPath: \.events)
+        loadingSections.remove(.events)
+    }
+
+    private func loadVMS() async {
+        let result = await service.fetchVMSSignsResult()
+        apply(result, to: .vms, keyPath: \.vmsSigns)
+        loadingSections.remove(.vms)
     }
 
     func filteredCameras(region: String, highway: String, search: String) -> [TrafficCamera] {

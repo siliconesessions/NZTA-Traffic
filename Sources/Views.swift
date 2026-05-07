@@ -23,6 +23,9 @@ struct ContentView: View {
     @State private var searchFilter = ""
     @State private var selectedCamera: TrafficCamera?
     @State private var autoRefreshTask: Task<Void, Never>?
+    @State private var mapPosition = MapCameraPosition.region(trafficMapInitialRegion)
+    @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
+    @State private var mapSelectedLayer: TrafficMapLayer = .cameras
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,36 +66,65 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "car.fill")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(.blue)
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Image(systemName: "car.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.blue)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("NZTA Traffic")
-                    .font(.title2.weight(.semibold))
-                Text("Live cameras, road events, and VMS signs across New Zealand")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("NZTA Traffic")
+                        .font(.title2.weight(.semibold))
+                    Text("Live cameras, road events, and VMS signs across New Zealand")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    DataSectionPill(
+                        icon: "video.fill",
+                        label: "Cameras",
+                        count: store.cameras.count,
+                        isLoading: store.isLoading(.cameras),
+                        hasError: store.errors[.cameras] != nil
+                    )
+                    DataSectionPill(
+                        icon: "exclamationmark.triangle.fill",
+                        label: "Events",
+                        count: store.events.count,
+                        isLoading: store.isLoading(.events),
+                        hasError: store.errors[.events] != nil
+                    )
+                    DataSectionPill(
+                        icon: "signpost.right.fill",
+                        label: "VMS",
+                        count: store.vmsSigns.count,
+                        isLoading: store.isLoading(.vms),
+                        hasError: store.errors[.vms] != nil
+                    )
+                }
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Last Updated")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(store.lastUpdated?.formatted(date: .abbreviated, time: .standard) ?? "Not yet")
+                        .font(.caption.weight(.medium))
+                }
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
 
-            Spacer()
-
-            if store.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("Last Updated")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(store.lastUpdated?.formatted(date: .abbreviated, time: .standard) ?? "Not yet")
-                    .font(.caption.weight(.medium))
-            }
+            ProgressView(value: store.loadProgress)
+                .progressViewStyle(.linear)
+                .tint(.blue)
+                .opacity(store.isRefreshing ? 1 : 0)
+                .animation(.easeInOut(duration: 0.25), value: store.isRefreshing)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 6)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
         .background(.background)
     }
 
@@ -192,6 +224,9 @@ struct ContentView: View {
                 cameraErrorMessage: store.errors[.cameras],
                 eventErrorMessage: store.errors[.events],
                 vmsErrorMessage: store.errors[.vms],
+                position: $mapPosition,
+                visibleSpan: $mapVisibleSpan,
+                selectedLayer: $mapSelectedLayer,
                 onCameraPreview: { selectedCamera = $0 }
             )
         case .about:
@@ -289,7 +324,7 @@ private let trafficMapInitialRegion = MKCoordinateRegion(
     span: MKCoordinateSpan(latitudeDelta: 14.5, longitudeDelta: 16.5)
 )
 
-private enum TrafficMapLayer: String, CaseIterable, Identifiable {
+enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case cameras = "Cameras"
     case events = "Road Events"
     case vms = "VMS Signs"
@@ -342,12 +377,12 @@ struct TrafficMapTabView: View {
     let cameraErrorMessage: String?
     let eventErrorMessage: String?
     let vmsErrorMessage: String?
+    @Binding var position: MapCameraPosition
+    @Binding var visibleSpan: MKCoordinateSpan
+    @Binding var selectedLayer: TrafficMapLayer
     let onCameraPreview: (TrafficCamera) -> Void
 
-    @State private var selectedLayer: TrafficMapLayer = .cameras
     @State private var selectedDetail: TrafficMapDetail?
-    @State private var position = MapCameraPosition.region(trafficMapInitialRegion)
-    @State private var visibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
 
     private var features: [TrafficMapFeature] {
         switch selectedLayer {
@@ -1453,6 +1488,68 @@ struct Badge: View {
             .foregroundStyle(tint == .yellow ? .black : .white)
             .background(tint)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+struct DataSectionPill: View {
+    let icon: String
+    let label: String
+    let count: Int
+    let isLoading: Bool
+    let hasError: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            indicator
+            Text(displayCount)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.05))
+        .clipShape(Capsule())
+        .help(helpText)
+    }
+
+    @ViewBuilder
+    private var indicator: some View {
+        if isLoading {
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 12, height: 12)
+        } else if hasError {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+                .foregroundStyle(.red)
+        } else {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.blue)
+        }
+    }
+
+    private var displayCount: String {
+        if hasError {
+            return "—"
+        }
+        if isLoading && count == 0 {
+            return "…"
+        }
+        return "\(count)"
+    }
+
+    private var helpText: String {
+        if hasError {
+            return "\(label): failed to load"
+        }
+        if isLoading {
+            return "\(label): loading…"
+        }
+        return "\(label): \(count) loaded"
     }
 }
 
