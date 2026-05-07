@@ -82,6 +82,7 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let statusKind: CameraStatusKind
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -99,6 +100,8 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
         let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
         let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
         let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
+        let offlineValue = container.decodeLossyBool(forKey: .offline) ?? false
+        let underMaintenanceValue = container.decodeLossyBool(forKey: .underMaintenance) ?? false
 
         rawId = decodedId
         id = deterministicID(
@@ -122,13 +125,14 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
         viewUrl = cleanText(container.decodeLossyString(forKey: .viewUrl))
         latitude = latitudeValue
         longitude = longitudeValue
-        offline = container.decodeLossyBool(forKey: .offline) ?? false
-        underMaintenance = container.decodeLossyBool(forKey: .underMaintenance) ?? false
+        offline = offlineValue
+        underMaintenance = underMaintenanceValue
         sortOrder = container.decodeLossyInt(forKey: .sortOrder)
         region = regionValue
         journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
         way = wayValue
+        statusKind = computeCameraStatusKind(offline: offlineValue, underMaintenance: underMaintenanceValue)
         highwayHaystack = searchableHaystack([
             highwayValue,
             journeyValue?.name,
@@ -232,6 +236,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let geometryLatitude: Double?
     let geometryLongitude: Double?
     let severityRank: Int
+    let impactKind: EventImpactKind
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -301,6 +306,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
             geometryLongitude = nil
         }
         severityRank = computeSeverityRank(impact: impactValue)
+        impactKind = computeImpactKind(impact: impactValue)
         highwayHaystack = searchableHaystack([
             journeyValue?.name,
             wayValue?.name,
@@ -764,6 +770,77 @@ func computeSeverityRank(impact: String?) -> Int {
         return 2
     }
     return 50
+}
+
+enum CameraStatusKind: String, CaseIterable, Identifiable, Hashable {
+    case online
+    case offline
+    case maintenance
+
+    var id: String {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .online:
+            return "Online"
+        case .offline:
+            return "Offline"
+        case .maintenance:
+            return "Maintenance"
+        }
+    }
+}
+
+func computeCameraStatusKind(offline: Bool, underMaintenance: Bool) -> CameraStatusKind {
+    if underMaintenance {
+        return .maintenance
+    }
+    if offline {
+        return .offline
+    }
+    return .online
+}
+
+enum EventImpactKind: String, CaseIterable, Identifiable, Hashable {
+    case closure
+    case delays
+    case caution
+    case other
+
+    var id: String {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .closure:
+            return "Closures"
+        case .delays:
+            return "Delays"
+        case .caution:
+            return "Caution"
+        case .other:
+            return "Other"
+        }
+    }
+}
+
+func computeImpactKind(impact: String?) -> EventImpactKind {
+    guard let impact else {
+        return .other
+    }
+    if impact.range(of: "closed", options: .caseInsensitive) != nil {
+        return .closure
+    }
+    if impact.range(of: "delay", options: .caseInsensitive) != nil {
+        return .delays
+    }
+    if impact.range(of: "caution", options: .caseInsensitive) != nil {
+        return .caution
+    }
+    return .other
 }
 
 extension KeyedDecodingContainer {

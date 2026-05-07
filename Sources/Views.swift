@@ -17,6 +17,14 @@ struct ContentView: View {
     @StateObject private var store = TrafficStore()
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
+    @AppStorage("nzta.event.showClosures") private var showEventClosures = true
+    @AppStorage("nzta.event.showDelays") private var showEventDelays = true
+    @AppStorage("nzta.event.showCaution") private var showEventCaution = true
+    @AppStorage("nzta.event.showOther") private var showEventOther = true
+    @AppStorage("nzta.camera.showOnline") private var showCameraOnline = true
+    @AppStorage("nzta.camera.showOffline") private var showCameraOffline = true
+    @AppStorage("nzta.camera.showMaintenance") private var showCameraMaintenance = true
     @State private var selectedTab: TrafficTab = .cameras
     @State private var selectedRegion = ""
     @State private var highwayFilter = ""
@@ -35,6 +43,10 @@ struct ContentView: View {
             Divider()
             tabPicker
             Divider()
+            if selectedTab != .about {
+                scopedFilterBar
+                Divider()
+            }
             tabContent
         }
         .frame(minWidth: 980, minHeight: 680)
@@ -195,7 +207,7 @@ struct ContentView: View {
         switch selectedTab {
         case .cameras:
             CamerasTabView(
-                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                cameras: scopedCameras(),
                 isLoading: store.isLoading(.cameras),
                 errorMessage: store.errors[.cameras],
                 cacheToken: store.imageCacheToken,
@@ -203,21 +215,22 @@ struct ContentView: View {
             )
         case .events:
             RoadEventsTabView(
-                events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                events: scopedEvents(),
                 isLoading: store.isLoading(.events),
                 errorMessage: store.errors[.events]
             )
         case .vms:
             VMSTabView(
-                signs: store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                signs: scopedVMSSigns(),
                 isLoading: store.isLoading(.vms),
-                errorMessage: store.errors[.vms]
+                errorMessage: store.errors[.vms],
+                hideEmpty: hideEmptyVMS
             )
         case .trafficMap:
             TrafficMapTabView(
-                cameras: store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter),
-                events: store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter),
-                vmsSigns: store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter),
+                cameras: scopedCameras(),
+                events: scopedEvents(),
+                vmsSigns: scopedVMSSigns(),
                 camerasLoading: store.isLoading(.cameras),
                 eventsLoading: store.isLoading(.events),
                 vmsLoading: store.isLoading(.vms),
@@ -232,6 +245,95 @@ struct ContentView: View {
         case .about:
             AboutView()
         }
+    }
+
+    private var scopedFilterBar: some View {
+        HStack {
+            scopedFilterContent
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 48)
+        .background(.background)
+    }
+
+    @ViewBuilder
+    private var scopedFilterContent: some View {
+        switch selectedTab {
+        case .cameras:
+            cameraStatusFilters
+        case .events:
+            eventImpactFilters
+        case .vms:
+            EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        case .trafficMap:
+            mapLayerFilters
+        case .about:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var mapLayerFilters: some View {
+        switch mapSelectedLayer {
+        case .cameras:
+            cameraStatusFilters
+        case .events:
+            eventImpactFilters
+        case .vms:
+            EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        }
+    }
+
+    private var cameraStatusFilters: some View {
+        CameraStatusFilterRow(
+            showOnline: $showCameraOnline,
+            showOffline: $showCameraOffline,
+            showMaintenance: $showCameraMaintenance
+        )
+    }
+
+    private var eventImpactFilters: some View {
+        EventImpactFilterRow(
+            showClosures: $showEventClosures,
+            showDelays: $showEventDelays,
+            showCaution: $showEventCaution,
+            showOther: $showEventOther
+        )
+    }
+
+    private var allowedEventImpacts: Set<EventImpactKind> {
+        var set = Set<EventImpactKind>()
+        if showEventClosures { set.insert(.closure) }
+        if showEventDelays { set.insert(.delays) }
+        if showEventCaution { set.insert(.caution) }
+        if showEventOther { set.insert(.other) }
+        return set
+    }
+
+    private var allowedCameraStatuses: Set<CameraStatusKind> {
+        var set = Set<CameraStatusKind>()
+        if showCameraOnline { set.insert(.online) }
+        if showCameraOffline { set.insert(.offline) }
+        if showCameraMaintenance { set.insert(.maintenance) }
+        return set
+    }
+
+    private func scopedCameras() -> [TrafficCamera] {
+        let base = store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let allowed = allowedCameraStatuses
+        return base.filter { allowed.contains($0.statusKind) }
+    }
+
+    private func scopedEvents() -> [RoadEvent] {
+        let base = store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let allowed = allowedEventImpacts
+        return base.filter { allowed.contains($0.impactKind) }
+    }
+
+    private func scopedVMSSigns() -> [VMSSign] {
+        let base = store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        return hideEmptyVMS ? base.filter(\.hasDisplayMessage) : base
     }
 
     private func configureAutoRefresh() {
@@ -954,6 +1056,7 @@ struct VMSTabView: View {
     let signs: [VMSSign]
     let isLoading: Bool
     let errorMessage: String?
+    let hideEmpty: Bool
 
     var body: some View {
         ScrollView {
@@ -968,7 +1071,7 @@ struct VMSTabView: View {
                     EmptyStateView(systemImage: "signpost.right", title: "No VMS signs found matching your filters")
                 } else {
                     StatsRow(stats: [
-                        StatItem(title: "Active VMS Signs", value: "\(signs.count)", tint: .orange)
+                        StatItem(title: hideEmpty ? "Signs With Message" : "Active VMS Signs", value: "\(signs.count)", tint: .orange)
                     ])
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 16)], spacing: 16) {
@@ -1488,6 +1591,79 @@ struct Badge: View {
             .foregroundStyle(tint == .yellow ? .black : .white)
             .background(tint)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+struct FilterChip: View {
+    let label: String
+    let tint: Color
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .font(.caption)
+                    .foregroundStyle(isOn ? tint : .secondary)
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isOn ? .primary : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isOn ? tint.opacity(0.15) : Color.primary.opacity(0.05))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct EventImpactFilterRow: View {
+    @Binding var showClosures: Bool
+    @Binding var showDelays: Bool
+    @Binding var showCaution: Bool
+    @Binding var showOther: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Show")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            FilterChip(label: "Closures", tint: .red, isOn: $showClosures)
+            FilterChip(label: "Delays", tint: .orange, isOn: $showDelays)
+            FilterChip(label: "Caution", tint: .yellow, isOn: $showCaution)
+            FilterChip(label: "Other", tint: .gray, isOn: $showOther)
+        }
+    }
+}
+
+struct EmptyVMSToggleRow: View {
+    @Binding var hideEmpty: Bool
+
+    var body: some View {
+        Toggle("Hide signs with no active message", isOn: $hideEmpty)
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .font(.caption.weight(.medium))
+    }
+}
+
+struct CameraStatusFilterRow: View {
+    @Binding var showOnline: Bool
+    @Binding var showOffline: Bool
+    @Binding var showMaintenance: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Show")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            FilterChip(label: "Online", tint: .green, isOn: $showOnline)
+            FilterChip(label: "Offline", tint: .red, isOn: $showOffline)
+            FilterChip(label: "Maintenance", tint: .orange, isOn: $showMaintenance)
+        }
     }
 }
 
