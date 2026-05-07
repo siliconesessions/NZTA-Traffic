@@ -347,6 +347,7 @@ struct TrafficMapTabView: View {
     @State private var selectedLayer: TrafficMapLayer = .cameras
     @State private var selectedDetail: TrafficMapDetail?
     @State private var position = MapCameraPosition.region(trafficMapInitialRegion)
+    @State private var visibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
 
     private var features: [TrafficMapFeature] {
         switch selectedLayer {
@@ -441,10 +442,23 @@ struct TrafficMapTabView: View {
                 EmptyStateView(systemImage: "location.slash", title: selectedLayer.noCoordinatesTitle)
             } else {
                 Map(position: $position) {
-                    ForEach(features) { feature in
-                        Annotation(feature.title, coordinate: feature.coordinate, anchor: .bottom) {
-                            TrafficMapMarker(feature: feature) {
-                                select(feature)
+                    ForEach(mapItems) { item in
+                        switch item {
+                        case .single(let feature):
+                            Annotation(feature.title, coordinate: feature.coordinate, anchor: .bottom) {
+                                TrafficMapMarker(feature: feature) {
+                                    select(feature)
+                                }
+                            }
+                        case .cluster(_, let coordinate, let members):
+                            Annotation(
+                                "\(members.count) \(selectedLayer.rawValue.lowercased())",
+                                coordinate: coordinate,
+                                anchor: .center
+                            ) {
+                                TrafficMapClusterMarker(count: members.count, layer: selectedLayer) {
+                                    zoomIn(toCluster: members)
+                                }
                             }
                         }
                     }
@@ -452,6 +466,9 @@ struct TrafficMapTabView: View {
                 .mapControls {
                     MapCompass()
                     MapScaleView()
+                }
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    visibleSpan = context.region.span
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -462,6 +479,10 @@ struct TrafficMapTabView: View {
         }
     }
 
+    private var mapItems: [TrafficMapItem] {
+        clusterMapFeatures(features, span: visibleSpan)
+    }
+
     private func select(_ feature: TrafficMapFeature) {
         switch feature {
         case .camera(let camera, _):
@@ -470,6 +491,42 @@ struct TrafficMapTabView: View {
             selectedDetail = .event(event)
         case .vms(let sign, _):
             selectedDetail = .vms(sign)
+        }
+    }
+
+    private func zoomIn(toCluster members: [TrafficMapFeature]) {
+        guard !members.isEmpty else {
+            return
+        }
+
+        var minLatitude = Double.greatestFiniteMagnitude
+        var maxLatitude = -Double.greatestFiniteMagnitude
+        var minLongitude = Double.greatestFiniteMagnitude
+        var maxLongitude = -Double.greatestFiniteMagnitude
+
+        for member in members {
+            let coordinate = member.coordinate
+            minLatitude = min(minLatitude, coordinate.latitude)
+            maxLatitude = max(maxLatitude, coordinate.latitude)
+            minLongitude = min(minLongitude, coordinate.longitude)
+            maxLongitude = max(maxLongitude, coordinate.longitude)
+        }
+
+        let center = CLLocationCoordinate2D(
+            latitude: (minLatitude + maxLatitude) / 2,
+            longitude: (minLongitude + maxLongitude) / 2
+        )
+
+        let bboxLatitude = (maxLatitude - minLatitude) * 1.6
+        let bboxLongitude = (maxLongitude - minLongitude) * 1.6
+        let targetLatitude = max(min(bboxLatitude, visibleSpan.latitudeDelta * 0.5), 0.01)
+        let targetLongitude = max(min(bboxLongitude, visibleSpan.longitudeDelta * 0.5), 0.01)
+
+        withAnimation(.easeInOut(duration: 0.45)) {
+            position = .region(MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: targetLatitude, longitudeDelta: targetLongitude)
+            ))
         }
     }
 }
@@ -570,6 +627,68 @@ private enum TrafficMapFeature: Identifiable {
     }
 }
 
+private enum TrafficMapItem: Identifiable {
+    case single(TrafficMapFeature)
+    case cluster(id: String, coordinate: CLLocationCoordinate2D, members: [TrafficMapFeature])
+
+    var id: String {
+        switch self {
+        case .single(let feature):
+            return feature.id
+        case .cluster(let id, _, _):
+            return id
+        }
+    }
+
+    var coordinate: CLLocationCoordinate2D {
+        switch self {
+        case .single(let feature):
+            return feature.coordinate
+        case .cluster(_, let coordinate, _):
+            return coordinate
+        }
+    }
+}
+
+private let clusterDisableSpan: Double = 0.2
+private let clusterCellDivisor: Double = 30.0
+
+private func clusterMapFeatures(
+    _ features: [TrafficMapFeature],
+    span: MKCoordinateSpan
+) -> [TrafficMapItem] {
+    let maxSpan = max(span.latitudeDelta, span.longitudeDelta)
+
+    guard features.count > 1, maxSpan >= clusterDisableSpan else {
+        return features.map { .single($0) }
+    }
+
+    let cellSize = maxSpan / clusterCellDivisor
+    guard cellSize > 0 else {
+        return features.map { .single($0) }
+    }
+
+    var buckets: [String: [TrafficMapFeature]] = [:]
+    for feature in features {
+        let xCell = Int((feature.coordinate.longitude / cellSize).rounded(.down))
+        let yCell = Int((feature.coordinate.latitude / cellSize).rounded(.down))
+        let key = "\(xCell)|\(yCell)"
+        buckets[key, default: []].append(feature)
+    }
+
+    return buckets.map { key, members in
+        if members.count == 1 {
+            return .single(members[0])
+        }
+        let count = Double(members.count)
+        let centroid = CLLocationCoordinate2D(
+            latitude: members.reduce(0.0) { $0 + $1.coordinate.latitude } / count,
+            longitude: members.reduce(0.0) { $0 + $1.coordinate.longitude } / count
+        )
+        return .cluster(id: "cluster-\(key)", coordinate: centroid, members: members)
+    }
+}
+
 private enum TrafficMapDetail: Identifiable {
     case event(RoadEvent)
     case vms(VMSSign)
@@ -659,6 +778,58 @@ private struct TrafficMapMarker: View {
         .buttonStyle(.plain)
         .help("\(feature.title) - \(feature.statusText)")
         .accessibilityLabel("\(feature.title), \(feature.statusText)")
+    }
+}
+
+private struct TrafficMapClusterMarker: View {
+    let count: Int
+    let layer: TrafficMapLayer
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            ZStack {
+                Circle()
+                    .fill(layer.clusterTint)
+                Circle()
+                    .stroke(Color.white, lineWidth: 2.5)
+                Text("\(count)")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+            }
+            .frame(width: diameter, height: diameter)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("\(count) \(layer.rawValue.lowercased()) — click to zoom in")
+        .accessibilityLabel("\(count) \(layer.rawValue.lowercased())")
+    }
+
+    private var diameter: CGFloat {
+        switch count {
+        case ..<10:
+            return 32
+        case ..<50:
+            return 38
+        case ..<200:
+            return 44
+        default:
+            return 50
+        }
+    }
+}
+
+private extension TrafficMapLayer {
+    var clusterTint: Color {
+        switch self {
+        case .cameras:
+            return .blue
+        case .events:
+            return .red
+        case .vms:
+            return .indigo
+        }
     }
 }
 
