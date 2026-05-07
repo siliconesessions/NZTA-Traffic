@@ -79,21 +79,7 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Image(systemName: "car.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.blue)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("NZTA Traffic")
-                        .font(.title2.weight(.semibold))
-                    Text("Live cameras, road events, and VMS signs across New Zealand")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
+            HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     DataSectionPill(
                         icon: "video.fill",
@@ -118,75 +104,118 @@ struct ContentView: View {
                     )
                 }
 
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Last Updated")
-                        .font(.caption)
+                Spacer()
+
+                HStack(spacing: 4) {
+                    Text("Updated")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Text(store.lastUpdated?.formatted(date: .abbreviated, time: .standard) ?? "Not yet")
+                    Text(lastUpdatedText)
                         .font(.caption.weight(.medium))
+                        .monospacedDigit()
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
 
             ProgressView(value: store.loadProgress)
                 .progressViewStyle(.linear)
                 .tint(.blue)
                 .opacity(store.isRefreshing ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: store.isRefreshing)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 4)
         }
         .background(.background)
     }
 
-    private var filters: some View {
-        HStack(alignment: .bottom, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Region")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Picker("Region", selection: $selectedRegion) {
-                    Text("All Regions").tag("")
-                    ForEach(store.allRegions, id: \.self) { region in
-                        Text(region).tag(region)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 210)
-            }
+    private var lastUpdatedText: String {
+        guard let lastUpdated = store.lastUpdated else {
+            return "Not yet"
+        }
+        return lastUpdated.formatted(date: .omitted, time: .standard)
+    }
 
-            FilterTextField(title: "Highway", placeholder: "SH1, SH16", text: $highwayFilter)
+    private var filters: some View {
+        HStack(spacing: 10) {
+            Picker("Region", selection: $selectedRegion) {
+                Text("All Regions").tag("")
+                ForEach(store.allRegions, id: \.self) { region in
+                    Text(region).tag(region)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 180)
+
+            TextField("Highway (e.g. SH1)", text: $highwayFilter)
+                .textFieldStyle(.roundedBorder)
                 .frame(width: 160)
 
-            FilterTextField(title: "Search", placeholder: "Search locations", text: $searchFilter)
-                .frame(minWidth: 240)
+            TextField("Search locations", text: $searchFilter)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 220)
 
             Button {
                 Task {
                     await store.loadAllData()
                 }
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Image(systemName: "arrow.clockwise")
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(store.isRefreshing)
+            .help("Refresh now (⌘R)")
 
-            Spacer(minLength: 10)
+            Spacer(minLength: 8)
 
-            Toggle("Auto-refresh", isOn: $autoRefreshEnabled)
-                .toggleStyle(.switch)
+            autoRefreshMenu
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .background(.background)
+    }
 
-            Stepper(value: $refreshIntervalSeconds, in: 30...600, step: 30) {
-                Text("\(clampedRefreshInterval) sec")
-                    .font(.callout.monospacedDigit())
-                    .frame(width: 70, alignment: .trailing)
+    private var autoRefreshMenu: some View {
+        Menu {
+            Toggle("Enable Auto-refresh", isOn: $autoRefreshEnabled)
+            Divider()
+            Picker("Interval", selection: $refreshIntervalSeconds) {
+                Text("30 seconds").tag(30)
+                Text("1 minute").tag(60)
+                Text("2 minutes").tag(120)
+                Text("5 minutes").tag(300)
+                Text("10 minutes").tag(600)
             }
             .disabled(!autoRefreshEnabled)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: autoRefreshEnabled
+                      ? "arrow.triangle.2.circlepath.circle.fill"
+                      : "arrow.triangle.2.circlepath.circle")
+                    .foregroundStyle(autoRefreshEnabled ? Color.blue : .secondary)
+                if autoRefreshEnabled {
+                    Text(autoRefreshIntervalLabel)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
-        .background(.background)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(autoRefreshEnabled
+              ? "Auto-refresh every \(autoRefreshIntervalLabel)"
+              : "Auto-refresh off")
+    }
+
+    private var autoRefreshIntervalLabel: String {
+        let seconds = clampedRefreshInterval
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        if seconds % 60 == 0 {
+            return "\(seconds / 60)m"
+        }
+        return "\(seconds)s"
     }
 
     private var tabPicker: some View {
@@ -267,9 +296,44 @@ struct ContentView: View {
         case .vms:
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
         case .trafficMap:
-            mapLayerFilters
+            mapTabFilterBar
         case .about:
             EmptyView()
+        }
+    }
+
+    private var mapTabFilterBar: some View {
+        let counts = mapCounts
+        return HStack(spacing: 12) {
+            Picker("Layer", selection: $mapSelectedLayer) {
+                Text("Cameras").tag(TrafficMapLayer.cameras)
+                Text("Events").tag(TrafficMapLayer.events)
+                Text("VMS").tag(TrafficMapLayer.vms)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 220)
+
+            mapLayerFilters
+
+            Spacer()
+
+            Label("\(counts.mapped) mapped", systemImage: "mappin.and.ellipse")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if counts.unmapped > 0 {
+                Label("\(counts.unmapped) off-map", systemImage: "location.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Button {
+                mapPosition = .region(trafficMapInitialRegion)
+            } label: {
+                Image(systemName: "scope")
+            }
+            .help("Reset map view")
         }
     }
 
@@ -282,6 +346,29 @@ struct ContentView: View {
             eventImpactFilters
         case .vms:
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        }
+    }
+
+    private struct MapCounts {
+        let mapped: Int
+        let total: Int
+        var unmapped: Int { total - mapped }
+    }
+
+    private var mapCounts: MapCounts {
+        switch mapSelectedLayer {
+        case .cameras:
+            let items = scopedCameras()
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
+        case .events:
+            let items = scopedEvents()
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
+        case .vms:
+            let items = scopedVMSSigns()
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
         }
     }
 
@@ -359,22 +446,6 @@ struct ContentView: View {
 
                 await store.loadAllData()
             }
-        }
-    }
-}
-
-struct FilterTextField: View {
-    let title: String
-    let placeholder: String
-    @Binding var text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
         }
     }
 }
@@ -553,23 +624,10 @@ struct TrafficMapTabView: View {
         VStack(spacing: 0) {
             if let errorMessage {
                 ErrorBanner(message: errorMessage)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 18)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
             }
-
-            TrafficMapStatusBar(
-                selectedLayer: $selectedLayer,
-                totalCount: totalCount,
-                mappedCount: features.count,
-                unmappedCount: unmappedCount,
-                isLoading: isLoading,
-                onReset: {
-                    position = .region(trafficMapInitialRegion)
-                }
-            )
-
-            Divider()
 
             if isLoading && totalCount == 0 {
                 LoadingView(title: selectedLayer.loadingTitle)
@@ -837,58 +895,6 @@ private enum TrafficMapDetail: Identifiable {
         case .vms(let sign):
             return "vms-\(sign.id)"
         }
-    }
-}
-
-private struct TrafficMapStatusBar: View {
-    @Binding var selectedLayer: TrafficMapLayer
-    let totalCount: Int
-    let mappedCount: Int
-    let unmappedCount: Int
-    let isLoading: Bool
-    let onReset: () -> Void
-
-    var body: some View {
-        HStack(spacing: 18) {
-            Picker("Map Layer", selection: $selectedLayer) {
-                ForEach(TrafficMapLayer.allCases) { layer in
-                    Text(layer.rawValue).tag(layer)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 360)
-
-            Label("\(mappedCount) mapped", systemImage: "mappin.and.ellipse")
-                .font(.callout.weight(.medium))
-
-            Label("\(unmappedCount) without coordinates", systemImage: "location.slash")
-                .font(.callout)
-                .foregroundStyle(unmappedCount == 0 ? Color.secondary : Color.orange)
-
-            Text("\(totalCount) filtered")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Refreshing")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Button {
-                onReset()
-            } label: {
-                Label("Reset Map", systemImage: "scope")
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
-        .background(.background)
     }
 }
 
