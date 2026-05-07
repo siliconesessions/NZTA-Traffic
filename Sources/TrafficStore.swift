@@ -5,6 +5,7 @@ enum DataSection: String, CaseIterable, Identifiable {
     case cameras
     case events
     case vms
+    case journeys
 
     var id: String {
         rawValue
@@ -16,6 +17,7 @@ final class TrafficStore: ObservableObject {
     @Published private(set) var cameras: [TrafficCamera] = []
     @Published private(set) var events: [RoadEvent] = []
     @Published private(set) var vmsSigns: [VMSSign] = []
+    @Published private(set) var journeys: [TrafficJourney] = []
     @Published private(set) var allRegions: [String] = []
     @Published private(set) var loadingSections: Set<DataSection> = []
     @Published private(set) var errors: [DataSection: String] = [:]
@@ -50,7 +52,8 @@ final class TrafficStore: ObservableObject {
         async let camerasTask: () = loadCameras()
         async let eventsTask: () = loadEvents()
         async let signsTask: () = loadVMS()
-        _ = await (camerasTask, eventsTask, signsTask)
+        async let journeysTask: () = loadJourneys()
+        _ = await (camerasTask, eventsTask, signsTask, journeysTask)
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
@@ -74,6 +77,12 @@ final class TrafficStore: ObservableObject {
         let result = await service.fetchVMSSignsResult()
         apply(result, to: .vms, keyPath: \.vmsSigns)
         loadingSections.remove(.vms)
+    }
+
+    private func loadJourneys() async {
+        let result = await service.fetchJourneysResult()
+        apply(result, to: .journeys, keyPath: \.journeys)
+        loadingSections.remove(.journeys)
     }
 
     func filteredCameras(region: String, highway: String, search: String) -> [TrafficCamera] {
@@ -104,6 +113,19 @@ final class TrafficStore: ObservableObject {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
+    func filteredJourneys(region: String, highway: String, search: String) -> [TrafficJourney] {
+        journeys
+            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .sorted { lhs, rhs in
+                let lhsDelay = lhs.congestionDelay ?? -1
+                let rhsDelay = rhs.congestionDelay ?? -1
+                if lhsDelay != rhsDelay {
+                    return lhsDelay > rhsDelay
+                }
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
+    }
+
     private func apply<T>(
         _ result: Result<[T], Error>,
         to section: DataSection,
@@ -122,6 +144,7 @@ final class TrafficStore: ObservableObject {
         let names = cameras.compactMap(\.regionName)
             + events.compactMap(\.regionName)
             + vmsSigns.compactMap(\.regionName)
+            + journeys.compactMap(\.regionName)
         return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 

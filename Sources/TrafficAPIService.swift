@@ -25,6 +25,11 @@ struct TrafficAPIService {
         return payload.response.vms
     }
 
+    func fetchJourneys() async throws -> [TrafficJourney] {
+        let payload: JourneysPayload = try await request("/journeys/all/10")
+        return payload.response.journey
+    }
+
     func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
         await result { try await fetchCameras() }
     }
@@ -35,6 +40,10 @@ struct TrafficAPIService {
 
     func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
         await result { try await fetchVMSSigns() }
+    }
+
+    func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
+        await result { try await fetchJourneys() }
     }
 
     private func request<T: Decodable>(_ path: String) async throws -> T {

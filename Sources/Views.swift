@@ -5,6 +5,7 @@ enum TrafficTab: String, CaseIterable, Identifiable {
     case cameras = "Traffic Cameras"
     case events = "Road Events"
     case vms = "VMS Signs"
+    case travelTimes = "Travel Times"
     case trafficMap = "Map"
     case about = "About"
 
@@ -25,6 +26,11 @@ struct ContentView: View {
     @AppStorage("nzta.camera.showOnline") private var showCameraOnline = true
     @AppStorage("nzta.camera.showOffline") private var showCameraOffline = true
     @AppStorage("nzta.camera.showMaintenance") private var showCameraMaintenance = true
+    @AppStorage("nzta.flow.showFreeFlow") private var showFlowFreeFlow = true
+    @AppStorage("nzta.flow.showModerate") private var showFlowModerate = true
+    @AppStorage("nzta.flow.showSlow") private var showFlowSlow = true
+    @AppStorage("nzta.flow.showCongested") private var showFlowCongested = true
+    @AppStorage("nzta.flow.showNoData") private var showFlowNoData = false
     @State private var selectedTab: TrafficTab = .cameras
     @State private var selectedRegion = ""
     @State private var highwayFilter = ""
@@ -101,6 +107,13 @@ struct ContentView: View {
                         count: store.vmsSigns.count,
                         isLoading: store.isLoading(.vms),
                         hasError: store.errors[.vms] != nil
+                    )
+                    DataSectionPill(
+                        icon: "speedometer",
+                        label: "Travel",
+                        count: store.journeys.count,
+                        isLoading: store.isLoading(.journeys),
+                        hasError: store.errors[.journeys] != nil
                     )
                 }
 
@@ -255,17 +268,26 @@ struct ContentView: View {
                 errorMessage: store.errors[.vms],
                 hideEmpty: hideEmptyVMS
             )
+        case .travelTimes:
+            TravelTimesTabView(
+                journeys: scopedJourneys(),
+                isLoading: store.isLoading(.journeys),
+                errorMessage: store.errors[.journeys]
+            )
         case .trafficMap:
             TrafficMapTabView(
                 cameras: scopedCameras(),
                 events: scopedEvents(),
                 vmsSigns: scopedVMSSigns(),
+                journeys: scopedJourneys(),
                 camerasLoading: store.isLoading(.cameras),
                 eventsLoading: store.isLoading(.events),
                 vmsLoading: store.isLoading(.vms),
+                journeysLoading: store.isLoading(.journeys),
                 cameraErrorMessage: store.errors[.cameras],
                 eventErrorMessage: store.errors[.events],
                 vmsErrorMessage: store.errors[.vms],
+                journeyErrorMessage: store.errors[.journeys],
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
@@ -295,6 +317,8 @@ struct ContentView: View {
             eventImpactFilters
         case .vms:
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        case .travelTimes:
+            flowFilters
         case .trafficMap:
             mapTabFilterBar
         case .about:
@@ -309,10 +333,11 @@ struct ContentView: View {
                 Text("Cameras").tag(TrafficMapLayer.cameras)
                 Text("Events").tag(TrafficMapLayer.events)
                 Text("VMS").tag(TrafficMapLayer.vms)
+                Text("Flow").tag(TrafficMapLayer.flow)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 220)
+            .frame(width: 280)
 
             mapLayerFilters
 
@@ -346,7 +371,19 @@ struct ContentView: View {
             eventImpactFilters
         case .vms:
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        case .flow:
+            flowFilters
         }
+    }
+
+    private var flowFilters: some View {
+        FlowFilterRow(
+            showFreeFlow: $showFlowFreeFlow,
+            showModerate: $showFlowModerate,
+            showSlow: $showFlowSlow,
+            showCongested: $showFlowCongested,
+            showNoData: $showFlowNoData
+        )
     }
 
     private struct MapCounts {
@@ -369,6 +406,10 @@ struct ContentView: View {
             let items = scopedVMSSigns()
             let mapped = items.filter { $0.mapCoordinate != nil }.count
             return MapCounts(mapped: mapped, total: items.count)
+        case .flow:
+            let allLegs = scopedJourneys().flatMap(\.legs)
+            let mapped = allLegs.filter { !$0.polylineLatitudes.isEmpty }.count
+            return MapCounts(mapped: mapped, total: allLegs.count)
         }
     }
 
@@ -421,6 +462,22 @@ struct ContentView: View {
     private func scopedVMSSigns() -> [VMSSign] {
         let base = store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter)
         return hideEmptyVMS ? base.filter(\.hasDisplayMessage) : base
+    }
+
+    private var allowedFlowKinds: Set<FlowKind> {
+        var set = Set<FlowKind>()
+        if showFlowFreeFlow { set.insert(.freeFlow) }
+        if showFlowModerate { set.insert(.moderate) }
+        if showFlowSlow { set.insert(.slow) }
+        if showFlowCongested { set.insert(.congested) }
+        if showFlowNoData { set.insert(.noData) }
+        return set
+    }
+
+    private func scopedJourneys() -> [TrafficJourney] {
+        let base = store.filteredJourneys(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let allowed = allowedFlowKinds
+        return base.filter { allowed.contains($0.overallFlowKind) }
     }
 
     private func configureAutoRefresh() {
@@ -501,6 +558,7 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case cameras = "Cameras"
     case events = "Road Events"
     case vms = "VMS Signs"
+    case flow = "Traffic Flow"
 
     var id: String {
         rawValue
@@ -514,6 +572,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "Loading road events..."
         case .vms:
             return "Loading VMS signs..."
+        case .flow:
+            return "Loading travel times..."
         }
     }
 
@@ -525,6 +585,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No road events found matching your filters"
         case .vms:
             return "No VMS signs found matching your filters"
+        case .flow:
+            return "No journeys found matching your filters"
         }
     }
 
@@ -536,6 +598,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No filtered road events have usable map coordinates"
         case .vms:
             return "No filtered VMS signs have usable map coordinates"
+        case .flow:
+            return "No filtered journey legs have usable geometry"
         }
     }
 }
@@ -544,12 +608,15 @@ struct TrafficMapTabView: View {
     let cameras: [TrafficCamera]
     let events: [RoadEvent]
     let vmsSigns: [VMSSign]
+    let journeys: [TrafficJourney]
     let camerasLoading: Bool
     let eventsLoading: Bool
     let vmsLoading: Bool
+    let journeysLoading: Bool
     let cameraErrorMessage: String?
     let eventErrorMessage: String?
     let vmsErrorMessage: String?
+    let journeyErrorMessage: String?
     @Binding var position: MapCameraPosition
     @Binding var visibleSpan: MKCoordinateSpan
     @Binding var selectedLayer: TrafficMapLayer
@@ -580,7 +647,32 @@ struct TrafficMapTabView: View {
                 }
                 return .vms(sign, coordinate)
             }
+        case .flow:
+            return []
         }
+    }
+
+    private var flowLegs: [FlowLegOverlay] {
+        guard selectedLayer == .flow else {
+            return []
+        }
+        var overlays: [FlowLegOverlay] = []
+        for journey in journeys {
+            for leg in journey.legs {
+                guard !leg.polylineLatitudes.isEmpty else {
+                    continue
+                }
+                let key = "\(journey.id)|\(leg.id)"
+                overlays.append(
+                    FlowLegOverlay(
+                        id: key,
+                        coordinates: leg.polyline,
+                        flowKind: leg.flowKind
+                    )
+                )
+            }
+        }
+        return overlays
     }
 
     private var totalCount: Int {
@@ -591,11 +683,18 @@ struct TrafficMapTabView: View {
             return events.count
         case .vms:
             return vmsSigns.count
+        case .flow:
+            return journeys.count
         }
     }
 
-    private var unmappedCount: Int {
-        totalCount - features.count
+    private var hasMapContent: Bool {
+        switch selectedLayer {
+        case .cameras, .events, .vms:
+            return !features.isEmpty
+        case .flow:
+            return !flowLegs.isEmpty
+        }
     }
 
     private var isLoading: Bool {
@@ -606,6 +705,8 @@ struct TrafficMapTabView: View {
             return eventsLoading
         case .vms:
             return vmsLoading
+        case .flow:
+            return journeysLoading
         }
     }
 
@@ -617,6 +718,8 @@ struct TrafficMapTabView: View {
             return eventErrorMessage
         case .vms:
             return vmsErrorMessage
+        case .flow:
+            return journeyErrorMessage
         }
     }
 
@@ -633,26 +736,33 @@ struct TrafficMapTabView: View {
                 LoadingView(title: selectedLayer.loadingTitle)
             } else if totalCount == 0 {
                 EmptyStateView(systemImage: "map", title: selectedLayer.emptyTitle)
-            } else if features.isEmpty {
+            } else if !hasMapContent {
                 EmptyStateView(systemImage: "location.slash", title: selectedLayer.noCoordinatesTitle)
             } else {
                 Map(position: $position) {
-                    ForEach(mapItems) { item in
-                        switch item {
-                        case .single(let feature):
-                            Annotation(feature.title, coordinate: feature.coordinate, anchor: .bottom) {
-                                TrafficMapMarker(feature: feature) {
-                                    select(feature)
+                    if selectedLayer == .flow {
+                        ForEach(flowLegs) { leg in
+                            MapPolyline(coordinates: leg.coordinates)
+                                .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        }
+                    } else {
+                        ForEach(mapItems) { item in
+                            switch item {
+                            case .single(let feature):
+                                Annotation(feature.title, coordinate: feature.coordinate, anchor: .bottom) {
+                                    TrafficMapMarker(feature: feature) {
+                                        select(feature)
+                                    }
                                 }
-                            }
-                        case .cluster(_, let coordinate, let members):
-                            Annotation(
-                                "\(members.count) \(selectedLayer.rawValue.lowercased())",
-                                coordinate: coordinate,
-                                anchor: .center
-                            ) {
-                                TrafficMapClusterMarker(count: members.count, layer: selectedLayer) {
-                                    zoomIn(toCluster: members)
+                            case .cluster(_, let coordinate, let members):
+                                Annotation(
+                                    "\(members.count) \(selectedLayer.rawValue.lowercased())",
+                                    coordinate: coordinate,
+                                    anchor: .center
+                                ) {
+                                    TrafficMapClusterMarker(count: members.count, layer: selectedLayer) {
+                                        zoomIn(toCluster: members)
+                                    }
                                 }
                             }
                         }
@@ -822,6 +932,12 @@ private enum TrafficMapFeature: Identifiable {
     }
 }
 
+private struct FlowLegOverlay: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let flowKind: FlowKind
+}
+
 private enum TrafficMapItem: Identifiable {
     case single(TrafficMapFeature)
     case cluster(id: String, coordinate: CLLocationCoordinate2D, members: [TrafficMapFeature])
@@ -972,6 +1088,8 @@ private extension TrafficMapLayer {
             return .red
         case .vms:
             return .indigo
+        case .flow:
+            return .blue
         }
     }
 }
@@ -1089,6 +1207,233 @@ struct VMSTabView: View {
             }
             .padding(24)
         }
+    }
+}
+
+struct TravelTimesTabView: View {
+    let journeys: [TrafficJourney]
+    let isLoading: Bool
+    let errorMessage: String?
+
+    private var liveJourneyCount: Int {
+        journeys.filter(\.hasLiveData).count
+    }
+
+    private var slowJourneyCount: Int {
+        journeys.filter { journey in
+            journey.overallFlowKind == .slow || journey.overallFlowKind == .congested
+        }.count
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if let errorMessage {
+                    ErrorBanner(message: errorMessage)
+                }
+
+                if isLoading && journeys.isEmpty {
+                    LoadingView(title: "Loading travel times...")
+                } else if journeys.isEmpty {
+                    EmptyStateView(
+                        systemImage: "speedometer",
+                        title: "No journeys match your filters"
+                    )
+                } else {
+                    StatsRow(stats: [
+                        StatItem(title: "Total Journeys", value: "\(journeys.count)", tint: .black),
+                        StatItem(title: "With Live Data", value: "\(liveJourneyCount)", tint: .blue),
+                        StatItem(title: "Slow / Congested", value: "\(slowJourneyCount)", tint: .orange)
+                    ])
+
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(journeys) { journey in
+                            JourneyCard(journey: journey)
+                        }
+                    }
+                }
+            }
+            .padding(24)
+        }
+    }
+}
+
+struct JourneyCard: View {
+    let journey: TrafficJourney
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(journey.displayName)
+                    .font(.headline)
+
+                Spacer()
+
+                if let region = journey.regionName {
+                    Badge(text: region, tint: .black)
+                }
+
+                Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+
+            if let summary = summaryLine {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
+            } else {
+                Spacer().frame(height: 10)
+            }
+
+            if !journey.legs.isEmpty {
+                Divider()
+                ForEach(Array(journey.legs.enumerated()), id: \.offset) { index, leg in
+                    JourneyLegRow(leg: leg)
+                    if index < journey.legs.count - 1 {
+                        Divider()
+                    }
+                }
+            } else {
+                Text("No leg data available")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    private var summaryLine: String? {
+        var parts: [String] = []
+        if let current = journey.totalCurrentTime {
+            parts.append("Now \(formatTimeInterval(current))")
+        }
+        if let free = journey.totalFreeFlowTime {
+            parts.append("Free flow \(formatTimeInterval(free))")
+        }
+        if let delay = journey.congestionDelay, delay > 0 {
+            parts.append("Delay +\(formatTimeInterval(delay))")
+        }
+        if let avgSpeed = journey.averageSpeed {
+            parts.append("Avg \(Int(avgSpeed.rounded())) km/h")
+        }
+        if let length = journey.totalLength, length > 0 {
+            parts.append(String(format: "%.1f km total", length))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+    }
+}
+
+struct JourneyLegRow: View {
+    let leg: TrafficJourneyLeg
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(leg.flowKind.color)
+                .frame(width: 10, height: 10)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: directionIcon)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(leg.name ?? "Leg")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                }
+                if let detail = detailLine {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 14) {
+                if let speed = leg.speed, speed > 0 {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("\(Int(speed.rounded()))")
+                            .font(.callout.monospacedDigit())
+                        Text("km/h")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let timeText = currentTimeText {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(timeText)
+                            .font(.callout.monospacedDigit().weight(.medium))
+                        if let freeText = freeFlowText {
+                            Text("free \(freeText)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minWidth: 56, alignment: .trailing)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var directionIcon: String {
+        switch leg.direction?.uppercased() {
+        case "I":
+            return "arrow.up.right"
+        case "D":
+            return "arrow.down.left"
+        default:
+            return "arrow.left.and.right"
+        }
+    }
+
+    private var detailLine: String? {
+        var parts: [String] = []
+        if let direction = leg.direction, !direction.isEmpty {
+            switch direction.uppercased() {
+            case "I":
+                parts.append("Increasing")
+            case "D":
+                parts.append("Decreasing")
+            default:
+                parts.append(direction)
+            }
+        }
+        if let length = leg.totalLength, length > 0 {
+            parts.append(String(format: "%.1f km", length))
+        }
+        if let limit = leg.effectiveSpeedLimit, limit > 0 {
+            parts.append("limit \(Int(limit.rounded())) km/h")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var currentTimeText: String? {
+        guard let seconds = leg.currentTimeSeconds else {
+            return nil
+        }
+        return formatTimeInterval(seconds)
+    }
+
+    private var freeFlowText: String? {
+        guard let seconds = leg.freeFlowTime, seconds > 0 else {
+            return nil
+        }
+        return formatTimeInterval(seconds)
     }
 }
 
@@ -1669,6 +2014,44 @@ struct CameraStatusFilterRow: View {
             FilterChip(label: "Online", tint: .green, isOn: $showOnline)
             FilterChip(label: "Offline", tint: .red, isOn: $showOffline)
             FilterChip(label: "Maintenance", tint: .orange, isOn: $showMaintenance)
+        }
+    }
+}
+
+struct FlowFilterRow: View {
+    @Binding var showFreeFlow: Bool
+    @Binding var showModerate: Bool
+    @Binding var showSlow: Bool
+    @Binding var showCongested: Bool
+    @Binding var showNoData: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Show")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            FilterChip(label: "Free Flow", tint: .green, isOn: $showFreeFlow)
+            FilterChip(label: "Moderate", tint: .yellow, isOn: $showModerate)
+            FilterChip(label: "Slow", tint: .orange, isOn: $showSlow)
+            FilterChip(label: "Congested", tint: .red, isOn: $showCongested)
+            FilterChip(label: "No Data", tint: .gray, isOn: $showNoData)
+        }
+    }
+}
+
+extension FlowKind {
+    var color: Color {
+        switch self {
+        case .freeFlow:
+            return .green
+        case .moderate:
+            return .yellow
+        case .slow:
+            return .orange
+        case .congested:
+            return .red
+        case .noData:
+            return .gray
         }
     }
 }

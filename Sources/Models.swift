@@ -843,6 +843,379 @@ func computeImpactKind(impact: String?) -> EventImpactKind {
     return .other
 }
 
+enum FlowKind: String, CaseIterable, Identifiable, Hashable {
+    case freeFlow
+    case moderate
+    case slow
+    case congested
+    case noData
+
+    var id: String {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .freeFlow:
+            return "Free Flow"
+        case .moderate:
+            return "Moderate"
+        case .slow:
+            return "Slow"
+        case .congested:
+            return "Congested"
+        case .noData:
+            return "No Data"
+        }
+    }
+}
+
+func computeFlowKind(flow: Double?, coverage: Double?) -> FlowKind {
+    guard let coverage, coverage > 0,
+          let flow, flow >= 0 else {
+        return .noData
+    }
+    if flow >= 0.85 {
+        return .freeFlow
+    }
+    if flow >= 0.60 {
+        return .moderate
+    }
+    if flow >= 0.35 {
+        return .slow
+    }
+    return .congested
+}
+
+func parseWKTLineStringCoords(_ wkt: String?) -> (latitudes: [Double], longitudes: [Double]) {
+    guard let wkt = cleanText(wkt), !wkt.isEmpty else {
+        return ([], [])
+    }
+    let pattern = #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return ([], [])
+    }
+    let source = wkt as NSString
+    let matches = regex.matches(in: wkt, range: NSRange(location: 0, length: source.length))
+    var latitudes: [Double] = []
+    var longitudes: [Double] = []
+    latitudes.reserveCapacity(matches.count)
+    longitudes.reserveCapacity(matches.count)
+    for match in matches where match.numberOfRanges >= 3 {
+        guard let longitude = Double(source.substring(with: match.range(at: 1))),
+              let latitude = Double(source.substring(with: match.range(at: 2))),
+              latitude.isFinite, longitude.isFinite,
+              (-90.0...90.0).contains(latitude),
+              (-180.0...180.0).contains(longitude),
+              !(latitude == 0 && longitude == 0) else {
+            continue
+        }
+        latitudes.append(latitude)
+        longitudes.append(longitude)
+    }
+    return (latitudes, longitudes)
+}
+
+func parseTimeIntervalString(_ raw: String?) -> TimeInterval? {
+    guard let raw = cleanText(raw) else {
+        return nil
+    }
+    let parts = raw.split(separator: ":")
+    guard parts.count == 3,
+          let hours = Int(parts[0]),
+          let minutes = Int(parts[1]),
+          let seconds = Int(parts[2]) else {
+        return nil
+    }
+    return TimeInterval(hours * 3600 + minutes * 60 + seconds)
+}
+
+func formatTimeInterval(_ interval: TimeInterval) -> String {
+    let total = max(0, Int(interval.rounded()))
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let seconds = total % 60
+    if hours > 0 {
+        return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+    }
+    return String(format: "%d:%02d", minutes, seconds)
+}
+
+private func decodeFirstRegion<K>(container: KeyedDecodingContainer<K>, key: K) -> Region? where K: CodingKey {
+    if let single = try? container.decodeIfPresent(Region.self, forKey: key) {
+        return single
+    }
+    if let array = try? container.decodeIfPresent([Region].self, forKey: key) {
+        return array.first
+    }
+    return nil
+}
+
+private func decodeFirstWay<K>(container: KeyedDecodingContainer<K>, key: K) -> Way? where K: CodingKey {
+    if let single = try? container.decodeIfPresent(Way.self, forKey: key) {
+        return single
+    }
+    if let array = try? container.decodeIfPresent([Way].self, forKey: key) {
+        return array.first
+    }
+    return nil
+}
+
+struct TrafficJourney: Decodable, Identifiable {
+    let id: String
+    let rawId: String?
+    let name: String?
+    let totalLength: Double?
+    let regionInfo: Region?
+    let wayInfo: Way?
+    let legs: [TrafficJourneyLeg]
+    let highwayHaystack: String
+    let searchHaystack: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedId = container.decodeLossyString(forKey: .id)
+        let nameValue = cleanText(container.decodeLossyString(forKey: .name))
+        let totalLengthValue = container.decodeLossyDouble(forKey: .totalLength)
+        let regionValue = decodeFirstRegion(container: container, key: .regions)
+        let wayValue = decodeFirstWay(container: container, key: .ways)
+        let legsValue = container.decodeFlexibleArray(TrafficJourneyLeg.self, forKey: .legs)
+
+        rawId = decodedId
+        id = deterministicID(
+            decodedId: decodedId,
+            fallback: [nameValue, regionValue?.name],
+            typeTag: "journey"
+        )
+        name = nameValue
+        totalLength = totalLengthValue
+        regionInfo = regionValue
+        wayInfo = wayValue
+        legs = legsValue
+
+        var legNames: [String?] = []
+        legNames.reserveCapacity(legsValue.count)
+        for leg in legsValue {
+            legNames.append(leg.name)
+        }
+
+        highwayHaystack = searchableHaystack([
+            nameValue,
+            wayValue?.name
+        ] + legNames)
+        searchHaystack = searchableHaystack([
+            nameValue,
+            regionValue?.name,
+            wayValue?.name
+        ] + legNames)
+    }
+
+    var displayName: String {
+        name ?? "Journey"
+    }
+
+    var regionName: String? {
+        regionInfo?.name
+    }
+
+    var hasLiveData: Bool {
+        legs.contains(where: \.hasLiveData)
+    }
+
+    var totalCurrentTime: TimeInterval? {
+        let times = legs.compactMap(\.currentTimeSeconds).filter { $0 > 0 }
+        guard !times.isEmpty else {
+            return nil
+        }
+        return times.reduce(0, +)
+    }
+
+    var totalFreeFlowTime: TimeInterval? {
+        let times = legs.compactMap(\.freeFlowTime).filter { $0 > 0 }
+        guard !times.isEmpty else {
+            return nil
+        }
+        return times.reduce(0, +)
+    }
+
+    var congestionDelay: TimeInterval? {
+        guard let current = totalCurrentTime,
+              let free = totalFreeFlowTime else {
+            return nil
+        }
+        return max(0, current - free)
+    }
+
+    var overallFlowKind: FlowKind {
+        var weightedSum = 0.0
+        var totalWeight = 0.0
+        for leg in legs {
+            guard let flow = leg.flow, flow >= 0,
+                  let coverage = leg.coverage, coverage > 0,
+                  let length = leg.totalLength, length > 0 else {
+                continue
+            }
+            weightedSum += flow * length
+            totalWeight += length
+        }
+        guard totalWeight > 0 else {
+            return .noData
+        }
+        return computeFlowKind(flow: weightedSum / totalWeight, coverage: 1.0)
+    }
+
+    var averageSpeed: Double? {
+        var weightedSum = 0.0
+        var totalWeight = 0.0
+        for leg in legs {
+            guard let speed = leg.speed, speed > 0,
+                  let length = leg.totalLength, length > 0 else {
+                continue
+            }
+            weightedSum += speed * length
+            totalWeight += length
+        }
+        guard totalWeight > 0 else {
+            return nil
+        }
+        return weightedSum / totalWeight
+    }
+
+    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
+        matchesRegion(regionName, selectedRegion: selectedRegion)
+            && matchesNeedle(selectedHighway, in: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case totalLength
+        case regions
+        case ways
+        case legs
+    }
+}
+
+struct TrafficJourneyLeg: Decodable, Identifiable {
+    let id: String
+    let name: String?
+    let totalLength: Double?
+    let speed: Double?
+    let flow: Double?
+    let time: String?
+    let freeFlowTime: Double?
+    let coverage: Double?
+    let direction: String?
+    let sequenceNumber: Int?
+    let effectiveSpeedLimit: Double?
+    let way: Way?
+    let polylineLatitudes: [Double]
+    let polylineLongitudes: [Double]
+    let flowKind: FlowKind
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let nameValue = cleanText(container.decodeLossyString(forKey: .name))
+        let geometryValue = cleanText(container.decodeLossyString(forKey: .geometry))
+        let speedValue = container.decodeLossyDouble(forKey: .speed)
+        let flowValue = container.decodeLossyDouble(forKey: .flow)
+        let timeValue = cleanText(container.decodeLossyString(forKey: .time))
+        let freeFlowValue = container.decodeLossyDouble(forKey: .freeFlowTime)
+        let coverageValue = container.decodeLossyDouble(forKey: .coverage)
+        let directionValue = cleanText(container.decodeLossyString(forKey: .direction))
+        let sequenceValue = container.decodeLossyInt(forKey: .sequenceNumber)
+        let speedLimitValue = container.decodeLossyDouble(forKey: .effectiveSpeedLimit)
+        let totalLengthValue = container.decodeLossyDouble(forKey: .totalLength)
+        let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
+
+        let coords = parseWKTLineStringCoords(geometryValue)
+        polylineLatitudes = coords.latitudes
+        polylineLongitudes = coords.longitudes
+
+        name = nameValue
+        totalLength = totalLengthValue
+        speed = speedValue
+        flow = flowValue
+        time = timeValue
+        freeFlowTime = freeFlowValue
+        coverage = coverageValue
+        direction = directionValue
+        sequenceNumber = sequenceValue
+        effectiveSpeedLimit = speedLimitValue
+        way = wayValue
+        flowKind = computeFlowKind(flow: flowValue, coverage: coverageValue)
+
+        let sequenceTag = sequenceValue.map { String($0) } ?? "?"
+        let nameTag = nameValue ?? wayValue?.name ?? "leg"
+        id = "leg|\(nameTag)|\(sequenceTag)"
+    }
+
+    var hasLiveData: Bool {
+        if let coverage = coverage, coverage > 0 {
+            return true
+        }
+        if let speed = speed, speed > 0 {
+            return true
+        }
+        if let flow = flow, flow > 0 {
+            return true
+        }
+        return false
+    }
+
+    var currentTimeSeconds: TimeInterval? {
+        guard let value = parseTimeIntervalString(time), value > 0 else {
+            return nil
+        }
+        return value
+    }
+
+    var polyline: [CLLocationCoordinate2D] {
+        guard polylineLatitudes.count == polylineLongitudes.count, !polylineLatitudes.isEmpty else {
+            return []
+        }
+        var result: [CLLocationCoordinate2D] = []
+        result.reserveCapacity(polylineLatitudes.count)
+        for index in 0..<polylineLatitudes.count {
+            result.append(CLLocationCoordinate2D(latitude: polylineLatitudes[index], longitude: polylineLongitudes[index]))
+        }
+        return result
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case geometry
+        case totalLength
+        case speed
+        case flow
+        case time
+        case freeFlowTime
+        case coverage
+        case direction
+        case sequenceNumber
+        case effectiveSpeedLimit
+        case way
+    }
+}
+
+struct JourneysPayload: Decodable {
+    let response: JourneysResponse
+}
+
+struct JourneysResponse: Decodable {
+    let journey: [TrafficJourney]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        journey = container.decodeFlexibleArray(TrafficJourney.self, forKey: .journey)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case journey
+    }
+}
+
 extension KeyedDecodingContainer {
     func decodeFlexibleArray<T: Decodable>(_ type: T.Type, forKey key: Key) -> [T] {
         if let array = try? decodeIfPresent([T].self, forKey: key) {
