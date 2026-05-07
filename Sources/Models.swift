@@ -82,30 +82,67 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let highwayHaystack: String
+    let searchHaystack: String
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decodedId = container.decodeLossyString(forKey: .id)
+        let nameValue = cleanText(container.decodeLossyString(forKey: .name))
+        let descriptionValue = cleanText(container.decodeLossyString(forKey: .description))
+        let directionValue = cleanText(container.decodeLossyString(forKey: .direction))
+        let highwayValue = cleanText(container.decodeLossyString(forKey: .highway))
+        let imageUrlValue = cleanText(container.decodeLossyString(forKey: .imageUrl))
+        let thumbUrlValue = cleanText(container.decodeLossyString(forKey: .thumbUrl))
+        let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
+        let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
+        let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
+        let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
 
         rawId = decodedId
-        id = decodedId ?? container.decodeLossyString(forKey: .imageUrl) ?? UUID().uuidString
-        name = cleanText(container.decodeLossyString(forKey: .name))
-        description = cleanText(container.decodeLossyString(forKey: .description))
-        direction = cleanText(container.decodeLossyString(forKey: .direction))
+        id = deterministicID(
+            decodedId: decodedId,
+            fallback: [
+                imageUrlValue,
+                thumbUrlValue,
+                nameValue,
+                latitudeValue.map { String($0) },
+                longitudeValue.map { String($0) }
+            ],
+            typeTag: "camera"
+        )
+        name = nameValue
+        description = descriptionValue
+        direction = directionValue
         group = cleanText(container.decodeLossyString(forKey: .group))
-        highway = cleanText(container.decodeLossyString(forKey: .highway))
-        imageUrl = cleanText(container.decodeLossyString(forKey: .imageUrl))
-        thumbUrl = cleanText(container.decodeLossyString(forKey: .thumbUrl))
+        highway = highwayValue
+        imageUrl = imageUrlValue
+        thumbUrl = thumbUrlValue
         viewUrl = cleanText(container.decodeLossyString(forKey: .viewUrl))
-        latitude = container.decodeLossyDouble(forKey: .latitude)
-        longitude = container.decodeLossyDouble(forKey: .longitude)
+        latitude = latitudeValue
+        longitude = longitudeValue
         offline = container.decodeLossyBool(forKey: .offline) ?? false
         underMaintenance = container.decodeLossyBool(forKey: .underMaintenance) ?? false
         sortOrder = container.decodeLossyInt(forKey: .sortOrder)
-        region = try? container.decodeIfPresent(Region.self, forKey: .region)
-        journey = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        region = regionValue
+        journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
-        way = try? container.decodeIfPresent(Way.self, forKey: .way)
+        way = wayValue
+        highwayHaystack = searchableHaystack([
+            highwayValue,
+            journeyValue?.name,
+            wayValue?.name,
+            nameValue,
+            descriptionValue
+        ])
+        searchHaystack = searchableHaystack([
+            nameValue,
+            descriptionValue,
+            highwayValue,
+            directionValue,
+            regionValue?.name
+        ])
     }
 
     var displayName: String {
@@ -139,20 +176,8 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
 
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
         matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesHighway(selectedHighway, fields: [
-                highway,
-                journey?.name,
-                way?.name,
-                name,
-                description
-            ])
-            && matchesSearch(search, fields: [
-                name,
-                description,
-                highway,
-                direction,
-                region?.name
-            ])
+            && matchesNeedle(selectedHighway, in: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -204,37 +229,94 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let geometryLatitude: Double?
+    let geometryLongitude: Double?
+    let severityRank: Int
+    let highwayHaystack: String
+    let searchHaystack: String
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decodedId = container.decodeLossyString(forKey: .id)
+        let alternativeRouteValue = cleanText(container.decodeLossyString(forKey: .alternativeRoute))
+        let eventCommentsValue = cleanText(container.decodeLossyString(forKey: .eventComments))
+        let eventDescriptionValue = cleanText(container.decodeLossyString(forKey: .eventDescription))
+        let eventTypeValue = cleanText(container.decodeLossyString(forKey: .eventType))
+        let geometryValue = cleanText(container.decodeLossyString(forKey: .geometry))
+        let impactValue = cleanText(container.decodeLossyString(forKey: .impact))
+        let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
+        let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
+        let locationAreaValue = cleanText(container.decodeLossyString(forKey: .locationArea))
+        let locationsValue = cleanText(container.decodeLossyString(forKey: .locations))
+        let startDateValue = cleanText(container.decodeLossyString(forKey: .startDate))
+        let eventCreatedValue = cleanText(container.decodeLossyString(forKey: .eventCreated))
+        let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
+        let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
 
         rawId = decodedId
-        id = decodedId ?? UUID().uuidString
-        alternativeRoute = cleanText(container.decodeLossyString(forKey: .alternativeRoute))
+        id = deterministicID(
+            decodedId: decodedId,
+            fallback: [
+                eventDescriptionValue,
+                locationsValue,
+                locationAreaValue,
+                startDateValue,
+                eventCreatedValue,
+                latitudeValue.map { String($0) },
+                longitudeValue.map { String($0) }
+            ],
+            typeTag: "event"
+        )
+        alternativeRoute = alternativeRouteValue
         endDate = cleanText(container.decodeLossyString(forKey: .endDate))
-        eventComments = cleanText(container.decodeLossyString(forKey: .eventComments))
-        eventCreated = cleanText(container.decodeLossyString(forKey: .eventCreated))
-        eventDescription = cleanText(container.decodeLossyString(forKey: .eventDescription))
+        eventComments = eventCommentsValue
+        eventCreated = eventCreatedValue
+        eventDescription = eventDescriptionValue
         eventIsland = cleanText(container.decodeLossyString(forKey: .eventIsland))
         eventModified = cleanText(container.decodeLossyString(forKey: .eventModified))
-        eventType = cleanText(container.decodeLossyString(forKey: .eventType))
+        eventType = eventTypeValue
         expectedResolution = cleanText(container.decodeLossyString(forKey: .expectedResolution))
-        geometry = cleanText(container.decodeLossyString(forKey: .geometry))
-        impact = cleanText(container.decodeLossyString(forKey: .impact))
+        geometry = geometryValue
+        impact = impactValue
         informationSource = cleanText(container.decodeLossyString(forKey: .informationSource))
-        latitude = container.decodeLossyDouble(forKey: .latitude)
-        longitude = container.decodeLossyDouble(forKey: .longitude)
-        locationArea = cleanText(container.decodeLossyString(forKey: .locationArea))
-        locations = cleanText(container.decodeLossyString(forKey: .locations))
+        latitude = latitudeValue
+        longitude = longitudeValue
+        locationArea = locationAreaValue
+        locations = locationsValue
         planned = container.decodeLossyBool(forKey: .planned)
         status = cleanText(container.decodeLossyString(forKey: .status))
         supplier = cleanText(container.decodeLossyString(forKey: .supplier))
-        startDate = cleanText(container.decodeLossyString(forKey: .startDate))
-        region = try? container.decodeIfPresent(Region.self, forKey: .region)
-        journey = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        startDate = startDateValue
+        region = regionValue
+        journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
-        way = try? container.decodeIfPresent(Way.self, forKey: .way)
+        way = wayValue
+
+        if let parsed = coordinateFromWKTGeometry(geometryValue) {
+            geometryLatitude = parsed.latitude
+            geometryLongitude = parsed.longitude
+        } else {
+            geometryLatitude = nil
+            geometryLongitude = nil
+        }
+        severityRank = computeSeverityRank(impact: impactValue)
+        highwayHaystack = searchableHaystack([
+            journeyValue?.name,
+            wayValue?.name,
+            locationsValue,
+            locationAreaValue,
+            eventDescriptionValue
+        ])
+        searchHaystack = searchableHaystack([
+            locationAreaValue,
+            locationsValue,
+            eventDescriptionValue,
+            eventCommentsValue,
+            alternativeRouteValue,
+            eventTypeValue,
+            regionValue?.name
+        ])
     }
 
     var displayTitle: String {
@@ -255,24 +337,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
 
     var mapCoordinate: CLLocationCoordinate2D? {
         validatedCoordinate(latitude: latitude, longitude: longitude)
-            ?? coordinateFromWKTGeometry(geometry)
-    }
-
-    var severityRank: Int {
-        guard let impact else {
-            return 99
-        }
-
-        if impact.range(of: "closed", options: .caseInsensitive) != nil {
-            return 0
-        }
-        if impact.range(of: "delay", options: .caseInsensitive) != nil {
-            return 1
-        }
-        if impact.range(of: "caution", options: .caseInsensitive) != nil {
-            return 2
-        }
-        return 50
+            ?? validatedCoordinate(latitude: geometryLatitude, longitude: geometryLongitude)
     }
 
     var alternativeRouteText: String? {
@@ -288,22 +353,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
 
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
         matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesHighway(selectedHighway, fields: [
-                journey?.name,
-                way?.name,
-                locations,
-                locationArea,
-                eventDescription
-            ])
-            && matchesSearch(search, fields: [
-                locationArea,
-                locations,
-                eventDescription,
-                eventComments,
-                alternativeRoute,
-                eventType,
-                region?.name
-            ])
+            && matchesNeedle(selectedHighway, in: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -351,26 +402,64 @@ struct VMSSign: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let formattedMessage: String
+    let hasDisplayMessage: Bool
+    let highwayHaystack: String
+    let searchHaystack: String
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decodedId = container.decodeLossyString(forKey: .id)
+        let identifierValue = cleanText(container.decodeLossyString(forKey: .identifier))
+        let currentMessageValue = cleanText(container.decodeLossyString(forKey: .currentMessage))
+        let descriptionValue = cleanText(container.decodeLossyString(forKey: .description))
+        let nameValue = cleanText(container.decodeLossyString(forKey: .name))
+        let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
+        let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
+        let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
+        let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
 
         rawId = decodedId
-        id = decodedId ?? container.decodeLossyString(forKey: .identifier) ?? UUID().uuidString
-        currentMessage = cleanText(container.decodeLossyString(forKey: .currentMessage))
-        description = cleanText(container.decodeLossyString(forKey: .description))
+        id = deterministicID(
+            decodedId: decodedId ?? identifierValue,
+            fallback: [
+                nameValue,
+                descriptionValue,
+                latitudeValue.map { String($0) },
+                longitudeValue.map { String($0) }
+            ],
+            typeTag: "vms"
+        )
+        currentMessage = currentMessageValue
+        description = descriptionValue
         direction = cleanText(container.decodeLossyString(forKey: .direction))
-        identifier = cleanText(container.decodeLossyString(forKey: .identifier))
+        identifier = identifierValue
         lastMessageUpdate = cleanText(container.decodeLossyString(forKey: .lastMessageUpdate))
         lastUpdate = cleanText(container.decodeLossyString(forKey: .lastUpdate))
-        latitude = container.decodeLossyDouble(forKey: .latitude)
-        longitude = container.decodeLossyDouble(forKey: .longitude)
-        name = cleanText(container.decodeLossyString(forKey: .name))
-        region = try? container.decodeIfPresent(Region.self, forKey: .region)
-        journey = try? container.decodeIfPresent(Journey.self, forKey: .journey)
+        latitude = latitudeValue
+        longitude = longitudeValue
+        name = nameValue
+        region = regionValue
+        journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
-        way = try? container.decodeIfPresent(Way.self, forKey: .way)
+        way = wayValue
+
+        let formatted = formatVMSMessage(currentMessageValue)
+        formattedMessage = formatted
+        hasDisplayMessage = formatted.caseInsensitiveCompare("No message") != .orderedSame
+        highwayHaystack = searchableHaystack([
+            journeyValue?.name,
+            wayValue?.name,
+            nameValue,
+            descriptionValue
+        ])
+        searchHaystack = searchableHaystack([
+            nameValue,
+            descriptionValue,
+            formatted,
+            regionValue?.name
+        ])
     }
 
     var displayName: String {
@@ -381,32 +470,14 @@ struct VMSSign: Decodable, Identifiable, Hashable {
         region?.name
     }
 
-    var formattedMessage: String {
-        formatVMSMessage(currentMessage)
-    }
-
-    var hasDisplayMessage: Bool {
-        formattedMessage.caseInsensitiveCompare("No message") != .orderedSame
-    }
-
     var mapCoordinate: CLLocationCoordinate2D? {
         validatedCoordinate(latitude: latitude, longitude: longitude)
     }
 
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
         matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesHighway(selectedHighway, fields: [
-                journey?.name,
-                way?.name,
-                name,
-                description
-            ])
-            && matchesSearch(search, fields: [
-                name,
-                description,
-                formattedMessage,
-                region?.name
-            ])
+            && matchesNeedle(selectedHighway, in: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -608,33 +679,46 @@ func formatVMSMessage(_ message: String?) -> String {
     return cleanText(formatted) ?? "No message"
 }
 
+private let isoFractionalDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+private let isoDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
+
+private let nzInputDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_NZ")
+    formatter.dateFormat = "dd/MM/yyyy HH:mm"
+    return formatter
+}()
+
+private let nzDisplayDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_NZ")
+    formatter.dateFormat = "d MMM, h:mm a"
+    return formatter
+}()
+
 func formatTrafficDate(_ rawValue: String?) -> String? {
     guard let rawValue = cleanText(rawValue) else {
         return nil
     }
 
-    let isoWithFractionalSeconds = ISO8601DateFormatter()
-    isoWithFractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-    let iso = ISO8601DateFormatter()
-    iso.formatOptions = [.withInternetDateTime]
-
-    let dateFormatter = DateFormatter()
-    dateFormatter.locale = Locale(identifier: "en_NZ")
-    dateFormatter.dateFormat = "dd/MM/yyyy HH:mm"
-
-    let date = isoWithFractionalSeconds.date(from: rawValue)
-        ?? iso.date(from: rawValue)
-        ?? dateFormatter.date(from: rawValue)
+    let date = isoFractionalDateFormatter.date(from: rawValue)
+        ?? isoDateFormatter.date(from: rawValue)
+        ?? nzInputDateFormatter.date(from: rawValue)
 
     guard let date else {
         return rawValue
     }
 
-    let displayFormatter = DateFormatter()
-    displayFormatter.locale = Locale(identifier: "en_NZ")
-    displayFormatter.dateFormat = "d MMM, h:mm a"
-    return displayFormatter.string(from: date)
+    return nzDisplayDateFormatter.string(from: date)
 }
 
 func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
@@ -646,30 +730,40 @@ func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
     return (itemRegion ?? "").caseInsensitiveCompare(selected) == .orderedSame
 }
 
-func matchesHighway(_ highway: String, fields: [String?]) -> Bool {
-    let query = highway.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !query.isEmpty else {
-        return true
-    }
-
-    return fields
-        .compactMap(cleanText)
-        .joined(separator: " ")
-        .lowercased()
-        .contains(query)
+func searchableHaystack(_ fields: [String?]) -> String {
+    fields.compactMap(cleanText).joined(separator: " ").lowercased()
 }
 
-func matchesSearch(_ search: String, fields: [String?]) -> Bool {
-    let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+func matchesNeedle(_ needle: String, in haystack: String) -> Bool {
+    let query = needle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !query.isEmpty else {
         return true
     }
+    return haystack.contains(query)
+}
 
-    return fields
-        .compactMap(cleanText)
-        .joined(separator: " ")
-        .lowercased()
-        .contains(query)
+func deterministicID(decodedId: String?, fallback: [String?], typeTag: String) -> String {
+    if let decodedId, !decodedId.isEmpty {
+        return decodedId
+    }
+    let parts = fallback.compactMap(cleanText).filter { !$0.isEmpty }
+    return parts.isEmpty ? "\(typeTag)-noid" : "\(typeTag)|" + parts.joined(separator: "|")
+}
+
+func computeSeverityRank(impact: String?) -> Int {
+    guard let impact else {
+        return 99
+    }
+    if impact.range(of: "closed", options: .caseInsensitive) != nil {
+        return 0
+    }
+    if impact.range(of: "delay", options: .caseInsensitive) != nil {
+        return 1
+    }
+    if impact.range(of: "caution", options: .caseInsensitive) != nil {
+        return 2
+    }
+    return 50
 }
 
 extension KeyedDecodingContainer {

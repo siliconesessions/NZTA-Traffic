@@ -16,6 +16,7 @@ final class TrafficStore: ObservableObject {
     @Published private(set) var cameras: [TrafficCamera] = []
     @Published private(set) var events: [RoadEvent] = []
     @Published private(set) var vmsSigns: [VMSSign] = []
+    @Published private(set) var allRegions: [String] = []
     @Published private(set) var loadingSections: Set<DataSection> = []
     @Published private(set) var errors: [DataSection: String] = [:]
     @Published private(set) var lastUpdated: Date?
@@ -26,13 +27,6 @@ final class TrafficStore: ObservableObject {
 
     init(service: TrafficAPIService = TrafficAPIService()) {
         self.service = service
-    }
-
-    var allRegions: [String] {
-        let names = cameras.compactMap(\.regionName)
-            + events.compactMap(\.regionName)
-            + vmsSigns.compactMap(\.regionName)
-        return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     func isLoading(_ section: DataSection) -> Bool {
@@ -50,10 +44,11 @@ final class TrafficStore: ObservableObject {
 
         let results = await (cameraResult, eventResult, signResult)
 
-        apply(results.0, to: .cameras)
-        apply(results.1, to: .events)
-        apply(results.2, to: .vms)
+        apply(results.0, to: .cameras, keyPath: \.cameras)
+        apply(results.1, to: .events, keyPath: \.events)
+        apply(results.2, to: .vms, keyPath: \.vmsSigns)
 
+        allRegions = computeAllRegions()
         loadingSections = []
         lastUpdated = Date()
         imageCacheToken = Int(Date().timeIntervalSince1970)
@@ -88,34 +83,25 @@ final class TrafficStore: ObservableObject {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    private func apply(_ result: Result<[TrafficCamera], Error>, to section: DataSection) {
+    private func apply<T>(
+        _ result: Result<[T], Error>,
+        to section: DataSection,
+        keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>
+    ) {
         switch result {
         case .success(let value):
-            cameras = value
+            self[keyPath: keyPath] = value
         case .failure(let error):
-            cameras = []
+            self[keyPath: keyPath] = []
             errors[section] = errorMessage(error)
         }
     }
 
-    private func apply(_ result: Result<[RoadEvent], Error>, to section: DataSection) {
-        switch result {
-        case .success(let value):
-            events = value
-        case .failure(let error):
-            events = []
-            errors[section] = errorMessage(error)
-        }
-    }
-
-    private func apply(_ result: Result<[VMSSign], Error>, to section: DataSection) {
-        switch result {
-        case .success(let value):
-            vmsSigns = value
-        case .failure(let error):
-            vmsSigns = []
-            errors[section] = errorMessage(error)
-        }
+    private func computeAllRegions() -> [String] {
+        let names = cameras.compactMap(\.regionName)
+            + events.compactMap(\.regionName)
+            + vmsSigns.compactMap(\.regionName)
+        return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private func errorMessage(_ error: Error) -> String {
