@@ -723,6 +723,67 @@ struct TrafficMapTabView: View {
         }
     }
 
+    private struct MapOverlayInfo {
+        let message: String
+        let icon: String
+        let isLoading: Bool
+    }
+
+    private var mapOverlayInfo: MapOverlayInfo? {
+        if isLoading && totalCount == 0 {
+            return MapOverlayInfo(
+                message: selectedLayer.loadingTitle,
+                icon: "arrow.triangle.2.circlepath",
+                isLoading: true
+            )
+        }
+        if totalCount == 0 {
+            return MapOverlayInfo(
+                message: selectedLayer.emptyTitle,
+                icon: "line.3.horizontal.decrease.circle",
+                isLoading: false
+            )
+        }
+        if !hasMapContent {
+            return MapOverlayInfo(
+                message: selectedLayer.noCoordinatesTitle,
+                icon: "location.slash",
+                isLoading: false
+            )
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var mapStatusOverlay: some View {
+        if let info = mapOverlayInfo {
+            HStack(spacing: 8) {
+                if info.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: info.icon)
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                }
+                Text(info.message)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            .accessibilityLabel(info.message)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let errorMessage {
@@ -732,13 +793,7 @@ struct TrafficMapTabView: View {
                     .padding(.bottom, 8)
             }
 
-            if isLoading && totalCount == 0 {
-                LoadingView(title: selectedLayer.loadingTitle)
-            } else if totalCount == 0 {
-                EmptyStateView(systemImage: "map", title: selectedLayer.emptyTitle)
-            } else if !hasMapContent {
-                EmptyStateView(systemImage: "location.slash", title: selectedLayer.noCoordinatesTitle)
-            } else {
+            ZStack(alignment: .topLeading) {
                 Map(position: $position) {
                     if selectedLayer == .flow {
                         ForEach(flowLegs) { leg in
@@ -776,6 +831,10 @@ struct TrafficMapTabView: View {
                     visibleSpan = context.region.span
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                mapStatusOverlay
+                    .padding(16)
+                    .allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
