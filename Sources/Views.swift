@@ -723,50 +723,50 @@ struct TrafficMapTabView: View {
         }
     }
 
-    private struct MapOverlayInfo {
-        let message: String
-        let icon: String
-        let isLoading: Bool
+    private enum MapOverlayState {
+        case loading(String)
+        case empty(String)
+        case noCoordinates(String)
+
+        var message: String {
+            switch self {
+            case .loading(let text), .empty(let text), .noCoordinates(let text):
+                return text
+            }
+        }
     }
 
-    private var mapOverlayInfo: MapOverlayInfo? {
+    private var mapOverlayState: MapOverlayState? {
         if isLoading && totalCount == 0 {
-            return MapOverlayInfo(
-                message: selectedLayer.loadingTitle,
-                icon: "arrow.triangle.2.circlepath",
-                isLoading: true
-            )
+            return .loading(selectedLayer.loadingTitle)
         }
         if totalCount == 0 {
-            return MapOverlayInfo(
-                message: selectedLayer.emptyTitle,
-                icon: "line.3.horizontal.decrease.circle",
-                isLoading: false
-            )
+            return .empty(selectedLayer.emptyTitle)
         }
         if !hasMapContent {
-            return MapOverlayInfo(
-                message: selectedLayer.noCoordinatesTitle,
-                icon: "location.slash",
-                isLoading: false
-            )
+            return .noCoordinates(selectedLayer.noCoordinatesTitle)
         }
         return nil
     }
 
     @ViewBuilder
     private var mapStatusOverlay: some View {
-        if let info = mapOverlayInfo {
+        if let state = mapOverlayState {
             HStack(spacing: 8) {
-                if info.isLoading {
+                switch state {
+                case .loading:
                     ProgressView()
                         .controlSize(.small)
-                } else {
-                    Image(systemName: info.icon)
+                case .empty:
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                case .noCoordinates:
+                    Image(systemName: "location.slash")
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 }
-                Text(info.message)
+                Text(state.message)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
@@ -780,7 +780,8 @@ struct TrafficMapTabView: View {
                     .stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-            .accessibilityLabel(info.message)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(state.message)
         }
     }
 
