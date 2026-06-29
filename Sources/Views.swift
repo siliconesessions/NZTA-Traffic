@@ -971,6 +971,7 @@ struct TrafficMapTabView: View {
                         }
                     }
                 }
+                .mapStyle(.standard)
                 .mapControls {
                     MapCompass()
                     MapScaleView()
@@ -979,6 +980,13 @@ struct TrafficMapTabView: View {
                     visibleSpan = context.region.span
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    if hasMapContent {
+                        MapLegend(layer: selectedLayer)
+                            .padding(16)
+                            .allowsHitTesting(false)
+                    }
+                }
 
                 mapStatusOverlay
                     .padding(16)
@@ -1224,6 +1232,7 @@ private enum TrafficMapDetail: Identifiable {
 private struct TrafficMapMarker: View {
     let feature: TrafficMapFeature
     let onSelect: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
@@ -1235,15 +1244,23 @@ private struct TrafficMapMarker: View {
 
                 Image(systemName: feature.systemImage)
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(glyphColor)
                     .offset(y: -2)
             }
-            .frame(width: 38, height: 38)
-            .contentShape(Rectangle())
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+            .scaleEffect(isHovered ? 1.15 : 1.0)
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .help("\(feature.title) - \(feature.statusText)")
         .accessibilityLabel("\(feature.title), \(feature.statusText)")
+    }
+
+    // Caution markers are yellow; a white glyph fails contrast on them.
+    private var glyphColor: Color {
+        feature.tint == .yellow ? .black : .white
     }
 }
 
@@ -1263,6 +1280,7 @@ private struct TrafficMapClusterMarker: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .monospacedDigit()
+                    .shadow(color: .black.opacity(0.5), radius: 1.5, y: 0.5)
             }
             .frame(width: diameter, height: diameter)
             .contentShape(Circle())
@@ -1301,6 +1319,45 @@ private extension TrafficMapLayer {
     }
 }
 
+private struct MapLegend: View {
+    let layer: TrafficMapLayer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(items, id: \.label) { item in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(item.color)
+                        .frame(width: 9, height: 9)
+                    Text(item.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var items: [(label: String, color: Color)] {
+        switch layer {
+        case .cameras:
+            return [("Online", .green), ("Maintenance", .orange), ("Offline", .red)]
+        case .events:
+            return [("Closure", .red), ("Delays", .orange), ("Caution", .yellow), ("Other", .gray)]
+        case .vms:
+            return [("Message", .blue), ("No message", .gray)]
+        case .flow:
+            return FlowKind.allCases.map { ($0.label, $0.color) }
+        }
+    }
+}
+
 private struct TrafficMapDetailView: View {
     let detail: TrafficMapDetail
     @Environment(\.dismiss) private var dismiss
@@ -1327,7 +1384,10 @@ private struct TrafficMapDetailView: View {
             }
         }
         .padding(20)
-        .frame(width: 720, height: 520)
+        .frame(
+            minWidth: 600, idealWidth: 720, maxWidth: 900,
+            minHeight: 400, idealHeight: 520, maxHeight: 760
+        )
     }
 
     private var title: String {
