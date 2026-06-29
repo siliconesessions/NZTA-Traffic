@@ -60,6 +60,11 @@ final class TrafficStore {
         return max(0, min(1, (total - remaining) / total))
     }
 
+    /// Count of high-priority events (road closures) — surfaced as a Dock badge.
+    var criticalAlertCount: Int {
+        events.filter(\.isClosure).count
+    }
+
     /// Loads all sections concurrently.
     /// - Parameter bustImageCache: when `true` (an explicit user refresh) the
     ///   image cache token is bumped so camera image URLs change and bypass the
@@ -172,6 +177,29 @@ final class TrafficStore {
             }
         journeyCache[key] = result
         return result
+    }
+
+    // Fully-scoped slices: region/highway/search filtering (memoized above)
+    // plus the per-section visibility flags the UI toggles. Keeping the whole
+    // filter pipeline here matches "filtering lives in the store".
+    func scopedCameras(region: String, highway: String, search: String, statuses: Set<CameraStatusKind>) -> [TrafficCamera] {
+        filteredCameras(region: region, highway: highway, search: search)
+            .filter { statuses.contains($0.statusKind) }
+    }
+
+    func scopedEvents(region: String, highway: String, search: String, impacts: Set<EventImpactKind>) -> [RoadEvent] {
+        filteredEvents(region: region, highway: highway, search: search)
+            .filter { impacts.contains($0.impactKind) }
+    }
+
+    func scopedVMSSigns(region: String, highway: String, search: String, hideEmpty: Bool) -> [VMSSign] {
+        let base = filteredVMSSigns(region: region, highway: highway, search: search)
+        return hideEmpty ? base.filter(\.hasDisplayMessage) : base
+    }
+
+    func scopedJourneys(region: String, highway: String, search: String, flows: Set<FlowKind>) -> [TrafficJourney] {
+        filteredJourneys(region: region, highway: highway, search: search)
+            .filter { flows.contains($0.overallFlowKind) }
     }
 
     private func apply<T>(

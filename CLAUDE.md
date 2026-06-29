@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Native SwiftUI macOS app (10.15+ deployment target is **15.0**) for live NZ Transport Agency traffic cameras, road events, and VMS signs. No tests, no package manager, no analytics, no backend — just `swiftc` against the macOS SDK plus an Xcode project that points at the same sources.
+Native SwiftUI macOS app (10.15+ deployment target is **15.0**) for live NZ Transport Agency traffic cameras, road events, VMS signs, and travel times. No package manager, no analytics, no backend — just `swiftc` against the macOS SDK plus an Xcode project that points at the same sources. Model-layer unit tests run via `./run_tests.sh` (a standalone swiftc executable, no SwiftPM/XCTest).
 
 ## Build / run
 
@@ -23,15 +23,20 @@ xcodebuild -project NZTATraffic.xcodeproj -scheme "NZTA Traffic" -configuration 
 
 Run the built app: `open "build/NZTA Traffic.app"`.
 
+### Tests
+
+`./run_tests.sh` compiles `Sources/Models.swift` plus `Tests/*.swift` into a standalone executable and runs it (exits non-zero on failure). Tests cover the pure model logic only — lossy decoders, coordinate validation, WKT parsing, VMS message formatting, NZ date formatting, and `matches(region:highway:search:)`. They deliberately avoid SwiftPM/XCTest and do **not** compile the SwiftUI layer, so keep `Models.swift` free of `SwiftUI`/`AppKit` imports. `Tests/` is not part of either app build path; new test files must be added to the `swiftc` invocation in `run_tests.sh`.
+
 ## Architecture
 
-Five Swift files under `Sources/`, organized by layer not feature:
+Six Swift files under `Sources/`, organized by layer not feature:
 
-- `NZTATrafficApp.swift` — `@main` entry, `WindowGroup` + secondary `Window(id: "help")`, and `NZTATrafficCommands` which replaces the standard About panel and Help menu items.
-- `TrafficAPIService.swift` — thin `URLSession` wrapper over three NZTA REST v4 endpoints (`/cameras/all`, `/events/all/10`, `/signs/vms/all`) at `https://trafficnz.info/service/traffic/rest/4`. Each fetch has a `…Result()` variant that converts throws to `Result` so the store can surface per-section errors without one failure killing the others.
-- `TrafficStore.swift` — `@MainActor` `ObservableObject` holding cameras / events / VMS / per-section loading state / per-section errors / `lastUpdated` / `imageCacheToken`. `loadAllData()` fans out the three fetches concurrently with `async let` and applies them independently. The `imageCacheToken` is bumped on every refresh and appended to camera image URLs to bust `URLCache`.
-- `Models.swift` — all decodable types plus payload wrappers (`CamerasPayload` → `CameraResponse` → `[TrafficCamera]`, etc., matching the NZTA JSON shape). Helpers `cleanText(_:)`, `formatVMSMessage(_:)`, and the `KeyedDecodingContainer` extension at the bottom (`decodeLossyString`, `decodeLossyDouble`) exist because the upstream API is loose-typed (numbers as strings, missing fields, embedded display-control tokens). New decoded fields should reuse these helpers rather than calling `decode` directly.
-- `Views.swift` — single 1300-line file containing `ContentView` (header / filter bar / segmented tab picker / tab content), one view per `TrafficTab` (`CamerasTabView`, `RoadEventsTabView`, `VMSTabView`, `TrafficMapTabView`, `AboutView`), plus the `AppHelpView` shown in the secondary window and shared chrome (`ErrorBanner`, `LoadingView`, `EmptyStateView`, `Badge`, `StatCard`).
+- `NZTATrafficApp.swift` — `@main` entry, `WindowGroup` + secondary `Window(id: "help")` + a `Settings` scene (`SettingsView`, ⌘,), and `NZTATrafficCommands` which replaces the standard About panel and Help menu items. `init()` installs a bounded shared `URLCache`.
+- `TrafficAPIService.swift` — thin `URLSession` wrapper over four NZTA REST v4 endpoints (`/cameras/all`, `/events/all/10`, `/signs/vms/all`, `/journeys/all/10`) at `https://trafficnz.info/service/traffic/rest/4`. Uses a configured session (timeouts, `waitsForConnectivity`) and retries transient/5xx failures with exponential backoff (`isRetriable`). Each fetch has a `…Result()` variant (`nonisolated`, so decode runs off the main actor) that converts throws to `Result` so the store can surface per-section errors without one failure killing the others.
+- `TrafficStore.swift` — `@Observable @MainActor` class holding cameras / events / VMS / journeys / per-section loading state / per-section errors / `lastUpdated` / `imageCacheToken`. `loadAllData(bustImageCache:)` fans out the four fetches concurrently with `async let` and applies them independently; a failed section keeps its last-known-good data. `imageCacheToken` is bumped **only on an explicit user refresh** (not auto-refresh) and appended to camera image URLs to bust the cache. `filtered*` results are memoized behind a `FilterKey` cache (`@ObservationIgnored`), cleared when section data changes.
+- `Models.swift` — all decodable types plus payload wrappers (`CamerasPayload` → `CameraResponse` → `[TrafficCamera]`, etc., matching the NZTA JSON shape). Helpers `cleanText(_:)`, `formatVMSMessage(_:)`, and the `KeyedDecodingContainer` extension at the bottom (`decodeLossyString`, `decodeLossyDouble`, `decodeLossyInt`) exist because the upstream API is loose-typed (numbers as strings, missing fields, embedded display-control tokens). New decoded fields should reuse these helpers rather than calling `decode` directly. Keep this file free of `SwiftUI`/`AppKit` so the test runner can compile it standalone.
+- `Theme.swift` — design tokens (`Spacing`, `Radii`, and semantic `Color` extensions for the VMS palette + card stroke). Prefer these over scattered literals.
+- `Views.swift` — `ContentView` (header / global filter bar / native `TabView` with per-tab scoped filter bars), one view per `TrafficTab` (`CamerasTabView`, `RoadEventsTabView`, `VMSTabView`, `TravelTimesTabView`, `TrafficMapTabView`, `AboutView`), `SettingsView`, the `AppHelpView` shown in the secondary window, and shared chrome (`ErrorBanner`, `LoadingView`, `FilterableEmptyState` (a `ContentUnavailableView`), `Badge`, `StatCard`).
 
 ### Data flow
 
@@ -41,12 +46,13 @@ The map tab (`TrafficMapTabView`) consumes the same filtered slices and renders 
 
 ### Refresh model
 
-Manual refresh: ⌘R or the toolbar button calls `store.loadAllData()`. Auto-refresh: `@AppStorage("nzta.autoRefreshEnabled")` and `@AppStorage("nzta.refreshIntervalSeconds")` (clamped 30–600) drive a `Task` loop in `ContentView.configureAutoRefresh()`. Toggling either `@AppStorage` value cancels and reschedules the task — don't bypass `configureAutoRefresh`.
+Manual refresh: ⌘R or the toolbar button calls `store.loadAllData(bustImageCache: true)` (forces fresh camera images). Auto-refresh: `@AppStorage("nzta.autoRefreshEnabled")` and `@AppStorage("nzta.refreshIntervalSeconds")` (clamped 30–600) drive a `Task` loop in `ContentView.configureAutoRefresh()` that calls `loadAllData()` (no cache bust — relies on `URLCache` + HTTP revalidation). Toggling either `@AppStorage` value (from the filter bar menu or the Settings window) cancels and reschedules the task — don't bypass `configureAutoRefresh`.
 
 ## Conventions worth knowing
 
 - The NZTA API is the only data source. There is no proxy, no caching layer, no auth. Don't add one without reason.
 - VMS message strings arrive with embedded display-control tokens; always run them through `formatVMSMessage` before showing.
 - String/number fields from the API can be either type or absent — go through `decodeLossyString` / `decodeLossyDouble` and `cleanText`, not the raw `decode` calls.
-- Errors are per-section by design (`store.errors[.cameras]` etc.) and rendered via `ErrorBanner` inside each tab. A failed fetch zeroes that section's array but leaves the others intact.
-- Camera image URLs must be suffixed with `?t=\(store.imageCacheToken)` to bust the system URL cache after a refresh.
+- Errors are per-section by design (`store.errors[.cameras]` etc.) and rendered via `ErrorBanner` inside each tab. A failed fetch records the error but **keeps the section's last-known-good data** (it no longer zeroes the array), so other sections — and stale data — stay intact.
+- Camera image URLs are suffixed with `?t=\(store.imageCacheToken)`; the token only changes on an explicit refresh, so auto-refresh reuses the bounded `URLCache` and revalidates via HTTP rather than re-downloading every image.
+- New decoded fields and parsing logic should get a case in `Tests/ModelTests.swift`; run `./run_tests.sh` before committing model changes.
