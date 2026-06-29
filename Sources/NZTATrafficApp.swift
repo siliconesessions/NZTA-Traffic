@@ -3,6 +3,17 @@ import SwiftUI
 
 @main
 struct NZTATrafficApp: App {
+    init() {
+        // A bounded shared cache lets camera images persist across refreshes and
+        // app launches; AsyncImage (URLSession.shared) revalidates via HTTP
+        // headers instead of re-downloading everything on every refresh tick.
+        URLCache.shared = URLCache(
+            memoryCapacity: 50_000_000,
+            diskCapacity: 200_000_000,
+            directory: nil
+        )
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -34,7 +45,7 @@ struct NZTATrafficCommands: Commands {
             Button("NZTA Traffic Help") {
                 openWindow(id: "help")
             }
-            .keyboardShortcut("/", modifiers: [.command, .shift])
+            .keyboardShortcut("?", modifiers: .command)
         }
     }
 

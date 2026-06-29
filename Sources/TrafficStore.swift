@@ -44,7 +44,13 @@ final class TrafficStore: ObservableObject {
         return max(0, min(1, (total - remaining) / total))
     }
 
-    func loadAllData() async {
+    /// Loads all sections concurrently.
+    /// - Parameter bustImageCache: when `true` (an explicit user refresh) the
+    ///   image cache token is bumped so camera image URLs change and bypass the
+    ///   URL cache. Background/auto refreshes leave the token stable and rely on
+    ///   the shared `URLCache` + HTTP revalidation instead of re-downloading
+    ///   every image each tick.
+    func loadAllData(bustImageCache: Bool = false) async {
         loadingSections = Set(DataSection.allCases)
         errors = [:]
         isRefreshing = true
@@ -57,7 +63,9 @@ final class TrafficStore: ObservableObject {
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
-        imageCacheToken = Int(Date().timeIntervalSince1970)
+        if bustImageCache {
+            imageCacheToken = Int(Date().timeIntervalSince1970)
+        }
         isRefreshing = false
     }
 
@@ -135,7 +143,9 @@ final class TrafficStore: ObservableObject {
         case .success(let value):
             self[keyPath: keyPath] = value
         case .failure(let error):
-            self[keyPath: keyPath] = []
+            // Keep the previously loaded data on a transient failure instead of
+            // wiping it — the error banner surfaces the problem while the user
+            // keeps the last-known-good data for this section.
             errors[section] = errorMessage(error)
         }
     }

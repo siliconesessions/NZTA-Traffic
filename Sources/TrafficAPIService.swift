@@ -30,23 +30,27 @@ struct TrafficAPIService {
         return payload.response.journey
     }
 
-    func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
+    // These entry points are `nonisolated` so that, when called from the
+    // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
+    // decode of large payloads run on the cooperative thread pool rather than
+    // blocking the main thread.
+    nonisolated func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
         await result { try await fetchCameras() }
     }
 
-    func fetchRoadEventsResult() async -> Result<[RoadEvent], Error> {
+    nonisolated func fetchRoadEventsResult() async -> Result<[RoadEvent], Error> {
         await result { try await fetchRoadEvents() }
     }
 
-    func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
+    nonisolated func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
         await result { try await fetchVMSSigns() }
     }
 
-    func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
+    nonisolated func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
         await result { try await fetchJourneys() }
     }
 
-    private func request<T: Decodable>(_ path: String) async throws -> T {
+    nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
         guard let url = URL(string: baseURL + path) else {
             throw TrafficAPIError.invalidURL(baseURL + path)
         }

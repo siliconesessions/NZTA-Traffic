@@ -31,15 +31,16 @@ struct ContentView: View {
     @AppStorage("nzta.flow.showSlow") private var showFlowSlow = true
     @AppStorage("nzta.flow.showCongested") private var showFlowCongested = true
     @AppStorage("nzta.flow.showNoData") private var showFlowNoData = false
-    @State private var selectedTab: TrafficTab = .cameras
-    @State private var selectedRegion = ""
-    @State private var highwayFilter = ""
-    @State private var searchFilter = ""
+    @SceneStorage("nzta.scene.selectedTab") private var selectedTab: TrafficTab = .cameras
+    @SceneStorage("nzta.scene.region") private var selectedRegion = ""
+    @SceneStorage("nzta.scene.highway") private var highwayFilter = ""
+    @SceneStorage("nzta.scene.search") private var searchFilter = ""
     @State private var selectedCamera: TrafficCamera?
     @State private var autoRefreshTask: Task<Void, Never>?
     @State private var mapPosition = MapCameraPosition.region(trafficMapInitialRegion)
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
-    @State private var mapSelectedLayer: TrafficMapLayer = .cameras
+    @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,6 +58,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 980, minHeight: 680)
         .background(Color.primary.opacity(0.025))
+        .background(tabShortcuts)
         .task {
             await store.loadAllData()
         }
@@ -81,6 +83,36 @@ struct ContentView: View {
 
     private var clampedRefreshInterval: Int {
         min(600, max(30, refreshIntervalSeconds))
+    }
+
+    // Hidden buttons that bind ⌘1…⌘6 to each tab. They stay in the hierarchy so
+    // their keyboard shortcuts are active, but are not visible or focusable.
+    private var tabShortcuts: some View {
+        ForEach(Array(TrafficTab.allCases.enumerated()), id: \.element) { index, tab in
+            Button("") { selectedTab = tab }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var hasActiveFilters: Bool {
+        !selectedRegion.isEmpty || !highwayFilter.isEmpty || !searchFilter.isEmpty
+    }
+
+    private var activeFilterSummary: String {
+        var parts: [String] = []
+        if !selectedRegion.isEmpty { parts.append("Region: \(selectedRegion)") }
+        if !highwayFilter.isEmpty { parts.append("Highway: \(highwayFilter)") }
+        if !searchFilter.isEmpty { parts.append("Search: \(searchFilter)") }
+        return parts.isEmpty ? "No active filters" : parts.joined(separator: " · ")
+    }
+
+    private func clearAllFilters() {
+        selectedRegion = ""
+        highwayFilter = ""
+        searchFilter = ""
     }
 
     private var header: some View {
@@ -120,12 +152,18 @@ struct ContentView: View {
                 Spacer()
 
                 HStack(spacing: 4) {
+                    if isDataStale {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .help("Data may be stale — refresh to update")
+                    }
                     Text("Updated")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text(lastUpdatedText)
                         .font(.caption.weight(.medium))
-                        .monospacedDigit()
+                        .foregroundStyle(isDataStale ? .orange : .primary)
                 }
             }
             .padding(.horizontal, 20)
@@ -135,7 +173,7 @@ struct ContentView: View {
                 .progressViewStyle(.linear)
                 .tint(.blue)
                 .opacity(store.isRefreshing ? 1 : 0)
-                .animation(.easeInOut(duration: 0.25), value: store.isRefreshing)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: store.isRefreshing)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 4)
         }
@@ -146,7 +184,16 @@ struct ContentView: View {
         guard let lastUpdated = store.lastUpdated else {
             return "Not yet"
         }
-        return lastUpdated.formatted(date: .omitted, time: .standard)
+        return lastUpdated.formatted(.relative(presentation: .named))
+    }
+
+    // Considered stale after 10 minutes without a completed refresh. Recomputed
+    // on each render (e.g. when auto-refresh ticks or the user interacts).
+    private var isDataStale: Bool {
+        guard let lastUpdated = store.lastUpdated, !store.isRefreshing else {
+            return false
+        }
+        return Date().timeIntervalSince(lastUpdated) > 600
     }
 
     private var filters: some View {
@@ -168,9 +215,25 @@ struct ContentView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 220)
 
+            if hasActiveFilters {
+                Label("Filtered", systemImage: "line.3.horizontal.decrease.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .help(activeFilterSummary)
+            }
+
+            Button {
+                clearAllFilters()
+            } label: {
+                Image(systemName: "xmark.circle")
+            }
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(!hasActiveFilters)
+            .help("Clear all filters (⌘E)")
+
             Button {
                 Task {
-                    await store.loadAllData()
+                    await store.loadAllData(bustImageCache: true)
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")
@@ -623,6 +686,7 @@ struct TrafficMapTabView: View {
     let onCameraPreview: (TrafficCamera) -> Void
 
     @State private var selectedDetail: TrafficMapDetail?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var features: [TrafficMapFeature] {
         switch selectedLayer {
@@ -887,7 +951,7 @@ struct TrafficMapTabView: View {
         let targetLatitude = max(min(bboxLatitude, visibleSpan.latitudeDelta * 0.5), 0.01)
         let targetLongitude = max(min(bboxLongitude, visibleSpan.longitudeDelta * 0.5), 0.01)
 
-        withAnimation(.easeInOut(duration: 0.45)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) {
             position = .region(MKCoordinateRegion(
                 center: center,
                 span: MKCoordinateSpan(latitudeDelta: targetLatitude, longitudeDelta: targetLongitude)
@@ -1402,6 +1466,7 @@ struct JourneyLegRow: View {
             Circle()
                 .fill(leg.flowKind.color)
                 .frame(width: 10, height: 10)
+                .accessibilityLabel("Traffic flow: \(leg.flowKind.label)")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -1463,6 +1528,11 @@ struct JourneyLegRow: View {
 
     private var detailLine: String? {
         var parts: [String] = []
+        // Surface the flow state as text so it isn't conveyed by the dot's
+        // colour alone (skipped for legs with no live flow data).
+        if leg.flowKind != .noData {
+            parts.append(leg.flowKind.label)
+        }
         if let direction = leg.direction, !direction.isEmpty {
             switch direction.uppercased() {
             case "I":
@@ -1526,6 +1596,7 @@ struct CameraCard: View {
                     .frame(height: 170)
                     .clipped()
                 }
+                .accessibilityLabel("\(camera.displayName) camera image")
 
                 VStack(alignment: .leading, spacing: 9) {
                     Text(camera.displayName)
@@ -1627,6 +1698,7 @@ struct CameraPreviewView: View {
             }
             .frame(minWidth: 760, minHeight: 470)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("\(camera.displayName) camera image")
         }
         .padding(20)
     }

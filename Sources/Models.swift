@@ -82,6 +82,8 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let mapLatitude: Double?
+    let mapLongitude: Double?
     let statusKind: CameraStatusKind
     let highwayHaystack: String
     let searchHaystack: String
@@ -132,6 +134,9 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
         journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
         way = wayValue
+        let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
+        mapLatitude = validatedMap?.latitude
+        mapLongitude = validatedMap?.longitude
         statusKind = computeCameraStatusKind(offline: offlineValue, underMaintenance: underMaintenanceValue)
         highwayHaystack = searchableHaystack([
             highwayValue,
@@ -162,7 +167,10 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
-        validatedCoordinate(latitude: latitude, longitude: longitude)
+        guard let mapLatitude, let mapLongitude else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
     }
 
     var routeLine: String? {
@@ -235,6 +243,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let way: Way?
     let geometryLatitude: Double?
     let geometryLongitude: Double?
+    let mapLatitude: Double?
+    let mapLongitude: Double?
     let severityRank: Int
     let impactKind: EventImpactKind
     let highwayHaystack: String
@@ -305,6 +315,10 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
             geometryLatitude = nil
             geometryLongitude = nil
         }
+        let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
+            ?? validatedCoordinate(latitude: geometryLatitude, longitude: geometryLongitude)
+        mapLatitude = validatedMap?.latitude
+        mapLongitude = validatedMap?.longitude
         severityRank = computeSeverityRank(impact: impactValue)
         impactKind = computeImpactKind(impact: impactValue)
         highwayHaystack = searchableHaystack([
@@ -342,8 +356,10 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
-        validatedCoordinate(latitude: latitude, longitude: longitude)
-            ?? validatedCoordinate(latitude: geometryLatitude, longitude: geometryLongitude)
+        guard let mapLatitude, let mapLongitude else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
     }
 
     var alternativeRouteText: String? {
@@ -408,6 +424,8 @@ struct VMSSign: Decodable, Identifiable, Hashable {
     let journey: Journey?
     let journeyLeg: JourneyLeg?
     let way: Way?
+    let mapLatitude: Double?
+    let mapLongitude: Double?
     let formattedMessage: String
     let hasDisplayMessage: Bool
     let highwayHaystack: String
@@ -450,6 +468,9 @@ struct VMSSign: Decodable, Identifiable, Hashable {
         journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
         way = wayValue
+        let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
+        mapLatitude = validatedMap?.latitude
+        mapLongitude = validatedMap?.longitude
 
         let formatted = formatVMSMessage(currentMessageValue)
         formattedMessage = formatted
@@ -477,7 +498,10 @@ struct VMSSign: Decodable, Identifiable, Hashable {
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
-        validatedCoordinate(latitude: latitude, longitude: longitude)
+        guard let mapLatitude, let mapLongitude else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
     }
 
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
@@ -587,13 +611,18 @@ func validatedCoordinate(latitude: Double?, longitude: Double?) -> CLLocationCoo
     return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
 }
 
+// Matches "longitude latitude" coordinate pairs inside WKT geometry strings.
+// Compiled once at module load and reused — recompiling per call was a hot path.
+private let wktCoordinateRegex: NSRegularExpression? = {
+    try? NSRegularExpression(pattern: #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#)
+}()
+
 func coordinateFromWKTGeometry(_ geometry: String?) -> CLLocationCoordinate2D? {
     guard let geometry = cleanText(geometry) else {
         return nil
     }
 
-    let pattern = #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#
-    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+    guard let regex = wktCoordinateRegex else {
         return nil
     }
 
@@ -697,9 +726,15 @@ private let isoDateFormatter: ISO8601DateFormatter = {
     return formatter
 }()
 
+// NZTA timestamps are New Zealand local time. Pin both the parse and the
+// display formatter to Pacific/Auckland so the app shows correct NZ times
+// regardless of the Mac's configured time zone.
+private let nzTimeZone = TimeZone(identifier: "Pacific/Auckland")
+
 private let nzInputDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_NZ")
+    formatter.timeZone = nzTimeZone
     formatter.dateFormat = "dd/MM/yyyy HH:mm"
     return formatter
 }()
@@ -707,6 +742,7 @@ private let nzInputDateFormatter: DateFormatter = {
 private let nzDisplayDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_NZ")
+    formatter.timeZone = nzTimeZone
     formatter.dateFormat = "d MMM, h:mm a"
     return formatter
 }()
@@ -891,8 +927,7 @@ func parseWKTLineStringCoords(_ wkt: String?) -> (latitudes: [Double], longitude
     guard let wkt = cleanText(wkt), !wkt.isEmpty else {
         return ([], [])
     }
-    let pattern = #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#
-    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+    guard let regex = wktCoordinateRegex else {
         return ([], [])
     }
     let source = wkt as NSString
@@ -1271,14 +1306,17 @@ extension KeyedDecodingContainer {
     }
 
     func decodeLossyDouble(forKey key: Key) -> Double? {
+        // Reject NaN/Infinity so every downstream consumer can trust the value
+        // is finite (e.g. coordinate validation, Int conversion, formatting).
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            return value
+            return value.isFinite ? value : nil
         }
         if let value = try? decodeIfPresent(Int.self, forKey: key) {
             return Double(value)
         }
-        if let value = try? decodeIfPresent(String.self, forKey: key) {
-            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        if let value = try? decodeIfPresent(String.self, forKey: key),
+           let parsed = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return parsed.isFinite ? parsed : nil
         }
         return nil
     }
@@ -1288,6 +1326,11 @@ extension KeyedDecodingContainer {
             return value
         }
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
+            // `Int(_:)` traps on NaN/Infinity and out-of-range doubles, which
+            // the loose upstream API can deliver. Guard before converting.
+            guard value.isFinite, value >= Double(Int.min), value < Double(Int.max) else {
+                return nil
+            }
             return Int(value)
         }
         if let value = try? decodeIfPresent(String.self, forKey: key) {
