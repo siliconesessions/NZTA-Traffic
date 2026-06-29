@@ -2496,6 +2496,33 @@ struct FilterableEmptyState: View {
     }
 }
 
+struct SettingsView: View {
+    @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
+    @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
+
+    var body: some View {
+        Form {
+            Section("Auto-Refresh") {
+                Toggle("Automatically refresh data", isOn: $autoRefreshEnabled)
+                Picker("Interval", selection: $refreshIntervalSeconds) {
+                    Text("30 seconds").tag(30)
+                    Text("1 minute").tag(60)
+                    Text("2 minutes").tag(120)
+                    Text("5 minutes").tag(300)
+                    Text("10 minutes").tag(600)
+                }
+                .disabled(!autoRefreshEnabled)
+            }
+            Section("Display") {
+                Toggle("Hide VMS signs with no active message", isOn: $hideEmptyVMS)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440, height: 260)
+    }
+}
+
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()

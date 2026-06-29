@@ -28,6 +28,10 @@ struct NZTATrafficApp: App {
             AppHelpView()
         }
         .defaultSize(width: 780, height: 760)
+
+        Settings {
+            SettingsView()
+        }
     }
 }
 
