@@ -5,8 +5,18 @@ struct TrafficAPIService {
     private let session: URLSession
     private let decoder: JSONDecoder
 
-    init(session: URLSession = .shared) {
-        self.session = session
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 30
+            configuration.timeoutIntervalForResource = 120
+            configuration.httpMaximumConnectionsPerHost = 6
+            configuration.waitsForConnectivity = true
+            configuration.httpShouldSetCookies = false
+            self.session = URLSession(configuration: configuration)
+        }
         decoder = JSONDecoder()
     }
 
@@ -30,38 +40,56 @@ struct TrafficAPIService {
         return payload.response.journey
     }
 
-    func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
+    // These entry points are `nonisolated` so that, when called from the
+    // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
+    // decode of large payloads run on the cooperative thread pool rather than
+    // blocking the main thread.
+    nonisolated func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
         await result { try await fetchCameras() }
     }
 
-    func fetchRoadEventsResult() async -> Result<[RoadEvent], Error> {
+    nonisolated func fetchRoadEventsResult() async -> Result<[RoadEvent], Error> {
         await result { try await fetchRoadEvents() }
     }
 
-    func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
+    nonisolated func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
         await result { try await fetchVMSSigns() }
     }
 
-    func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
+    nonisolated func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
         await result { try await fetchJourneys() }
     }
 
-    private func request<T: Decodable>(_ path: String) async throws -> T {
+    nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
         guard let url = URL(string: baseURL + path) else {
             throw TrafficAPIError.invalidURL(baseURL + path)
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 30
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("NZTA Traffic macOS", forHTTPHeaderField: "User-Agent")
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        urlRequest.setValue("NZTA Traffic macOS", forHTTPHeaderField: "User-Agent")
 
+        // Retry transient failures (transport errors, 5xx) with exponential
+        // backoff: 1s, 2s before the final attempt. Non-transient errors
+        // (4xx, decoding) fail immediately.
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            do {
+                return try await performRequest(urlRequest)
+            } catch let error as TrafficAPIError where error.isRetriable && attempt < maxAttempts {
+                try? await Task.sleep(for: .seconds(pow(2.0, Double(attempt - 1))))
+            }
+        }
+        throw TrafficAPIError.transport("Exhausted \(maxAttempts) attempts")
+    }
+
+    nonisolated private func performRequest<T: Decodable>(_ urlRequest: URLRequest) async throws -> T {
         let data: Data
         let response: URLResponse
 
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: urlRequest)
         } catch {
             throw TrafficAPIError.transport(error.localizedDescription)
         }
@@ -102,6 +130,19 @@ enum TrafficAPIError: LocalizedError {
     case emptyResponse
     case transport(String)
     case decoding(String, String)
+
+    /// Transient failures worth retrying: connectivity/transport problems and
+    /// server-side 5xx responses. Client errors and decoding failures are not.
+    var isRetriable: Bool {
+        switch self {
+        case .transport:
+            return true
+        case .httpStatus(let status):
+            return status >= 500
+        default:
+            return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {

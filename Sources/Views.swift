@@ -12,10 +12,27 @@ enum TrafficTab: String, CaseIterable, Identifiable {
     var id: String {
         rawValue
     }
+
+    var icon: String {
+        switch self {
+        case .cameras:
+            return "video"
+        case .events:
+            return "exclamationmark.triangle"
+        case .vms:
+            return "signpost.right"
+        case .travelTimes:
+            return "speedometer"
+        case .trafficMap:
+            return "map"
+        case .about:
+            return "info.circle"
+        }
+    }
 }
 
 struct ContentView: View {
-    @StateObject private var store = TrafficStore()
+    @State private var store = TrafficStore()
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
@@ -31,15 +48,19 @@ struct ContentView: View {
     @AppStorage("nzta.flow.showSlow") private var showFlowSlow = true
     @AppStorage("nzta.flow.showCongested") private var showFlowCongested = true
     @AppStorage("nzta.flow.showNoData") private var showFlowNoData = false
-    @State private var selectedTab: TrafficTab = .cameras
-    @State private var selectedRegion = ""
-    @State private var highwayFilter = ""
-    @State private var searchFilter = ""
+    @SceneStorage("nzta.scene.selectedTab") private var selectedTab: TrafficTab = .cameras
+    @SceneStorage("nzta.scene.region") private var selectedRegion = ""
+    @SceneStorage("nzta.scene.highway") private var highwayFilter = ""
+    @SceneStorage("nzta.scene.search") private var searchFilter = ""
     @State private var selectedCamera: TrafficCamera?
     @State private var autoRefreshTask: Task<Void, Never>?
     @State private var mapPosition = MapCameraPosition.region(trafficMapInitialRegion)
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
-    @State private var mapSelectedLayer: TrafficMapLayer = .cameras
+    @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var debouncedHighway = ""
+    @State private var debouncedSearch = ""
+    @State private var filterDebounceTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,25 +68,24 @@ struct ContentView: View {
             Divider()
             filters
             Divider()
-            tabPicker
-            Divider()
-            if selectedTab != .about {
-                scopedFilterBar
-                Divider()
-            }
-            tabContent
+            sectionTabs
         }
         .frame(minWidth: 980, minHeight: 680)
         .background(Color.primary.opacity(0.025))
+        .background(tabShortcuts)
         .task {
             await store.loadAllData()
         }
         .onAppear {
             refreshIntervalSeconds = clampedRefreshInterval
+            // Seed the debounced filters from any @SceneStorage-restored values.
+            debouncedHighway = highwayFilter
+            debouncedSearch = searchFilter
             configureAutoRefresh()
         }
         .onDisappear {
             autoRefreshTask?.cancel()
+            filterDebounceTask?.cancel()
         }
         .onChange(of: autoRefreshEnabled) {
             configureAutoRefresh()
@@ -74,6 +94,12 @@ struct ContentView: View {
             refreshIntervalSeconds = clampedRefreshInterval
             configureAutoRefresh()
         }
+        .onChange(of: highwayFilter) {
+            scheduleFilterDebounce()
+        }
+        .onChange(of: searchFilter) {
+            scheduleFilterDebounce()
+        }
         .sheet(item: $selectedCamera) { camera in
             CameraPreviewView(camera: camera, cacheToken: store.imageCacheToken)
         }
@@ -81,6 +107,54 @@ struct ContentView: View {
 
     private var clampedRefreshInterval: Int {
         min(600, max(30, refreshIntervalSeconds))
+    }
+
+    // Hidden buttons that bind ⌘1…⌘6 to each tab. They stay in the hierarchy so
+    // their keyboard shortcuts are active, but are not visible or focusable.
+    private var tabShortcuts: some View {
+        ForEach(Array(TrafficTab.allCases.enumerated()), id: \.element) { index, tab in
+            Button("") { selectedTab = tab }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var hasActiveFilters: Bool {
+        !selectedRegion.isEmpty || !highwayFilter.isEmpty || !searchFilter.isEmpty
+    }
+
+    private var activeFilterSummary: String {
+        var parts: [String] = []
+        if !selectedRegion.isEmpty { parts.append("Region: \(selectedRegion)") }
+        if !highwayFilter.isEmpty { parts.append("Highway: \(highwayFilter)") }
+        if !searchFilter.isEmpty { parts.append("Search: \(searchFilter)") }
+        return parts.isEmpty ? "No active filters" : parts.joined(separator: " · ")
+    }
+
+    private func clearAllFilters() {
+        selectedRegion = ""
+        highwayFilter = ""
+        searchFilter = ""
+        // Clear the debounced copies immediately so results update at once.
+        filterDebounceTask?.cancel()
+        debouncedHighway = ""
+        debouncedSearch = ""
+    }
+
+    // Coalesce rapid keystrokes in the highway/search fields so filtering and
+    // sorting run at most once per 300 ms of typing rather than per keystroke.
+    private func scheduleFilterDebounce() {
+        filterDebounceTask?.cancel()
+        filterDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else {
+                return
+            }
+            debouncedHighway = highwayFilter
+            debouncedSearch = searchFilter
+        }
     }
 
     private var header: some View {
@@ -120,12 +194,24 @@ struct ContentView: View {
                 Spacer()
 
                 HStack(spacing: 4) {
-                    Text("Updated")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(lastUpdatedText)
-                        .font(.caption.weight(.medium))
-                        .monospacedDigit()
+                    if store.isRefreshing {
+                        Text("Refreshing…")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.blue)
+                    } else {
+                        if isDataStale {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .help("Data may be stale — refresh to update")
+                        }
+                        Text("Updated")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(lastUpdatedText)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(isDataStale ? .orange : .primary)
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -135,7 +221,7 @@ struct ContentView: View {
                 .progressViewStyle(.linear)
                 .tint(.blue)
                 .opacity(store.isRefreshing ? 1 : 0)
-                .animation(.easeInOut(duration: 0.25), value: store.isRefreshing)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: store.isRefreshing)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 4)
         }
@@ -146,7 +232,16 @@ struct ContentView: View {
         guard let lastUpdated = store.lastUpdated else {
             return "Not yet"
         }
-        return lastUpdated.formatted(date: .omitted, time: .standard)
+        return lastUpdated.formatted(.relative(presentation: .named))
+    }
+
+    // Considered stale after 10 minutes without a completed refresh. Recomputed
+    // on each render (e.g. when auto-refresh ticks or the user interacts).
+    private var isDataStale: Bool {
+        guard let lastUpdated = store.lastUpdated, !store.isRefreshing else {
+            return false
+        }
+        return Date().timeIntervalSince(lastUpdated) > 600
     }
 
     private var filters: some View {
@@ -162,22 +257,38 @@ struct ContentView: View {
 
             TextField("Highway (e.g. SH1)", text: $highwayFilter)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 160)
+                .frame(minWidth: 120, maxWidth: 200)
 
             TextField("Search locations", text: $searchFilter)
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 220)
+                .frame(minWidth: 180, maxWidth: 360)
+
+            if hasActiveFilters {
+                Label("Filtered", systemImage: "line.3.horizontal.decrease.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .help(activeFilterSummary)
+            }
+
+            Button {
+                clearAllFilters()
+            } label: {
+                Image(systemName: "xmark.circle")
+            }
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(!hasActiveFilters)
+            .help("Clear all filters (⌘E)")
 
             Button {
                 Task {
-                    await store.loadAllData()
+                    await store.loadAllData(bustImageCache: true)
                 }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(store.isRefreshing)
-            .help("Refresh now (⌘R)")
+            .help(store.isRefreshing ? "Refreshing…" : "Refresh now (⌘R)")
 
             Spacer(minLength: 8)
 
@@ -231,50 +342,112 @@ struct ContentView: View {
         return "\(seconds)s"
     }
 
-    private var tabPicker: some View {
-        Picker("Section", selection: $selectedTab) {
-            ForEach(TrafficTab.allCases) { tab in
-                Text(tab.rawValue).tag(tab)
-            }
+    // Chrome for a tab's scoped (per-section) filter row.
+    private func scopedBar<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack {
+            content()
+            Spacer()
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
         .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .frame(minHeight: 48)
+        .padding(.vertical, 4)
         .background(.background)
     }
 
+    // One TabView page: its scoped filter bar above the section content.
     @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
-        case .cameras:
+    private func tabContainer<Filters: View, Content: View>(
+        _ tab: TrafficTab,
+        @ViewBuilder filters: () -> Filters,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(spacing: 0) {
+            scopedBar { filters() }
+            Divider()
+            content()
+        }
+        .tabItem { Label(tab.rawValue, systemImage: tab.icon) }
+        .tag(tab)
+    }
+
+    // Section navigation. Each tab is its own computed property to keep the
+    // body expression small enough for the type-checker.
+    private var sectionTabs: some View {
+        TabView(selection: $selectedTab) {
+            camerasTab
+            eventsTab
+            vmsTab
+            travelTimesTab
+            mapTab
+            AboutView()
+                .tabItem { Label(TrafficTab.about.rawValue, systemImage: TrafficTab.about.icon) }
+                .tag(TrafficTab.about)
+        }
+    }
+
+    private var camerasTab: some View {
+        tabContainer(.cameras) {
+            cameraStatusFilters
+        } content: {
             CamerasTabView(
                 cameras: scopedCameras(),
                 isLoading: store.isLoading(.cameras),
                 errorMessage: store.errors[.cameras],
                 cacheToken: store.imageCacheToken,
+                hasActiveFilters: hasActiveFilters,
+                onClearFilters: clearAllFilters,
                 onPreview: { selectedCamera = $0 }
             )
-        case .events:
+        }
+    }
+
+    private var eventsTab: some View {
+        tabContainer(.events) {
+            eventImpactFilters
+        } content: {
             RoadEventsTabView(
                 events: scopedEvents(),
                 isLoading: store.isLoading(.events),
-                errorMessage: store.errors[.events]
+                errorMessage: store.errors[.events],
+                hasActiveFilters: hasActiveFilters,
+                onClearFilters: clearAllFilters
             )
-        case .vms:
+        }
+    }
+
+    private var vmsTab: some View {
+        tabContainer(.vms) {
+            EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
+        } content: {
             VMSTabView(
                 signs: scopedVMSSigns(),
                 isLoading: store.isLoading(.vms),
                 errorMessage: store.errors[.vms],
-                hideEmpty: hideEmptyVMS
+                hideEmpty: hideEmptyVMS,
+                hasActiveFilters: hasActiveFilters,
+                onClearFilters: clearAllFilters
             )
-        case .travelTimes:
+        }
+    }
+
+    private var travelTimesTab: some View {
+        tabContainer(.travelTimes) {
+            flowFilters
+        } content: {
             TravelTimesTabView(
                 journeys: scopedJourneys(),
                 isLoading: store.isLoading(.journeys),
-                errorMessage: store.errors[.journeys]
+                errorMessage: store.errors[.journeys],
+                hasActiveFilters: hasActiveFilters,
+                onClearFilters: clearAllFilters
             )
-        case .trafficMap:
+        }
+    }
+
+    private var mapTab: some View {
+        tabContainer(.trafficMap) {
+            mapTabFilterBar
+        } content: {
             TrafficMapTabView(
                 cameras: scopedCameras(),
                 events: scopedEvents(),
@@ -293,36 +466,6 @@ struct ContentView: View {
                 selectedLayer: $mapSelectedLayer,
                 onCameraPreview: { selectedCamera = $0 }
             )
-        case .about:
-            AboutView()
-        }
-    }
-
-    private var scopedFilterBar: some View {
-        HStack {
-            scopedFilterContent
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .frame(height: 48)
-        .background(.background)
-    }
-
-    @ViewBuilder
-    private var scopedFilterContent: some View {
-        switch selectedTab {
-        case .cameras:
-            cameraStatusFilters
-        case .events:
-            eventImpactFilters
-        case .vms:
-            EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
-        case .travelTimes:
-            flowFilters
-        case .trafficMap:
-            mapTabFilterBar
-        case .about:
-            EmptyView()
         }
     }
 
@@ -448,19 +591,19 @@ struct ContentView: View {
     }
 
     private func scopedCameras() -> [TrafficCamera] {
-        let base = store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredCameras(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedCameraStatuses
         return base.filter { allowed.contains($0.statusKind) }
     }
 
     private func scopedEvents() -> [RoadEvent] {
-        let base = store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedEventImpacts
         return base.filter { allowed.contains($0.impactKind) }
     }
 
     private func scopedVMSSigns() -> [VMSSign] {
-        let base = store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         return hideEmptyVMS ? base.filter(\.hasDisplayMessage) : base
     }
 
@@ -475,7 +618,7 @@ struct ContentView: View {
     }
 
     private func scopedJourneys() -> [TrafficJourney] {
-        let base = store.filteredJourneys(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedFlowKinds
         return base.filter { allowed.contains($0.overallFlowKind) }
     }
@@ -492,15 +635,11 @@ struct ContentView: View {
         autoRefreshTask = Task {
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+                    try await Task.sleep(for: .seconds(seconds))
                 } catch {
+                    // Cancelled while sleeping — exit cleanly.
                     return
                 }
-
-                guard !Task.isCancelled else {
-                    return
-                }
-
                 await store.loadAllData()
             }
         }
@@ -512,6 +651,8 @@ struct CamerasTabView: View {
     let isLoading: Bool
     let errorMessage: String?
     let cacheToken: Int
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
     let onPreview: (TrafficCamera) -> Void
 
     private var onlineCount: Int {
@@ -528,7 +669,12 @@ struct CamerasTabView: View {
                 if isLoading && cameras.isEmpty {
                     LoadingView(title: "Loading traffic cameras...")
                 } else if cameras.isEmpty {
-                    EmptyStateView(systemImage: "video.slash", title: "No cameras found matching your filters")
+                    FilterableEmptyState(
+                        systemImage: "video.slash",
+                        title: "No cameras to show",
+                        hasActiveFilters: hasActiveFilters,
+                        onClearFilters: onClearFilters
+                    )
                 } else {
                     StatsRow(stats: [
                         StatItem(title: "Total Cameras", value: "\(cameras.count)", tint: .black),
@@ -623,6 +769,7 @@ struct TrafficMapTabView: View {
     let onCameraPreview: (TrafficCamera) -> Void
 
     @State private var selectedDetail: TrafficMapDetail?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var features: [TrafficMapFeature] {
         switch selectedLayer {
@@ -824,6 +971,7 @@ struct TrafficMapTabView: View {
                         }
                     }
                 }
+                .mapStyle(.standard)
                 .mapControls {
                     MapCompass()
                     MapScaleView()
@@ -832,6 +980,13 @@ struct TrafficMapTabView: View {
                     visibleSpan = context.region.span
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    if hasMapContent {
+                        MapLegend(layer: selectedLayer)
+                            .padding(16)
+                            .allowsHitTesting(false)
+                    }
+                }
 
                 mapStatusOverlay
                     .padding(16)
@@ -887,7 +1042,7 @@ struct TrafficMapTabView: View {
         let targetLatitude = max(min(bboxLatitude, visibleSpan.latitudeDelta * 0.5), 0.01)
         let targetLongitude = max(min(bboxLongitude, visibleSpan.longitudeDelta * 0.5), 0.01)
 
-        withAnimation(.easeInOut(duration: 0.45)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) {
             position = .region(MKCoordinateRegion(
                 center: center,
                 span: MKCoordinateSpan(latitudeDelta: targetLatitude, longitudeDelta: targetLongitude)
@@ -1077,6 +1232,7 @@ private enum TrafficMapDetail: Identifiable {
 private struct TrafficMapMarker: View {
     let feature: TrafficMapFeature
     let onSelect: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: onSelect) {
@@ -1088,15 +1244,23 @@ private struct TrafficMapMarker: View {
 
                 Image(systemName: feature.systemImage)
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(glyphColor)
                     .offset(y: -2)
             }
-            .frame(width: 38, height: 38)
-            .contentShape(Rectangle())
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+            .scaleEffect(isHovered ? 1.15 : 1.0)
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .help("\(feature.title) - \(feature.statusText)")
         .accessibilityLabel("\(feature.title), \(feature.statusText)")
+    }
+
+    // Caution markers are yellow; a white glyph fails contrast on them.
+    private var glyphColor: Color {
+        feature.tint == .yellow ? .black : .white
     }
 }
 
@@ -1116,6 +1280,7 @@ private struct TrafficMapClusterMarker: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .monospacedDigit()
+                    .shadow(color: .black.opacity(0.5), radius: 1.5, y: 0.5)
             }
             .frame(width: diameter, height: diameter)
             .contentShape(Circle())
@@ -1154,6 +1319,45 @@ private extension TrafficMapLayer {
     }
 }
 
+private struct MapLegend: View {
+    let layer: TrafficMapLayer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(items, id: \.label) { item in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(item.color)
+                        .frame(width: 9, height: 9)
+                    Text(item.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var items: [(label: String, color: Color)] {
+        switch layer {
+        case .cameras:
+            return [("Online", .green), ("Maintenance", .orange), ("Offline", .red)]
+        case .events:
+            return [("Closure", .red), ("Delays", .orange), ("Caution", .yellow), ("Other", .gray)]
+        case .vms:
+            return [("Message", .blue), ("No message", .gray)]
+        case .flow:
+            return FlowKind.allCases.map { ($0.label, $0.color) }
+        }
+    }
+}
+
 private struct TrafficMapDetailView: View {
     let detail: TrafficMapDetail
     @Environment(\.dismiss) private var dismiss
@@ -1180,7 +1384,10 @@ private struct TrafficMapDetailView: View {
             }
         }
         .padding(20)
-        .frame(width: 720, height: 520)
+        .frame(
+            minWidth: 600, idealWidth: 720, maxWidth: 900,
+            minHeight: 400, idealHeight: 520, maxHeight: 760
+        )
     }
 
     private var title: String {
@@ -1197,6 +1404,8 @@ struct RoadEventsTabView: View {
     let events: [RoadEvent]
     let isLoading: Bool
     let errorMessage: String?
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
 
     private var closures: Int {
         events.filter(\.isClosure).count
@@ -1216,7 +1425,12 @@ struct RoadEventsTabView: View {
                 if isLoading && events.isEmpty {
                     LoadingView(title: "Loading road events...")
                 } else if events.isEmpty {
-                    EmptyStateView(systemImage: "exclamationmark.triangle", title: "No events found matching your filters")
+                    FilterableEmptyState(
+                        systemImage: "exclamationmark.triangle",
+                        title: "No road events to show",
+                        hasActiveFilters: hasActiveFilters,
+                        onClearFilters: onClearFilters
+                    )
                 } else {
                     StatsRow(stats: [
                         StatItem(title: "Total Events", value: "\(events.count)", tint: .black),
@@ -1241,6 +1455,8 @@ struct VMSTabView: View {
     let isLoading: Bool
     let errorMessage: String?
     let hideEmpty: Bool
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
 
     var body: some View {
         ScrollView {
@@ -1252,7 +1468,12 @@ struct VMSTabView: View {
                 if isLoading && signs.isEmpty {
                     LoadingView(title: "Loading VMS signs...")
                 } else if signs.isEmpty {
-                    EmptyStateView(systemImage: "signpost.right", title: "No VMS signs found matching your filters")
+                    FilterableEmptyState(
+                        systemImage: "signpost.right",
+                        title: "No VMS signs to show",
+                        hasActiveFilters: hasActiveFilters,
+                        onClearFilters: onClearFilters
+                    )
                 } else {
                     StatsRow(stats: [
                         StatItem(title: hideEmpty ? "Signs With Message" : "Active VMS Signs", value: "\(signs.count)", tint: .orange)
@@ -1274,6 +1495,8 @@ struct TravelTimesTabView: View {
     let journeys: [TrafficJourney]
     let isLoading: Bool
     let errorMessage: String?
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
 
     private var liveJourneyCount: Int {
         journeys.filter(\.hasLiveData).count
@@ -1295,9 +1518,11 @@ struct TravelTimesTabView: View {
                 if isLoading && journeys.isEmpty {
                     LoadingView(title: "Loading travel times...")
                 } else if journeys.isEmpty {
-                    EmptyStateView(
+                    FilterableEmptyState(
                         systemImage: "speedometer",
-                        title: "No journeys match your filters"
+                        title: "No journeys to show",
+                        hasActiveFilters: hasActiveFilters,
+                        onClearFilters: onClearFilters
                     )
                 } else {
                     StatsRow(stats: [
@@ -1366,10 +1591,10 @@ struct JourneyCard: View {
             }
         }
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
         )
     }
 
@@ -1402,6 +1627,7 @@ struct JourneyLegRow: View {
             Circle()
                 .fill(leg.flowKind.color)
                 .frame(width: 10, height: 10)
+                .accessibilityLabel("Traffic flow: \(leg.flowKind.label)")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -1463,6 +1689,11 @@ struct JourneyLegRow: View {
 
     private var detailLine: String? {
         var parts: [String] = []
+        // Surface the flow state as text so it isn't conveyed by the dot's
+        // colour alone (skipped for legs with no live flow data).
+        if leg.flowKind != .noData {
+            parts.append(leg.flowKind.label)
+        }
         if let direction = leg.direction, !direction.isEmpty {
             switch direction.uppercased() {
             case "I":
@@ -1501,11 +1732,15 @@ struct CameraCard: View {
     let camera: TrafficCamera
     let cacheToken: Int
     let onPreview: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onPreview) {
             VStack(alignment: .leading, spacing: 0) {
-                AsyncImage(url: camera.thumbnailURL(cacheToken: cacheToken)) { phase in
+                AsyncImage(
+                    url: camera.thumbnailURL(cacheToken: cacheToken),
+                    transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
+                ) { phase in
                     ZStack {
                         Rectangle()
                             .fill(Color.primary.opacity(0.08))
@@ -1526,6 +1761,7 @@ struct CameraCard: View {
                     .frame(height: 170)
                     .clipped()
                 }
+                .accessibilityLabel("\(camera.displayName) camera image")
 
                 VStack(alignment: .leading, spacing: 9) {
                     Text(camera.displayName)
@@ -1559,10 +1795,10 @@ struct CameraCard: View {
                 .padding(14)
             }
             .background(.background)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Radii.card))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Radii.card)
+                    .stroke(Color.cardStroke, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1587,6 +1823,7 @@ struct CameraPreviewView: View {
     let camera: TrafficCamera
     let cacheToken: Int
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1606,7 +1843,10 @@ struct CameraPreviewView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            AsyncImage(url: camera.imageURL(cacheToken: cacheToken)) { phase in
+            AsyncImage(
+                url: camera.imageURL(cacheToken: cacheToken),
+                transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
+            ) { phase in
                 ZStack {
                     Rectangle()
                         .fill(Color.primary.opacity(0.08))
@@ -1627,6 +1867,7 @@ struct CameraPreviewView: View {
             }
             .frame(minWidth: 760, minHeight: 470)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("\(camera.displayName) camera image")
         }
         .padding(20)
     }
@@ -1680,10 +1921,10 @@ struct RoadEventCard: View {
             .padding(16)
         }
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
         )
     }
 
@@ -1756,8 +1997,8 @@ struct VMSCard: View {
             }
 
             Text(sign.formattedMessage.uppercased())
-                .font(.system(size: 21, weight: .bold, design: .monospaced))
-                .foregroundStyle(Color(red: 1.0, green: 0.74, blue: 0.18))
+                .font(.system(.title2, design: .monospaced, weight: .bold))
+                .foregroundStyle(Color.vmsCardMessage)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, minHeight: 92)
                 .lineLimit(nil)
@@ -1769,11 +2010,11 @@ struct VMSCard: View {
             }
         }
         .padding(18)
-        .background(Color(red: 0.09, green: 0.13, blue: 0.18))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Color.vmsCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(red: 0.28, green: 0.34, blue: 0.42), lineWidth: 3)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.vmsCardBorder, lineWidth: 1)
         )
     }
 }
@@ -1974,7 +2215,7 @@ struct StatCard: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(stat.value)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .monospacedDigit()
             Text(stat.title)
                 .font(.caption.weight(.medium))
@@ -2001,7 +2242,7 @@ struct Badge: View {
             .padding(.vertical, 4)
             .foregroundStyle(tint == .yellow ? .black : .white)
             .background(tint)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: Radii.card))
     }
 }
 
@@ -2028,6 +2269,8 @@ struct FilterChip: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -2138,6 +2381,19 @@ struct DataSectionPill: View {
         .background(Color.primary.opacity(0.05))
         .clipShape(Capsule())
         .help(helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        if hasError {
+            return "failed to load"
+        }
+        if isLoading {
+            return "loading"
+        }
+        return "\(count)"
     }
 
     @ViewBuilder
@@ -2214,20 +2470,56 @@ struct LoadingView: View {
     }
 }
 
-struct EmptyStateView: View {
+// Native empty state that explains when filters are the reason a section is
+// empty and offers a one-tap way to clear them.
+struct FilterableEmptyState: View {
     let systemImage: String
     let title: String
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary.opacity(0.45))
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.secondary)
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            if hasActiveFilters {
+                Text("Active filters may be hiding results.")
+            } else {
+                Text("Try refreshing, or check back shortly.")
+            }
+        } actions: {
+            if hasActiveFilters {
+                Button("Clear Filters", action: onClearFilters)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 360)
+    }
+}
+
+struct SettingsView: View {
+    @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
+    @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
+
+    var body: some View {
+        Form {
+            Section("Auto-Refresh") {
+                Toggle("Automatically refresh data", isOn: $autoRefreshEnabled)
+                Picker("Interval", selection: $refreshIntervalSeconds) {
+                    Text("30 seconds").tag(30)
+                    Text("1 minute").tag(60)
+                    Text("2 minutes").tag(120)
+                    Text("5 minutes").tag(300)
+                    Text("10 minutes").tag(600)
+                }
+                .disabled(!autoRefreshEnabled)
+            }
+            Section("Display") {
+                Toggle("Hide VMS signs with no active message", isOn: $hideEmptyVMS)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440, height: 260)
     }
 }
 
