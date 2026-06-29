@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 enum DataSection: String, CaseIterable, Identifiable {
@@ -12,20 +13,35 @@ enum DataSection: String, CaseIterable, Identifiable {
     }
 }
 
+@Observable
 @MainActor
-final class TrafficStore: ObservableObject {
-    @Published private(set) var cameras: [TrafficCamera] = []
-    @Published private(set) var events: [RoadEvent] = []
-    @Published private(set) var vmsSigns: [VMSSign] = []
-    @Published private(set) var journeys: [TrafficJourney] = []
-    @Published private(set) var allRegions: [String] = []
-    @Published private(set) var loadingSections: Set<DataSection> = []
-    @Published private(set) var errors: [DataSection: String] = [:]
-    @Published private(set) var lastUpdated: Date?
-    @Published private(set) var imageCacheToken: Int = Int(Date().timeIntervalSince1970)
-    @Published private(set) var isRefreshing = false
+final class TrafficStore {
+    private(set) var cameras: [TrafficCamera] = []
+    private(set) var events: [RoadEvent] = []
+    private(set) var vmsSigns: [VMSSign] = []
+    private(set) var journeys: [TrafficJourney] = []
+    private(set) var allRegions: [String] = []
+    private(set) var loadingSections: Set<DataSection> = []
+    private(set) var errors: [DataSection: String] = [:]
+    private(set) var lastUpdated: Date?
+    private(set) var imageCacheToken: Int = Int(Date().timeIntervalSince1970)
+    private(set) var isRefreshing = false
 
-    private let service: TrafficAPIService
+    @ObservationIgnored private let service: TrafficAPIService
+
+    // Memoized filter+sort results, keyed on the active filter inputs and
+    // cleared whenever the underlying data changes. Marked @ObservationIgnored
+    // so populating the cache during a view's `body` does not itself trigger a
+    // re-render (which would loop).
+    private struct FilterKey: Hashable {
+        let region: String
+        let highway: String
+        let search: String
+    }
+    @ObservationIgnored private var cameraCache: [FilterKey: [TrafficCamera]] = [:]
+    @ObservationIgnored private var eventCache: [FilterKey: [RoadEvent]] = [:]
+    @ObservationIgnored private var vmsCache: [FilterKey: [VMSSign]] = [:]
+    @ObservationIgnored private var journeyCache: [FilterKey: [TrafficJourney]] = [:]
 
     init(service: TrafficAPIService = TrafficAPIService()) {
         self.service = service
@@ -94,7 +110,11 @@ final class TrafficStore: ObservableObject {
     }
 
     func filteredCameras(region: String, highway: String, search: String) -> [TrafficCamera] {
-        cameras
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = cameraCache[key] {
+            return cached
+        }
+        let result = cameras
             .filter { $0.matches(region: region, highway: highway, search: search) }
             .sorted { lhs, rhs in
                 if let lhsSort = lhs.sortOrder, let rhsSort = rhs.sortOrder, lhsSort != rhsSort {
@@ -102,10 +122,16 @@ final class TrafficStore: ObservableObject {
                 }
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
+        cameraCache[key] = result
+        return result
     }
 
     func filteredEvents(region: String, highway: String, search: String) -> [RoadEvent] {
-        events
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = eventCache[key] {
+            return cached
+        }
+        let result = events
             .filter { $0.matches(region: region, highway: highway, search: search) }
             .sorted { lhs, rhs in
                 if lhs.severityRank != rhs.severityRank {
@@ -113,16 +139,28 @@ final class TrafficStore: ObservableObject {
                 }
                 return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
             }
+        eventCache[key] = result
+        return result
     }
 
     func filteredVMSSigns(region: String, highway: String, search: String) -> [VMSSign] {
-        vmsSigns
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = vmsCache[key] {
+            return cached
+        }
+        let result = vmsSigns
             .filter { $0.matches(region: region, highway: highway, search: search) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        vmsCache[key] = result
+        return result
     }
 
     func filteredJourneys(region: String, highway: String, search: String) -> [TrafficJourney] {
-        journeys
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = journeyCache[key] {
+            return cached
+        }
+        let result = journeys
             .filter { $0.matches(region: region, highway: highway, search: search) }
             .sorted { lhs, rhs in
                 let lhsDelay = lhs.congestionDelay ?? -1
@@ -132,6 +170,8 @@ final class TrafficStore: ObservableObject {
                 }
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
+        journeyCache[key] = result
+        return result
     }
 
     private func apply<T>(
@@ -142,12 +182,20 @@ final class TrafficStore: ObservableObject {
         switch result {
         case .success(let value):
             self[keyPath: keyPath] = value
+            invalidateFilterCaches()
         case .failure(let error):
             // Keep the previously loaded data on a transient failure instead of
             // wiping it — the error banner surfaces the problem while the user
             // keeps the last-known-good data for this section.
             errors[section] = errorMessage(error)
         }
+    }
+
+    private func invalidateFilterCaches() {
+        cameraCache.removeAll(keepingCapacity: true)
+        eventCache.removeAll(keepingCapacity: true)
+        vmsCache.removeAll(keepingCapacity: true)
+        journeyCache.removeAll(keepingCapacity: true)
     }
 
     private func computeAllRegions() -> [String] {

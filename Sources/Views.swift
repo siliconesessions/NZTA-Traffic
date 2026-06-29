@@ -15,7 +15,7 @@ enum TrafficTab: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @StateObject private var store = TrafficStore()
+    @State private var store = TrafficStore()
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
@@ -41,6 +41,9 @@ struct ContentView: View {
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
     @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var debouncedHighway = ""
+    @State private var debouncedSearch = ""
+    @State private var filterDebounceTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,10 +67,14 @@ struct ContentView: View {
         }
         .onAppear {
             refreshIntervalSeconds = clampedRefreshInterval
+            // Seed the debounced filters from any @SceneStorage-restored values.
+            debouncedHighway = highwayFilter
+            debouncedSearch = searchFilter
             configureAutoRefresh()
         }
         .onDisappear {
             autoRefreshTask?.cancel()
+            filterDebounceTask?.cancel()
         }
         .onChange(of: autoRefreshEnabled) {
             configureAutoRefresh()
@@ -75,6 +82,12 @@ struct ContentView: View {
         .onChange(of: refreshIntervalSeconds) {
             refreshIntervalSeconds = clampedRefreshInterval
             configureAutoRefresh()
+        }
+        .onChange(of: highwayFilter) {
+            scheduleFilterDebounce()
+        }
+        .onChange(of: searchFilter) {
+            scheduleFilterDebounce()
         }
         .sheet(item: $selectedCamera) { camera in
             CameraPreviewView(camera: camera, cacheToken: store.imageCacheToken)
@@ -113,6 +126,24 @@ struct ContentView: View {
         selectedRegion = ""
         highwayFilter = ""
         searchFilter = ""
+        // Clear the debounced copies immediately so results update at once.
+        filterDebounceTask?.cancel()
+        debouncedHighway = ""
+        debouncedSearch = ""
+    }
+
+    // Coalesce rapid keystrokes in the highway/search fields so filtering and
+    // sorting run at most once per 300 ms of typing rather than per keystroke.
+    private func scheduleFilterDebounce() {
+        filterDebounceTask?.cancel()
+        filterDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else {
+                return
+            }
+            debouncedHighway = highwayFilter
+            debouncedSearch = searchFilter
+        }
     }
 
     private var header: some View {
@@ -511,19 +542,19 @@ struct ContentView: View {
     }
 
     private func scopedCameras() -> [TrafficCamera] {
-        let base = store.filteredCameras(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredCameras(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedCameraStatuses
         return base.filter { allowed.contains($0.statusKind) }
     }
 
     private func scopedEvents() -> [RoadEvent] {
-        let base = store.filteredEvents(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedEventImpacts
         return base.filter { allowed.contains($0.impactKind) }
     }
 
     private func scopedVMSSigns() -> [VMSSign] {
-        let base = store.filteredVMSSigns(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         return hideEmptyVMS ? base.filter(\.hasDisplayMessage) : base
     }
 
@@ -538,7 +569,7 @@ struct ContentView: View {
     }
 
     private func scopedJourneys() -> [TrafficJourney] {
-        let base = store.filteredJourneys(region: selectedRegion, highway: highwayFilter, search: searchFilter)
+        let base = store.filteredJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
         let allowed = allowedFlowKinds
         return base.filter { allowed.contains($0.overallFlowKind) }
     }
@@ -555,15 +586,11 @@ struct ContentView: View {
         autoRefreshTask = Task {
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+                    try await Task.sleep(for: .seconds(seconds))
                 } catch {
+                    // Cancelled while sleeping — exit cleanly.
                     return
                 }
-
-                guard !Task.isCancelled else {
-                    return
-                }
-
                 await store.loadAllData()
             }
         }
