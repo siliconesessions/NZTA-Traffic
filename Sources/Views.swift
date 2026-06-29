@@ -240,11 +240,11 @@ struct ContentView: View {
 
             TextField("Highway (e.g. SH1)", text: $highwayFilter)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 160)
+                .frame(minWidth: 120, maxWidth: 200)
 
             TextField("Search locations", text: $searchFilter)
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 220)
+                .frame(minWidth: 180, maxWidth: 360)
 
             if hasActiveFilters {
                 Label("Filtered", systemImage: "line.3.horizontal.decrease.circle.fill")
@@ -398,7 +398,8 @@ struct ContentView: View {
             Spacer()
         }
         .padding(.horizontal, 24)
-        .frame(height: 48)
+        .frame(minHeight: 48)
+        .padding(.vertical, 4)
         .background(.background)
     }
 
@@ -1457,10 +1458,10 @@ struct JourneyCard: View {
             }
         }
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
         )
     }
 
@@ -1598,11 +1599,15 @@ struct CameraCard: View {
     let camera: TrafficCamera
     let cacheToken: Int
     let onPreview: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onPreview) {
             VStack(alignment: .leading, spacing: 0) {
-                AsyncImage(url: camera.thumbnailURL(cacheToken: cacheToken)) { phase in
+                AsyncImage(
+                    url: camera.thumbnailURL(cacheToken: cacheToken),
+                    transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
+                ) { phase in
                     ZStack {
                         Rectangle()
                             .fill(Color.primary.opacity(0.08))
@@ -1657,10 +1662,10 @@ struct CameraCard: View {
                 .padding(14)
             }
             .background(.background)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Radii.card))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Radii.card)
+                    .stroke(Color.cardStroke, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1685,6 +1690,7 @@ struct CameraPreviewView: View {
     let camera: TrafficCamera
     let cacheToken: Int
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1704,7 +1710,10 @@ struct CameraPreviewView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            AsyncImage(url: camera.imageURL(cacheToken: cacheToken)) { phase in
+            AsyncImage(
+                url: camera.imageURL(cacheToken: cacheToken),
+                transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
+            ) { phase in
                 ZStack {
                     Rectangle()
                         .fill(Color.primary.opacity(0.08))
@@ -1779,10 +1788,10 @@ struct RoadEventCard: View {
             .padding(16)
         }
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
         )
     }
 
@@ -1855,8 +1864,8 @@ struct VMSCard: View {
             }
 
             Text(sign.formattedMessage.uppercased())
-                .font(.system(size: 21, weight: .bold, design: .monospaced))
-                .foregroundStyle(Color(red: 1.0, green: 0.74, blue: 0.18))
+                .font(.system(.title2, design: .monospaced, weight: .bold))
+                .foregroundStyle(Color.vmsCardMessage)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, minHeight: 92)
                 .lineLimit(nil)
@@ -1868,11 +1877,11 @@ struct VMSCard: View {
             }
         }
         .padding(18)
-        .background(Color(red: 0.09, green: 0.13, blue: 0.18))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Color.vmsCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(red: 0.28, green: 0.34, blue: 0.42), lineWidth: 3)
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.vmsCardBorder, lineWidth: 1)
         )
     }
 }
@@ -2073,7 +2082,7 @@ struct StatCard: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(stat.value)
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .monospacedDigit()
             Text(stat.title)
                 .font(.caption.weight(.medium))
@@ -2100,7 +2109,7 @@ struct Badge: View {
             .padding(.vertical, 4)
             .foregroundStyle(tint == .yellow ? .black : .white)
             .background(tint)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: Radii.card))
     }
 }
 
@@ -2127,6 +2136,8 @@ struct FilterChip: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -2237,6 +2248,19 @@ struct DataSectionPill: View {
         .background(Color.primary.opacity(0.05))
         .clipShape(Capsule())
         .help(helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        if hasError {
+            return "failed to load"
+        }
+        if isLoading {
+            return "loading"
+        }
+        return "\(count)"
     }
 
     @ViewBuilder
