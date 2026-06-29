@@ -13,6 +13,11 @@
 		1A2B3C4D5E6F700000000004 /* TrafficStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000014 /* TrafficStore.swift */; };
 		1A2B3C4D5E6F700000000005 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000015 /* Views.swift */; };
 		1A2B3C4D5E6F700000000007 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000016 /* Theme.swift */; };
+		1A2B3C4D5E6F700000000045 /* MapViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000055 /* MapViews.swift */; };
+		1A2B3C4D5E6F700000000041 /* TabViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000051 /* TabViews.swift */; };
+		1A2B3C4D5E6F700000000042 /* Cards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000052 /* Cards.swift */; };
+		1A2B3C4D5E6F700000000043 /* InfoViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000053 /* InfoViews.swift */; };
+		1A2B3C4D5E6F700000000044 /* SharedComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000054 /* SharedComponents.swift */; };
 		1A2B3C4D5E6F700000000006 /* NZTATraffic.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */; };
 /* End PBXBuildFile section */
 
@@ -23,6 +28,11 @@
 		1A2B3C4D5E6F700000000014 /* TrafficStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficStore.swift; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000015 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000016 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000055 /* MapViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapViews.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000051 /* TabViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabViews.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000052 /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000053 /* InfoViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoViews.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000054 /* SharedComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedComponents.swift; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = NZTATraffic.icns; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000022 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
@@ -64,6 +74,11 @@
 				1A2B3C4D5E6F700000000014 /* TrafficStore.swift */,
 				1A2B3C4D5E6F700000000015 /* Views.swift */,
 				1A2B3C4D5E6F700000000016 /* Theme.swift */,
+				1A2B3C4D5E6F700000000055 /* MapViews.swift */,
+				1A2B3C4D5E6F700000000051 /* TabViews.swift */,
+				1A2B3C4D5E6F700000000052 /* Cards.swift */,
+				1A2B3C4D5E6F700000000053 /* InfoViews.swift */,
+				1A2B3C4D5E6F700000000054 /* SharedComponents.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -161,6 +176,11 @@
 				1A2B3C4D5E6F700000000004 /* TrafficStore.swift in Sources */,
 				1A2B3C4D5E6F700000000005 /* Views.swift in Sources */,
 				1A2B3C4D5E6F700000000007 /* Theme.swift in Sources */,
+				1A2B3C4D5E6F700000000045 /* MapViews.swift in Sources */,
+				1A2B3C4D5E6F700000000041 /* TabViews.swift in Sources */,
+				1A2B3C4D5E6F700000000042 /* Cards.swift in Sources */,
+				1A2B3C4D5E6F700000000043 /* InfoViews.swift in Sources */,
+				1A2B3C4D5E6F700000000044 /* SharedComponents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
