@@ -599,20 +599,15 @@ struct ContentView: View {
     }
 
     private func scopedCameras() -> [TrafficCamera] {
-        let base = store.filteredCameras(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-        let allowed = allowedCameraStatuses
-        return base.filter { allowed.contains($0.statusKind) }
+        store.scopedCameras(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, statuses: allowedCameraStatuses)
     }
 
     private func scopedEvents() -> [RoadEvent] {
-        let base = store.filteredEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-        let allowed = allowedEventImpacts
-        return base.filter { allowed.contains($0.impactKind) }
+        store.scopedEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, impacts: allowedEventImpacts)
     }
 
     private func scopedVMSSigns() -> [VMSSign] {
-        let base = store.filteredVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-        return hideEmptyVMS ? base.filter(\.hasDisplayMessage) : base
+        store.scopedVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, hideEmpty: hideEmptyVMS)
     }
 
     private var allowedFlowKinds: Set<FlowKind> {
@@ -626,9 +621,7 @@ struct ContentView: View {
     }
 
     private func scopedJourneys() -> [TrafficJourney] {
-        let base = store.filteredJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-        let allowed = allowedFlowKinds
-        return base.filter { allowed.contains($0.overallFlowKind) }
+        store.scopedJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
     }
 
     private func configureAutoRefresh() {
