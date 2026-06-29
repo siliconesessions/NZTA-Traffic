@@ -1,3 +1,4 @@
+import AppKit
 import MapKit
 import SwiftUI
 
@@ -61,6 +62,9 @@ struct ContentView: View {
     @State private var debouncedHighway = ""
     @State private var debouncedSearch = ""
     @State private var filterDebounceTask: Task<Void, Never>?
+    @AppStorage("nzta.hasSeenWelcome") private var hasSeenWelcome = false
+    @FocusState private var searchFocused: Bool
+    @State private var showWelcome = false
 
     // Injectable store so previews/tests can supply one backed by a stubbed
     // API service; defaults to a live store for the app. @MainActor because
@@ -81,6 +85,7 @@ struct ContentView: View {
         .frame(minWidth: 980, minHeight: 680)
         .background(Color.primary.opacity(0.025))
         .background(tabShortcuts)
+        .background(searchFocusShortcut)
         .task {
             await store.loadAllData()
         }
@@ -90,6 +95,9 @@ struct ContentView: View {
             debouncedHighway = highwayFilter
             debouncedSearch = searchFilter
             configureAutoRefresh()
+            if !hasSeenWelcome {
+                showWelcome = true
+            }
         }
         .onDisappear {
             autoRefreshTask?.cancel()
@@ -108,9 +116,37 @@ struct ContentView: View {
         .onChange(of: searchFilter) {
             scheduleFilterDebounce()
         }
+        .onChange(of: store.criticalAlertCount, initial: true) { _, count in
+            updateDockBadge(count)
+        }
         .sheet(item: $selectedCamera) { camera in
             CameraPreviewView(camera: camera, cacheToken: store.imageCacheToken)
         }
+        .sheet(isPresented: $showWelcome) {
+            WelcomeView(onFinish: finishWelcome)
+        }
+    }
+
+    // Show a Dock badge with the active-closure count (or clear it).
+    private func updateDockBadge(_ count: Int) {
+        NSApplication.shared.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
+    }
+
+    private func finishWelcome(enableAutoRefresh: Bool) {
+        if enableAutoRefresh {
+            autoRefreshEnabled = true
+            configureAutoRefresh()
+        }
+        hasSeenWelcome = true
+    }
+
+    // Hidden control: ⌘F moves focus to the search field.
+    private var searchFocusShortcut: some View {
+        Button("") { searchFocused = true }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
     }
 
     private var clampedRefreshInterval: Int {
@@ -270,6 +306,7 @@ struct ContentView: View {
             TextField("Search locations", text: $searchFilter)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 180, maxWidth: 360)
+                .focused($searchFocused)
 
             if hasActiveFilters {
                 Label("Filtered", systemImage: "line.3.horizontal.decrease.circle.fill")

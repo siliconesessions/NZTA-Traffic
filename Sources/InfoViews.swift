@@ -1,5 +1,43 @@
 import SwiftUI
 
+// First-run onboarding shown once (gated by @AppStorage in ContentView).
+struct WelcomeView: View {
+    @Environment(\.dismiss) private var dismiss
+    let onFinish: (_ enableAutoRefresh: Bool) -> Void
+    @State private var enableAutoRefresh = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Welcome to NZTA Traffic")
+                .font(.largeTitle.weight(.semibold))
+            Text("Live New Zealand traffic — cameras, road events, VMS signs, travel times, and a map.")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Switch sections with the tabs or ⌘1–6.", systemImage: "square.grid.2x2")
+                Label("Filter by region, highway (e.g. SH1), or search (⌘F). ⌘E clears filters.", systemImage: "line.3.horizontal.decrease.circle")
+                Label("⌘R refreshes the data. Open Help (⌘?) any time.", systemImage: "arrow.clockwise")
+            }
+            .font(.callout)
+
+            Toggle("Auto-refresh data while the app is open", isOn: $enableAutoRefresh)
+                .toggleStyle(.checkbox)
+
+            HStack {
+                Spacer()
+                Button("Get Started") {
+                    onFinish(enableAutoRefresh)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28)
+        .frame(width: 520)
+    }
+}
+
 struct AboutView: View {
     var body: some View {
         ScrollView {

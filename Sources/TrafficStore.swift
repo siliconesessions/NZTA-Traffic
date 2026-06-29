@@ -60,6 +60,11 @@ final class TrafficStore {
         return max(0, min(1, (total - remaining) / total))
     }
 
+    /// Count of high-priority events (road closures) — surfaced as a Dock badge.
+    var criticalAlertCount: Int {
+        events.filter(\.isClosure).count
+    }
+
     /// Loads all sections concurrently.
     /// - Parameter bustImageCache: when `true` (an explicit user refresh) the
     ///   image cache token is bumped so camera image URLs change and bypass the
