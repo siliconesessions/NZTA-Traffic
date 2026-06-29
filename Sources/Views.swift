@@ -32,7 +32,7 @@ enum TrafficTab: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @State private var store = TrafficStore()
+    @State private var store: TrafficStore
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
@@ -61,6 +61,14 @@ struct ContentView: View {
     @State private var debouncedHighway = ""
     @State private var debouncedSearch = ""
     @State private var filterDebounceTask: Task<Void, Never>?
+
+    // Injectable store so previews/tests can supply one backed by a stubbed
+    // API service; defaults to a live store for the app. @MainActor because
+    // TrafficStore is main-actor-isolated; the default is built in-body (not as
+    // a default argument) to keep that call on the main actor.
+    @MainActor init(store: TrafficStore? = nil) {
+        _store = State(initialValue: store ?? TrafficStore())
+    }
 
     var body: some View {
         VStack(spacing: 0) {
