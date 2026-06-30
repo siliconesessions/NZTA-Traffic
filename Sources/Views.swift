@@ -80,6 +80,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            offlineBanner
             Divider()
             filters
             Divider()
@@ -90,6 +91,8 @@ struct ContentView: View {
         .background(tabShortcuts)
         .background(searchFocusShortcut)
         .task {
+            // Show any cached data instantly, then fetch live and replace it.
+            await store.primeFromCache()
             await store.loadAllData()
         }
         .onAppear {
@@ -273,6 +276,34 @@ struct ContentView: View {
                 .padding(.bottom, 4)
         }
         .background(.background)
+    }
+
+    // Offline / cached-data banner under the header. Hidden in the normal online
+    // case; appears when unreachable or while any section is served from cache.
+    @ViewBuilder
+    private var offlineBanner: some View {
+        if store.shouldShowOfflineBanner {
+            OfflineBanner(message: offlineBannerMessage)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .background(.background)
+        }
+    }
+
+    private var offlineBannerMessage: String {
+        let suffix: String
+        if let timestamp = store.cacheTimestamp {
+            suffix = " from \(timestamp.formatted(.relative(presentation: .named)))"
+        } else {
+            suffix = ""
+        }
+        if !store.isOnline {
+            return store.isServingCachedData
+                ? "Offline — showing cached data\(suffix)"
+                : "Offline — no internet connection. Showing the latest available data."
+        }
+        // Online, but a fetch failed and we fell back to the on-disk cache.
+        return "Showing cached data\(suffix) — couldn’t reach NZTA."
     }
 
     private var lastUpdatedText: String {

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import SwiftUI
 
@@ -45,7 +46,22 @@ final class TrafficStore {
     private(set) var imageCacheToken: Int = Int(Date().timeIntervalSince1970)
     private(set) var isRefreshing = false
 
+    // Reachability + offline-cache state. `isOnline` is driven by NWPathMonitor;
+    // `isServingCachedData` / `cacheTimestamp` reflect whether the data currently
+    // in memory came from the on-disk offline cache (a failed or offline fetch
+    // fell back to it) and how old that snapshot is. These drive the offline
+    // banner. See the offline-cache exception documented in CLAUDE.md.
+    private(set) var isOnline = true
+    private(set) var isServingCachedData = false
+    private(set) var cacheTimestamp: Date?
+
     @ObservationIgnored private let service: TrafficAPIService
+    @ObservationIgnored private let cache = OfflineCache()
+    // Sections currently served from the on-disk cache because their live fetch
+    // failed (or has not completed yet). Drives `isServingCachedData`.
+    @ObservationIgnored private var servedSections: Set<DataSection> = []
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    @ObservationIgnored private let monitorQueue = DispatchQueue(label: "nzta.reachability.monitor")
 
     // Memoized filter+sort results, keyed on the active filter inputs and
     // cleared whenever the underlying data changes. Marked @ObservationIgnored
@@ -64,10 +80,33 @@ final class TrafficStore {
 
     init(service: TrafficAPIService = TrafficAPIService()) {
         self.service = service
+        startNetworkMonitoring()
+    }
+
+    deinit {
+        pathMonitor.cancel()
     }
 
     func isLoading(_ section: DataSection) -> Bool {
         loadingSections.contains(section)
+    }
+
+    /// Show the offline / cached-data banner when the network is unreachable or
+    /// any section is currently being served from the on-disk cache.
+    var shouldShowOfflineBanner: Bool {
+        !isOnline || isServingCachedData
+    }
+
+    // NWPathMonitor reports reachability changes on a background queue; hop back
+    // to the main actor to update the observed `isOnline` flag.
+    private func startNetworkMonitoring() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor in
+                self?.isOnline = online
+            }
+        }
+        pathMonitor.start(queue: monitorQueue)
     }
 
     var loadProgress: Double {
@@ -110,31 +149,124 @@ final class TrafficStore {
         if bustImageCache {
             imageCacheToken = Int(Date().timeIntervalSince1970)
         }
+        await refreshCacheBannerState()
         isRefreshing = false
     }
 
+    /// Populates empty sections from the on-disk cache so the UI has content to
+    /// show immediately on launch, ahead of (or in place of) the first live
+    /// fetch. Decoding runs off the main actor. Only fills sections that are
+    /// still empty, so it never clobbers fresher live data already in memory.
+    func primeFromCache() async {
+        var served: Set<DataSection> = []
+        if await primeSection(.cameras, keyPath: \.cameras, decode: { await self.service.decodeCachedCameras($0) }) {
+            served.insert(.cameras)
+        }
+        if await primeSection(.events, keyPath: \.events, decode: { await self.service.decodeCachedRoadEvents($0) }) {
+            served.insert(.events)
+        }
+        if await primeSection(.vms, keyPath: \.vmsSigns, decode: { await self.service.decodeCachedVMSSigns($0) }) {
+            served.insert(.vms)
+        }
+        if await primeSection(.journeys, keyPath: \.journeys, decode: { await self.service.decodeCachedJourneys($0) }) {
+            served.insert(.journeys)
+        }
+        guard !served.isEmpty else {
+            return
+        }
+        servedSections.formUnion(served)
+        invalidateFilterCaches()
+        allRegions = computeAllRegions()
+        isServingCachedData = true
+        cacheTimestamp = await cache.newestModificationDate(among: servedSections)
+    }
+
+    private func primeSection<T>(
+        _ section: DataSection,
+        keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>,
+        decode: (Data) async -> [T]?
+    ) async -> Bool {
+        guard self[keyPath: keyPath].isEmpty,
+              let data = await cache.read(section: section),
+              let value = await decode(data) else {
+            return false
+        }
+        self[keyPath: keyPath] = value
+        return true
+    }
+
     private func loadCameras() async {
-        let result = await service.fetchCamerasResult()
-        apply(result, to: .cameras, keyPath: \.cameras)
-        loadingSections.remove(.cameras)
+        await loadCached(
+            section: .cameras,
+            keyPath: \.cameras,
+            fetch: { await self.service.fetchCamerasResult() },
+            decodeCache: { await self.service.decodeCachedCameras($0) }
+        )
     }
 
     private func loadEvents() async {
-        let result = await service.fetchRoadEventsResult()
-        apply(result, to: .events, keyPath: \.events)
-        loadingSections.remove(.events)
+        await loadCached(
+            section: .events,
+            keyPath: \.events,
+            fetch: { await self.service.fetchRoadEventsResult() },
+            decodeCache: { await self.service.decodeCachedRoadEvents($0) }
+        )
     }
 
     private func loadVMS() async {
-        let result = await service.fetchVMSSignsResult()
-        apply(result, to: .vms, keyPath: \.vmsSigns)
-        loadingSections.remove(.vms)
+        await loadCached(
+            section: .vms,
+            keyPath: \.vmsSigns,
+            fetch: { await self.service.fetchVMSSignsResult() },
+            decodeCache: { await self.service.decodeCachedVMSSigns($0) }
+        )
     }
 
     private func loadJourneys() async {
-        let result = await service.fetchJourneysResult()
-        apply(result, to: .journeys, keyPath: \.journeys)
-        loadingSections.remove(.journeys)
+        await loadCached(
+            section: .journeys,
+            keyPath: \.journeys,
+            fetch: { await self.service.fetchJourneysResult() },
+            decodeCache: { await self.service.decodeCachedJourneys($0) }
+        )
+    }
+
+    // Shared load path for the four offline-cacheable sections. On success it
+    // updates the in-memory slice and persists the raw bytes; on failure it
+    // surfaces the error and falls back to the cached copy (if any), marking the
+    // section cache-served so the offline banner appears. Disk IO runs on the
+    // OfflineCache actor (off the main actor).
+    private func loadCached<T>(
+        section: DataSection,
+        keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>,
+        fetch: () async -> Result<(value: [T], data: Data), Error>,
+        decodeCache: (Data) async -> [T]?
+    ) async {
+        switch await fetch() {
+        case .success(let fetched):
+            self[keyPath: keyPath] = fetched.value
+            invalidateFilterCaches()
+            servedSections.remove(section)
+            await cache.write(fetched.data, section: section)
+        case .failure(let error):
+            errors[section] = errorMessage(error)
+            if let data = await cache.read(section: section),
+               let restored = await decodeCache(data) {
+                self[keyPath: keyPath] = restored
+                invalidateFilterCaches()
+                servedSections.insert(section)
+            }
+        }
+        loadingSections.remove(section)
+    }
+
+    // Recompute the offline-banner state from which sections (if any) are still
+    // being served from cache after a load attempt.
+    private func refreshCacheBannerState() async {
+        isServingCachedData = !servedSections.isEmpty
+        cacheTimestamp = isServingCachedData
+            ? await cache.newestModificationDate(among: servedSections)
+            : nil
     }
 
     private func loadTIMSigns() async {
@@ -338,5 +470,58 @@ final class TrafficStore {
             return message
         }
         return error.localizedDescription
+    }
+}
+
+// Persists raw section JSON to Application Support so the app can show the last
+// known data while offline or when a fetch fails. This is the one place the app
+// keeps API data on disk (see the offline-cache exception in CLAUDE.md). All IO
+// is actor-isolated to keep it off the main actor, and every operation is
+// best-effort: failures silently no-op rather than disrupting live data.
+actor OfflineCache {
+    private let directory: URL
+
+    init() {
+        let fileManager = FileManager.default
+        let base = (try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )) ?? fileManager.temporaryDirectory
+        directory = base
+            .appendingPathComponent("NZTATraffic", isDirectory: true)
+            .appendingPathComponent("OfflineCache", isDirectory: true)
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func write(_ data: Data, section: DataSection) {
+        try? data.write(to: fileURL(for: section), options: .atomic)
+    }
+
+    func read(section: DataSection) -> Data? {
+        try? Data(contentsOf: fileURL(for: section))
+    }
+
+    // Most recent on-disk modification time among the given cached sections —
+    // i.e. how old the snapshot currently being shown is.
+    func newestModificationDate(among sections: Set<DataSection>) -> Date? {
+        var newest: Date?
+        for section in sections {
+            guard
+                let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(for: section).path),
+                let modified = attributes[.modificationDate] as? Date
+            else {
+                continue
+            }
+            if newest == nil || modified > newest! {
+                newest = modified
+            }
+        }
+        return newest
+    }
+
+    private func fileURL(for section: DataSection) -> URL {
+        directory.appendingPathComponent("\(section.rawValue).json", isDirectory: false)
     }
 }

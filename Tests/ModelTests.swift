@@ -15,6 +15,34 @@ func runModelTests(_ t: TestRunner) {
     testTIMSigns(t)
     testJourneyEnrichment(t)
     testCongestion(t)
+    testCacheableSectionDecoding(t)
+}
+
+// The offline cache stores each cacheable section's raw API response bytes and
+// replays them through the same payload wrappers on a later launch or fetch
+// failure. This pins that re-decode path: the four wrappers must decode the
+// full `{"response":{…}}` response shape the cache persists.
+private func testCacheableSectionDecoding(_ t: TestRunner) {
+    t.group("offline cache re-decode")
+
+    let camerasJSON = #"{"response":{"camera":[{"id":714,"name":"Hinds","highway":"SH1","latitude":-43.9,"longitude":171.5}]}}"#
+    let cameras = decodeModel(CamerasPayload.self, camerasJSON, t)?.response.camera
+    t.equal(cameras?.count, 1, "cached cameras payload re-decodes")
+    t.equal(cameras?.first?.name, "Hinds", "cached camera fields survive re-decode")
+
+    let eventsJSON = #"{"response":{"roadevent":[{"id":"e1","eventDescription":"Slip","impact":"ROAD_CLOSED"}]}}"#
+    let events = decodeModel(RoadEventsPayload.self, eventsJSON, t)?.response.roadevent
+    t.equal(events?.count, 1, "cached events payload re-decodes")
+    t.equal(events?.first?.eventDescription, "Slip", "cached event fields survive re-decode")
+
+    let vmsJSON = #"{"response":{"vms":[{"id":"v1","name":"SH1 Sign","currentMessage":"DRIVE[nl]SAFE"}]}}"#
+    let vms = decodeModel(VMSPayload.self, vmsJSON, t)?.response.vms
+    t.equal(vms?.count, 1, "cached VMS payload re-decodes")
+
+    let journeysJSON = #"{"response":{"journey":[{"id":339,"name":"CNC","totalLength":1200}]}}"#
+    let journeys = decodeModel(JourneysPayload.self, journeysJSON, t)?.response.journey
+    t.equal(journeys?.count, 1, "cached journeys payload re-decodes")
+    t.equal(journeys?.first?.displayName, "CNC", "cached journey fields survive re-decode")
 }
 
 // Auckland congestion XML feed (traffic-conditions/rest/2). Verifies the

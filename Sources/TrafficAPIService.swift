@@ -31,24 +31,47 @@ struct TrafficAPIService {
         decoder = JSONDecoder()
     }
 
-    func fetchCameras() async throws -> [TrafficCamera] {
-        let payload: CamerasPayload = try await request("/cameras/all")
-        return payload.response.camera
+    // The four offline-cacheable JSON sections surface their raw response bytes
+    // alongside the decoded value so the store can persist the exact JSON to disk
+    // (see TrafficStore.OfflineCache). The same bytes are later re-decoded via the
+    // `decodeCached…` helpers through these identical payload wrappers.
+    func fetchCameras() async throws -> (value: [TrafficCamera], data: Data) {
+        let data = try await requestData(baseURL + "/cameras/all", accept: "application/json")
+        return (try decodePayload(CamerasPayload.self, from: data).response.camera, data)
     }
 
-    func fetchRoadEvents() async throws -> [RoadEvent] {
-        let payload: RoadEventsPayload = try await request("/events/all/10")
-        return payload.response.roadevent
+    func fetchRoadEvents() async throws -> (value: [RoadEvent], data: Data) {
+        let data = try await requestData(baseURL + "/events/all/10", accept: "application/json")
+        return (try decodePayload(RoadEventsPayload.self, from: data).response.roadevent, data)
     }
 
-    func fetchVMSSigns() async throws -> [VMSSign] {
-        let payload: VMSPayload = try await request("/signs/vms/all")
-        return payload.response.vms
+    func fetchVMSSigns() async throws -> (value: [VMSSign], data: Data) {
+        let data = try await requestData(baseURL + "/signs/vms/all", accept: "application/json")
+        return (try decodePayload(VMSPayload.self, from: data).response.vms, data)
     }
 
-    func fetchJourneys() async throws -> [TrafficJourney] {
-        let payload: JourneysPayload = try await request("/journeys/all/10")
-        return payload.response.journey
+    func fetchJourneys() async throws -> (value: [TrafficJourney], data: Data) {
+        let data = try await requestData(baseURL + "/journeys/all/10", accept: "application/json")
+        return (try decodePayload(JourneysPayload.self, from: data).response.journey, data)
+    }
+
+    // Re-decode persisted section bytes for offline replay, off the main actor.
+    // Returns nil when the cached JSON no longer parses (e.g. the API shape
+    // changed since it was written) so the caller can quietly skip that section.
+    nonisolated func decodeCachedCameras(_ data: Data) async -> [TrafficCamera]? {
+        try? decoder.decode(CamerasPayload.self, from: data).response.camera
+    }
+
+    nonisolated func decodeCachedRoadEvents(_ data: Data) async -> [RoadEvent]? {
+        try? decoder.decode(RoadEventsPayload.self, from: data).response.roadevent
+    }
+
+    nonisolated func decodeCachedVMSSigns(_ data: Data) async -> [VMSSign]? {
+        try? decoder.decode(VMSPayload.self, from: data).response.vms
+    }
+
+    nonisolated func decodeCachedJourneys(_ data: Data) async -> [TrafficJourney]? {
+        try? decoder.decode(JourneysPayload.self, from: data).response.journey
     }
 
     func fetchTIMSigns() async throws -> [TIMSign] {
@@ -79,19 +102,19 @@ struct TrafficAPIService {
     // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
     // decode of large payloads run on the cooperative thread pool rather than
     // blocking the main thread.
-    nonisolated func fetchCamerasResult() async -> Result<[TrafficCamera], Error> {
+    nonisolated func fetchCamerasResult() async -> Result<(value: [TrafficCamera], data: Data), Error> {
         await result { try await fetchCameras() }
     }
 
-    nonisolated func fetchRoadEventsResult() async -> Result<[RoadEvent], Error> {
+    nonisolated func fetchRoadEventsResult() async -> Result<(value: [RoadEvent], data: Data), Error> {
         await result { try await fetchRoadEvents() }
     }
 
-    nonisolated func fetchVMSSignsResult() async -> Result<[VMSSign], Error> {
+    nonisolated func fetchVMSSignsResult() async -> Result<(value: [VMSSign], data: Data), Error> {
         await result { try await fetchVMSSigns() }
     }
 
-    nonisolated func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
+    nonisolated func fetchJourneysResult() async -> Result<(value: [TrafficJourney], data: Data), Error> {
         await result { try await fetchJourneys() }
     }
 
@@ -212,6 +235,18 @@ struct TrafficAPIService {
 
         do {
             return try decoder.decode(T.self, from: data)
+        } catch {
+            let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
+            throw TrafficAPIError.decoding(error.localizedDescription, prefix)
+        }
+    }
+
+    // Decode raw bytes that were fetched separately (the cacheable JSON sections
+    // go through requestData so they can also persist the bytes), wrapping decode
+    // failures the same way performRequest does.
+    nonisolated private func decodePayload<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        do {
+            return try decoder.decode(type, from: data)
         } catch {
             let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
             throw TrafficAPIError.decoding(error.localizedDescription, prefix)

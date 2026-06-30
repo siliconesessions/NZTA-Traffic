@@ -299,6 +299,34 @@ struct ErrorBanner: View {
     }
 }
 
+// Top-of-window banner shown when the app is offline or is displaying data from
+// the on-disk cache rather than a live fetch. Styled distinctly from ErrorBanner
+// (amber / informational rather than red / error) because cached data is still
+// useful — it just may be stale.
+struct OfflineBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wifi.slash")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct LoadingView: View {
     let title: String
 
