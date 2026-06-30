@@ -13,6 +13,47 @@ func runModelTests(_ t: TestRunner) {
     testRegions(t)
     testEVChargers(t)
     testTIMSigns(t)
+    testJourneyEnrichment(t)
+}
+
+// Journey-level route geometry (WKT MULTILINESTRING -> single overlay polyline)
+// and the "slowest leg" bottleneck (lowest flow among legs with live data).
+private func testJourneyEnrichment(_ t: TestRunner) {
+    t.group("journey route + slowest leg")
+    let json = #"""
+    {
+      "id": "j1",
+      "name": "SH1",
+      "geometry": "MULTILINESTRING ((174.0 -41.0, 174.5 -41.5, 175.0 -42.0))",
+      "legs": [
+        {"name": "A to B", "sequenceNumber": 1, "speed": 90, "flow": 0.95, "coverage": 1, "geometry": "LINESTRING (174.0 -41.0, 174.5 -41.5)"},
+        {"name": "B to C", "sequenceNumber": 2, "speed": 22, "flow": 0.24, "coverage": 1, "geometry": "LINESTRING (174.5 -41.5, 175.0 -42.0)"},
+        {"name": "Stale", "sequenceNumber": 3, "speed": -1, "flow": 0, "coverage": 0}
+      ]
+    }
+    """#
+    guard let journey = decodeModel(TrafficJourney.self, json, t) else { return }
+
+    t.equal(journey.routePolylineLatitudes.count, 3, "route geometry yields 3 points")
+    t.equal(journey.routePolyline.count, 3, "routePolyline builds 3 coordinates")
+    if journey.routePolyline.count == 3 {
+        t.nearlyEqual(journey.routePolyline[0].latitude, -41.0, "route first latitude")
+        t.nearlyEqual(journey.routePolyline[2].longitude, 175.0, "route last longitude")
+    }
+
+    let slowest = journey.slowestLeg
+    t.equal(slowest?.name, "B to C", "slowest leg is the lowest-flow live leg")
+    t.check(slowest?.flowKind == .congested, "slowest leg flowKind reflects congestion")
+    t.check(journey.slowestLeg?.name != "Stale", "stale (no live data) leg is never the slowest")
+
+    // A journey with no live legs has no bottleneck to surface.
+    let deadJson = #"""
+    {"id":"j2","name":"Quiet","geometry":"MULTILINESTRING ((174.0 -41.0, 175.0 -42.0))",
+     "legs":[{"name":"X","sequenceNumber":1,"speed":-1,"flow":0,"coverage":0}]}
+    """#
+    guard let dead = decodeModel(TrafficJourney.self, deadJson, t) else { return }
+    t.check(dead.slowestLeg == nil, "no live legs -> nil slowestLeg")
+    t.equal(dead.routePolyline.count, 2, "route still parses without live legs")
 }
 
 // TIM travel-time board decoding. The upstream shape is loose: `page` is a

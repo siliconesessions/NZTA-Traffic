@@ -32,6 +32,8 @@ struct JourneyCard: View {
                 Spacer().frame(height: 10)
             }
 
+            slowestLegCallout
+
             if !journey.legs.isEmpty {
                 Divider()
                 ForEach(Array(journey.legs.enumerated()), id: \.offset) { index, leg in
@@ -54,6 +56,42 @@ struct JourneyCard: View {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
         )
+    }
+
+    // The journey's bottleneck. Only highlighted when it's genuinely slow or
+    // congested so the callout flags a problem rather than restating free flow.
+    private var bottleneckLeg: TrafficJourneyLeg? {
+        guard let leg = journey.slowestLeg,
+              leg.flowKind == .slow || leg.flowKind == .congested else {
+            return nil
+        }
+        return leg
+    }
+
+    @ViewBuilder
+    private var slowestLegCallout: some View {
+        if let leg = bottleneckLeg {
+            HStack(spacing: 8) {
+                Image(systemName: "tortoise.fill")
+                    .font(.caption2)
+                    .foregroundStyle(leg.flowKind.color)
+                Text("Slowest leg")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(leg.name ?? "Leg")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                if let speed = leg.speed, speed > 0 {
+                    Text("\(Int(speed.rounded())) km/h")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Badge(text: leg.flowKind.label, tint: leg.flowKind.color)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
     }
 
     private var summaryLine: String? {

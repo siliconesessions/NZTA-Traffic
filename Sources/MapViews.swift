@@ -162,6 +162,23 @@ struct TrafficMapTabView: View {
         return overlays
     }
 
+    private var journeyRoutes: [FlowRouteOverlay] {
+        guard selectedLayer == .flow else {
+            return []
+        }
+        return journeys.compactMap { journey in
+            let coordinates = journey.routePolyline
+            guard coordinates.count >= 2 else {
+                return nil
+            }
+            return FlowRouteOverlay(
+                id: "route|\(journey.id)",
+                coordinates: coordinates,
+                flowKind: journey.overallFlowKind
+            )
+        }
+    }
+
     private var totalCount: Int {
         switch selectedLayer {
         case .cameras:
@@ -184,7 +201,7 @@ struct TrafficMapTabView: View {
         case .cameras, .events, .vms, .timSigns, .evChargers:
             return !features.isEmpty
         case .flow:
-            return !flowLegs.isEmpty
+            return !flowLegs.isEmpty || !journeyRoutes.isEmpty
         }
     }
 
@@ -296,6 +313,12 @@ struct TrafficMapTabView: View {
             ZStack(alignment: .topLeading) {
                 Map(position: $position) {
                     if selectedLayer == .flow {
+                        // Full journey route as a single casing underneath, with
+                        // the live per-leg segments drawn on top for detail.
+                        ForEach(journeyRoutes) { route in
+                            MapPolyline(coordinates: route.coordinates)
+                                .stroke(route.flowKind.color.opacity(0.4), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                        }
                         ForEach(flowLegs) { leg in
                             MapPolyline(coordinates: leg.coordinates)
                                 .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
@@ -532,6 +555,12 @@ private enum TrafficMapFeature: Identifiable {
 }
 
 private struct FlowLegOverlay: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let flowKind: FlowKind
+}
+
+private struct FlowRouteOverlay: Identifiable {
     let id: String
     let coordinates: [CLLocationCoordinate2D]
     let flowKind: FlowKind

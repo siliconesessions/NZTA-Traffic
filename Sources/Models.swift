@@ -1122,6 +1122,8 @@ struct TrafficJourney: Decodable, Identifiable {
     let regionInfo: Region?
     let wayInfo: Way?
     let legs: [TrafficJourneyLeg]
+    let routePolylineLatitudes: [Double]
+    let routePolylineLongitudes: [Double]
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -1133,6 +1135,12 @@ struct TrafficJourney: Decodable, Identifiable {
         let regionValue = decodeFirstRegion(container: container, key: .regions)
         let wayValue = decodeFirstWay(container: container, key: .ways)
         let legsValue = container.decodeFlexibleArray(TrafficJourneyLeg.self, forKey: .legs)
+
+        // Journey-level `geometry` is the full route as a WKT MULTILINESTRING.
+        // parseWKTLineStringCoords flattens it to one ordered coordinate list.
+        let routeCoords = parseWKTLineStringCoords(cleanText(container.decodeLossyString(forKey: .geometry)))
+        routePolylineLatitudes = routeCoords.latitudes
+        routePolylineLongitudes = routeCoords.longitudes
 
         rawId = decodedId
         id = deterministicID(
@@ -1173,6 +1181,30 @@ struct TrafficJourney: Decodable, Identifiable {
 
     var hasLiveData: Bool {
         legs.contains(where: \.hasLiveData)
+    }
+
+    /// Full journey route, built from the journey-level WKT geometry, for
+    /// drawing the whole path as a single overlay on the Flow map layer.
+    var routePolyline: [CLLocationCoordinate2D] {
+        guard routePolylineLatitudes.count == routePolylineLongitudes.count, !routePolylineLatitudes.isEmpty else {
+            return []
+        }
+        var result: [CLLocationCoordinate2D] = []
+        result.reserveCapacity(routePolylineLatitudes.count)
+        for index in 0..<routePolylineLatitudes.count {
+            result.append(CLLocationCoordinate2D(latitude: routePolylineLatitudes[index], longitude: routePolylineLongitudes[index]))
+        }
+        return result
+    }
+
+    /// The leg carrying the heaviest congestion (lowest flow) among legs that
+    /// have live data — the journey's bottleneck. nil when nothing is live.
+    var slowestLeg: TrafficJourneyLeg? {
+        legs
+            .filter { $0.hasLiveData && ($0.flow ?? -1) >= 0 }
+            .min { lhs, rhs in
+                (lhs.flow ?? .greatestFiniteMagnitude) < (rhs.flow ?? .greatestFiniteMagnitude)
+            }
     }
 
     var totalCurrentTime: TimeInterval? {
@@ -1247,6 +1279,7 @@ struct TrafficJourney: Decodable, Identifiable {
         case regions
         case ways
         case legs
+        case geometry
     }
 }
 
