@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct JourneyCard: View {
@@ -282,6 +283,10 @@ struct CameraPreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var largerViewURL: URL? {
+        trafficNZURL(from: camera.viewUrl)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
@@ -294,6 +299,14 @@ struct CameraPreviewView: View {
                     }
                 }
                 Spacer()
+                if let largerViewURL {
+                    Button {
+                        NSWorkspace.shared.open(largerViewURL)
+                    } label: {
+                        Label("Open on trafficnz.info", systemImage: "safari")
+                    }
+                    .help("Open this camera's page on trafficnz.info")
+                }
                 Button("Close") {
                     dismiss()
                 }
