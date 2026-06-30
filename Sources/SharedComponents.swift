@@ -375,6 +375,87 @@ struct FilterableEmptyState: View {
     }
 }
 
+// MARK: - Keyboard list navigation
+
+// Makes a list/grid item keyboard-focusable with a visible accent focus ring
+// and wires the arrow keys (↑/← previous, ↓/→ next) to move focus to the
+// adjacent item in `orderedIDs`. Mouse clicks and any existing button action are
+// left untouched — this only adds a parallel keyboard path. `onActivate`, when
+// supplied, fires on Return/Space so the focused item can be "opened" from the
+// keyboard; rows without a detail action omit it.
+private struct KeyboardNavigableItem<ID: Hashable>: ViewModifier {
+    let id: ID
+    let orderedIDs: [ID]
+    @FocusState.Binding var focusedID: ID?
+    var onActivate: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content
+            .focusable()
+            .focused($focusedID, equals: id)
+            .overlay {
+                RoundedRectangle(cornerRadius: Radii.card)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .opacity(focusedID == id ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .onMoveCommand(perform: moveFocus)
+            .onKeyPress(.return, action: activate)
+            .onKeyPress(.space, action: activate)
+    }
+
+    private func activate() -> KeyPress.Result {
+        guard let onActivate else {
+            return .ignored
+        }
+        onActivate()
+        return .handled
+    }
+
+    private func moveFocus(_ direction: MoveCommandDirection) {
+        // Anchor on the current focus, falling back to the first item so an
+        // arrow press from "nothing focused" still enters the list.
+        guard let current = focusedID ?? orderedIDs.first,
+              let index = orderedIDs.firstIndex(of: current) else {
+            return
+        }
+        let nextIndex: Int
+        switch direction {
+        case .up, .left:
+            nextIndex = index - 1
+        case .down, .right:
+            nextIndex = index + 1
+        @unknown default:
+            return
+        }
+        guard orderedIDs.indices.contains(nextIndex) else {
+            return
+        }
+        focusedID = orderedIDs[nextIndex]
+    }
+}
+
+extension View {
+    // Apply to each row/card inside a ForEach. `orderedIDs` is the visible,
+    // already-filtered list of ids in display order so arrow keys follow what
+    // the user actually sees.
+    func keyboardNavigable<ID: Hashable>(
+        id: ID,
+        in orderedIDs: [ID],
+        focus: FocusState<ID?>.Binding,
+        onActivate: (() -> Void)? = nil
+    ) -> some View {
+        modifier(
+            KeyboardNavigableItem(
+                id: id,
+                orderedIDs: orderedIDs,
+                focusedID: focus,
+                onActivate: onActivate
+            )
+        )
+    }
+}
+
 struct SettingsView: View {
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
