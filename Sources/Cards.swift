@@ -347,14 +347,26 @@ struct RoadEventCard: View {
 
                     Spacer()
 
-                    if let impact = event.impact {
-                        Badge(text: impact, tint: impactColor)
+                    HStack(spacing: 6) {
+                        Badge(
+                            text: event.isPlanned ? "Planned" : "Incident",
+                            tint: event.isPlanned ? .blue : .indigo
+                        )
+                        if let impact = event.impact {
+                            Badge(text: impact, tint: impactColor)
+                        }
                     }
                 }
 
                 if let location = event.locationArea {
                     Label(location, systemImage: "location.fill")
                         .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let near = event.nearestLandmark {
+                    Label(near, systemImage: "mappin.and.ellipse")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -407,11 +419,17 @@ struct EventMetaGrid: View {
             if let eventType = event.eventType {
                 SmallMeta(text: eventType, systemImage: "tag")
             }
-            if let started = formatTrafficDate(event.startDate) {
-                SmallMeta(text: "Started: \(started)", systemImage: "clock")
+            if let started = startedText {
+                SmallMeta(text: started, systemImage: "clock")
             }
-            if let expected = formatTrafficDate(event.expectedResolution) {
-                SmallMeta(text: "Expected: \(expected)", systemImage: "calendar")
+            if let updated = updatedText {
+                SmallMeta(text: updated, systemImage: "arrow.clockwise")
+            }
+            if let ends = endsText {
+                SmallMeta(text: ends, systemImage: "calendar")
+            }
+            if let island = event.eventIsland {
+                SmallMeta(text: island, systemImage: "map")
             }
             if let source = event.informationSource {
                 SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
@@ -420,6 +438,28 @@ struct EventMetaGrid: View {
                 SmallMeta(text: status, systemImage: "checkmark.circle")
             }
         }
+    }
+
+    // Prefer a relative reading ("Started 2 days ago"); fall back to the
+    // absolute NZ date when the timestamp can't be parsed into a relative one.
+    private var startedText: String? {
+        if let relative = formatRelativeTrafficDate(event.startDate) {
+            return "Started \(relative)"
+        }
+        return formatTrafficDate(event.startDate).map { "Started: \($0)" }
+    }
+
+    private var updatedText: String? {
+        formatRelativeTrafficDate(event.eventModified).map { "Updated \($0)" }
+    }
+
+    // The API rarely sends `endDate`; when absent fall back to the planned
+    // resolution estimate so the card still carries a "when" cue.
+    private var endsText: String? {
+        if let relative = formatRelativeTrafficDate(event.endDate) {
+            return "Ends \(relative)"
+        }
+        return formatTrafficDate(event.expectedResolution).map { "Expected: \($0)" }
     }
 }
 

@@ -9,6 +9,7 @@ func runModelTests(_ t: TestRunner) {
     testVMSMessage(t)
     testTrafficDate(t)
     testCameraMatching(t)
+    testEventFields(t)
 }
 
 // B2 — Double->Int conversion must never trap on out-of-range / non-finite.
@@ -81,6 +82,40 @@ private func testTrafficDate(_ t: TestRunner) {
     t.check(display?.contains("15 Jun") == true, "ISO date formats to NZ day/month (got \(display ?? "nil"))")
     t.equal(formatTrafficDate(nil), nil, "nil -> nil")
     t.equal(formatTrafficDate("garbage"), "garbage", "unparseable string returned as-is")
+}
+
+// Surfaced RoadEvent fields the app already downloads: planned flag,
+// directLineDistance landmarks, and the eventIsland filter predicate.
+private func testEventFields(_ t: TestRunner) {
+    t.group("RoadEvent surfaced fields")
+    let json = #"{"id":"e1","eventDescription":"Slip","planned":false,"eventIsland":"South Island","directLineDistance1":"1.20 km north of Rapahoe","directLineDistance2":"4.23 km north of Dunollie","directLineDistance3":"4.84 km north of Runanga"}"#
+    guard let event = decodeModel(RoadEvent.self, json, t) else { return }
+    t.equal(event.directLineDistance1, "1.20 km north of Rapahoe", "directLineDistance1 decodes")
+    t.equal(event.directLineDistance2, "4.23 km north of Dunollie", "directLineDistance2 decodes")
+    t.equal(event.directLineDistance3, "4.84 km north of Runanga", "directLineDistance3 decodes")
+    t.equal(event.nearestLandmark, "1.20 km north of Rapahoe", "nearestLandmark is the closest landmark")
+    t.equal(event.planned, false, "planned bool decodes false")
+    t.check(!event.isPlanned, "isPlanned is false for an incident")
+    t.equal(event.eventIsland, "South Island", "eventIsland decodes")
+
+    let plannedJson = #"{"id":"e2","eventDescription":"Roadworks","planned":true}"#
+    guard let planned = decodeModel(RoadEvent.self, plannedJson, t) else { return }
+    t.equal(planned.planned, true, "planned bool decodes true")
+    t.check(planned.isPlanned, "isPlanned is true for planned works")
+    t.check(planned.nearestLandmark == nil, "no directLineDistance -> nil nearestLandmark")
+
+    // Missing planned flag is treated as an unplanned incident.
+    let noFlagJson = #"{"id":"e3","eventDescription":"Crash"}"#
+    let noFlag = decodeModel(RoadEvent.self, noFlagJson, t)
+    t.equal(noFlag?.planned, nil, "absent planned -> nil")
+    t.check(noFlag?.isPlanned == false, "absent planned reads as incident")
+
+    t.check(EventIslandFilter.all.matches("North Island"), "all matches any island")
+    t.check(EventIslandFilter.all.matches(nil), "all matches nil island")
+    t.check(EventIslandFilter.south.matches("South Island"), "south matches South Island")
+    t.check(!EventIslandFilter.south.matches("North Island"), "south excludes North Island")
+    t.check(EventIslandFilter.north.matches("North Island"), "north matches North Island")
+    t.check(!EventIslandFilter.north.matches(nil), "north excludes nil island")
 }
 
 private func testCameraMatching(_ t: TestRunner) {

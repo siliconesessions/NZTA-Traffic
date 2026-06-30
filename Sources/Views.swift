@@ -41,6 +41,9 @@ struct ContentView: View {
     @AppStorage("nzta.event.showDelays") private var showEventDelays = true
     @AppStorage("nzta.event.showCaution") private var showEventCaution = true
     @AppStorage("nzta.event.showOther") private var showEventOther = true
+    @AppStorage("nzta.event.showPlanned") private var showEventPlanned = true
+    @AppStorage("nzta.event.showUnplanned") private var showEventUnplanned = true
+    @AppStorage("nzta.event.island") private var eventIslandFilter: EventIslandFilter = .all
     @AppStorage("nzta.camera.showOnline") private var showCameraOnline = true
     @AppStorage("nzta.camera.showOffline") private var showCameraOffline = true
     @AppStorage("nzta.camera.showMaintenance") private var showCameraMaintenance = true
@@ -614,7 +617,10 @@ struct ContentView: View {
             showClosures: $showEventClosures,
             showDelays: $showEventDelays,
             showCaution: $showEventCaution,
-            showOther: $showEventOther
+            showOther: $showEventOther,
+            showPlanned: $showEventPlanned,
+            showUnplanned: $showEventUnplanned,
+            island: $eventIslandFilter
         )
     }
 
@@ -640,7 +646,15 @@ struct ContentView: View {
     }
 
     private func scopedEvents() -> [RoadEvent] {
-        store.scopedEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, impacts: allowedEventImpacts)
+        store.scopedEvents(
+            region: selectedRegion,
+            highway: debouncedHighway,
+            search: debouncedSearch,
+            impacts: allowedEventImpacts,
+            showPlanned: showEventPlanned,
+            showUnplanned: showEventUnplanned,
+            island: eventIslandFilter
+        )
     }
 
     private func scopedVMSSigns() -> [VMSSign] {

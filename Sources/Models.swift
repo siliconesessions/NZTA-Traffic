@@ -237,6 +237,9 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let status: String?
     let supplier: String?
     let startDate: String?
+    let directLineDistance1: String?
+    let directLineDistance2: String?
+    let directLineDistance3: String?
     let region: Region?
     let journey: Journey?
     let journeyLeg: JourneyLeg?
@@ -303,6 +306,9 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         status = cleanText(container.decodeLossyString(forKey: .status))
         supplier = cleanText(container.decodeLossyString(forKey: .supplier))
         startDate = startDateValue
+        directLineDistance1 = cleanText(container.decodeLossyString(forKey: .directLineDistance1))
+        directLineDistance2 = cleanText(container.decodeLossyString(forKey: .directLineDistance2))
+        directLineDistance3 = cleanText(container.decodeLossyString(forKey: .directLineDistance3))
         region = regionValue
         journey = journeyValue
         journeyLeg = try? container.decodeIfPresent(JourneyLeg.self, forKey: .journeyLeg)
@@ -373,6 +379,18 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         return alternativeRoute
     }
 
+    // Planned roadworks vs. an unplanned incident. The API omits `planned` on a
+    // handful of records; treat a missing flag as an incident (the safer read).
+    var isPlanned: Bool {
+        planned ?? false
+    }
+
+    // Friendly "near" reference, e.g. "1.20 km north of Rapahoe". The API ranks
+    // these closest-first, so the lowest-numbered present value is the nearest.
+    var nearestLandmark: String? {
+        directLineDistance1 ?? directLineDistance2 ?? directLineDistance3
+    }
+
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
         matchesRegion(regionName, selectedRegion: selectedRegion)
             && matchesNeedle(selectedHighway, in: highwayHaystack)
@@ -401,6 +419,9 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         case status
         case supplier
         case startDate
+        case directLineDistance1
+        case directLineDistance2
+        case directLineDistance3
         case region
         case journey
         case journeyLeg
@@ -747,20 +768,41 @@ private let nzDisplayDateFormatter: DateFormatter = {
     return formatter
 }()
 
+private func parseTrafficDate(_ rawValue: String) -> Date? {
+    isoFractionalDateFormatter.date(from: rawValue)
+        ?? isoDateFormatter.date(from: rawValue)
+        ?? nzInputDateFormatter.date(from: rawValue)
+}
+
 func formatTrafficDate(_ rawValue: String?) -> String? {
     guard let rawValue = cleanText(rawValue) else {
         return nil
     }
 
-    let date = isoFractionalDateFormatter.date(from: rawValue)
-        ?? isoDateFormatter.date(from: rawValue)
-        ?? nzInputDateFormatter.date(from: rawValue)
-
-    guard let date else {
+    guard let date = parseTrafficDate(rawValue) else {
         return rawValue
     }
 
     return nzDisplayDateFormatter.string(from: date)
+}
+
+private let relativeTrafficDateFormatter: RelativeDateTimeFormatter = {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.locale = Locale(identifier: "en_NZ")
+    formatter.unitsStyle = .full
+    return formatter
+}()
+
+// Relative phrasing ("2 days ago", "in 3 hours") for timestamps where a
+// relative reading is friendlier than the absolute one. Returns nil when the
+// value is missing or unparseable so callers can fall back to formatTrafficDate.
+func formatRelativeTrafficDate(_ rawValue: String?, relativeTo reference: Date = Date()) -> String? {
+    guard let rawValue = cleanText(rawValue),
+          let date = parseTrafficDate(rawValue) else {
+        return nil
+    }
+
+    return relativeTrafficDateFormatter.localizedString(for: date, relativeTo: reference)
 }
 
 func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
@@ -877,6 +919,40 @@ func computeImpactKind(impact: String?) -> EventImpactKind {
         return .caution
     }
     return .other
+}
+
+// Filter events by the island they sit on. Stored as a String rawValue so it
+// can back an @AppStorage value in the views.
+enum EventIslandFilter: String, CaseIterable, Identifiable, Hashable {
+    case all
+    case north
+    case south
+
+    var id: String {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .all:
+            return "All Islands"
+        case .north:
+            return "North Island"
+        case .south:
+            return "South Island"
+        }
+    }
+
+    func matches(_ island: String?) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .north:
+            return (island ?? "").range(of: "north", options: .caseInsensitive) != nil
+        case .south:
+            return (island ?? "").range(of: "south", options: .caseInsensitive) != nil
+        }
+    }
 }
 
 enum FlowKind: String, CaseIterable, Identifiable, Hashable {

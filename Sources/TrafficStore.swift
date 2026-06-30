@@ -187,9 +187,19 @@ final class TrafficStore {
             .filter { statuses.contains($0.statusKind) }
     }
 
-    func scopedEvents(region: String, highway: String, search: String, impacts: Set<EventImpactKind>) -> [RoadEvent] {
+    func scopedEvents(
+        region: String,
+        highway: String,
+        search: String,
+        impacts: Set<EventImpactKind>,
+        showPlanned: Bool,
+        showUnplanned: Bool,
+        island: EventIslandFilter
+    ) -> [RoadEvent] {
         filteredEvents(region: region, highway: highway, search: search)
             .filter { impacts.contains($0.impactKind) }
+            .filter { $0.isPlanned ? showPlanned : showUnplanned }
+            .filter { island.matches($0.eventIsland) }
     }
 
     func scopedVMSSigns(region: String, highway: String, search: String, hideEmpty: Bool) -> [VMSSign] {

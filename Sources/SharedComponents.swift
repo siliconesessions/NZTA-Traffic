@@ -89,6 +89,9 @@ struct EventImpactFilterRow: View {
     @Binding var showDelays: Bool
     @Binding var showCaution: Bool
     @Binding var showOther: Bool
+    @Binding var showPlanned: Bool
+    @Binding var showUnplanned: Bool
+    @Binding var island: EventIslandFilter
 
     var body: some View {
         HStack(spacing: 8) {
@@ -99,6 +102,19 @@ struct EventImpactFilterRow: View {
             FilterChip(label: "Delays", tint: .orange, isOn: $showDelays)
             FilterChip(label: "Caution", tint: .yellow, isOn: $showCaution)
             FilterChip(label: "Other", tint: .gray, isOn: $showOther)
+            Divider().frame(height: 16)
+            FilterChip(label: "Planned", tint: .blue, isOn: $showPlanned)
+            FilterChip(label: "Incident", tint: .indigo, isOn: $showUnplanned)
+            Divider().frame(height: 16)
+            Picker("Island", selection: $island) {
+                ForEach(EventIslandFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 130)
         }
     }
 }
