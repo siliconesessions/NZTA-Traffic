@@ -283,8 +283,11 @@ struct CameraPreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // The legacy /camera/view/<id> page (camera.viewUrl) now 404s — trafficnz.info
+    // redirects to journeys.nzta.govt.nz and the old view path is dead. Link to the
+    // working full-resolution image path instead so the button isn't a dead link.
     private var largerViewURL: URL? {
-        trafficNZURL(from: camera.viewUrl)
+        camera.imageURL(cacheToken: cacheToken)
     }
 
     var body: some View {
@@ -303,9 +306,9 @@ struct CameraPreviewView: View {
                     Button {
                         NSWorkspace.shared.open(largerViewURL)
                     } label: {
-                        Label("Open on trafficnz.info", systemImage: "safari")
+                        Label("Open full image", systemImage: "arrow.up.forward.app")
                     }
-                    .help("Open this camera's page on trafficnz.info")
+                    .help("Open the full-resolution camera image in your browser")
                 }
                 Button("Close") {
                     dismiss()

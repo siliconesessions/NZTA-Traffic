@@ -72,6 +72,9 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     let highway: String?
     let imageUrl: String?
     let thumbUrl: String?
+    /// Legacy `/camera/view/<id>` page path. trafficnz.info now redirects to
+    /// journeys.nzta.govt.nz and this path 404s, so don't surface it as a link —
+    /// use `imageURL(cacheToken:)` (the working image path) for "open larger view".
     let viewUrl: String?
     let latitude: Double?
     let longitude: Double?
