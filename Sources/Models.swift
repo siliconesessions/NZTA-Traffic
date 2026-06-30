@@ -1369,6 +1369,197 @@ struct JourneysResponse: Decodable {
     }
 }
 
+// One line on a TIM travel-time board. The upstream `line` array mixes two
+// shapes: `left`(destination) + `right`(estimated time) pairs, and decorative
+// `center`-only lines ("ESTIMATED" / "VIA MOTORWAY"). `right` is an Int number
+// of minutes OR a pre-formatted string ("29 MINS", "3h 44m"), so it goes
+// through the lossy decoders rather than a raw decode. Center-only lines have
+// no destination/time and are dropped by `TIMSign`.
+struct TIMLine: Decodable, Identifiable, Hashable {
+    let id: String
+    let destination: String?
+    let timeText: String?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let destinationValue = cleanText(container.decodeLossyString(forKey: .left))
+        // Prefer the numeric reading so we can append "min"; fall back to the
+        // raw string when `right` is already a units-bearing string.
+        let timeValue: String?
+        if let minutes = container.decodeLossyInt(forKey: .right) {
+            timeValue = "\(minutes) min"
+        } else {
+            timeValue = cleanText(container.decodeLossyString(forKey: .right))
+        }
+        destination = destinationValue
+        timeText = timeValue
+        id = deterministicID(
+            decodedId: nil,
+            fallback: [destinationValue, timeValue],
+            typeTag: "timline"
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case left
+        case right
+    }
+}
+
+// One page of a TIM board. A board's `page` field is either a single page
+// object or a list of pages it rotates through; each page carries a `line`
+// array. Decoded via the flexible array helper so a lone object or a list both
+// work, and so does a lone `line` object.
+private struct TIMPage: Decodable {
+    let line: [TIMLine]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        line = container.decodeFlexibleArray(TIMLine.self, forKey: .line)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case line
+    }
+}
+
+// A TIM (Traffic Information Monitor) roadside travel-time board from
+// /signs/tim/all — ~270 of them, every one carrying lat/lon. `page` may be a
+// single object OR a list of pages; `way.id` is int-or-string (handled by the
+// shared `Way` lossy decode). We flatten every page's lines and keep only the
+// destination → estimated-time pairs.
+struct TIMSign: Decodable, Identifiable, Hashable {
+    let id: String
+    let rawId: String?
+    let name: String?
+    let latitude: Double?
+    let longitude: Double?
+    let mapLatitude: Double?
+    let mapLongitude: Double?
+    let region: Region?
+    let way: Way?
+    let lines: [TIMLine]
+    let highwayHaystack: String
+    let searchHaystack: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedId = container.decodeLossyString(forKey: .id)
+        let nameValue = cleanText(container.decodeLossyString(forKey: .name))
+        let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
+        let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
+        let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
+        let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
+        let pages = container.decodeFlexibleArray(TIMPage.self, forKey: .page)
+        let travelLines = pages
+            .flatMap(\.line)
+            .filter { $0.destination != nil && $0.timeText != nil }
+
+        rawId = decodedId
+        id = deterministicID(
+            decodedId: decodedId,
+            fallback: [
+                nameValue,
+                latitudeValue.map { String($0) },
+                longitudeValue.map { String($0) }
+            ],
+            typeTag: "tim"
+        )
+        name = nameValue
+        latitude = latitudeValue
+        longitude = longitudeValue
+        region = regionValue
+        way = wayValue
+        lines = travelLines
+        let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
+        mapLatitude = validatedMap?.latitude
+        mapLongitude = validatedMap?.longitude
+        highwayHaystack = searchableHaystack([
+            wayValue?.name,
+            nameValue
+        ] + travelLines.map(\.destination))
+        searchHaystack = searchableHaystack([
+            nameValue,
+            regionValue?.name,
+            wayValue?.name
+        ] + travelLines.map(\.destination))
+    }
+
+    var displayName: String {
+        name ?? "Travel Time Sign"
+    }
+
+    var regionName: String? {
+        region?.name
+    }
+
+    var routeName: String? {
+        way?.name
+    }
+
+    var mapCoordinate: CLLocationCoordinate2D? {
+        guard let mapLatitude, let mapLongitude else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
+    }
+
+    // Shortest reading — the first destination/time pair — for marker tooltips
+    // and the map status text.
+    var headline: String? {
+        guard let line = lines.first,
+              let destination = line.destination,
+              let time = line.timeText else {
+            return nil
+        }
+        return "\(destination) \(time)"
+    }
+
+    // All destination → time pairs joined for a compact one-line summary.
+    var summary: String? {
+        let parts = lines.compactMap { line -> String? in
+            guard let destination = line.destination, let time = line.timeText else {
+                return nil
+            }
+            return "\(destination) \(time)"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
+        matchesRegion(regionName, selectedRegion: selectedRegion)
+            && matchesNeedle(selectedHighway, in: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case latitude
+        case longitude
+        case region
+        case way
+        case page
+    }
+}
+
+struct TIMSignsPayload: Decodable {
+    let response: TIMSignsResponse
+}
+
+struct TIMSignsResponse: Decodable {
+    let tim: [TIMSign]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tim = container.decodeFlexibleArray(TIMSign.self, forKey: .tim)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tim
+    }
+}
+
 // /regions/all/10 → the 14 canonical NZTA regions. Only id/name are decoded
 // (via the shared `Region` type); the per-region WKT POLYGON `geometry` is
 // ignored — the region filter just needs stable, consistently-cased names.

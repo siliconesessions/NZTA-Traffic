@@ -501,16 +501,19 @@ struct ContentView: View {
                 events: scopedEvents(),
                 vmsSigns: scopedVMSSigns(),
                 journeys: scopedJourneys(),
+                timSigns: scopedTIMSigns(),
                 evChargers: store.evChargers,
                 camerasLoading: store.isLoading(.cameras),
                 eventsLoading: store.isLoading(.events),
                 vmsLoading: store.isLoading(.vms),
                 journeysLoading: store.isLoading(.journeys),
+                timSignsLoading: store.isLoading(.timSigns),
                 evChargersLoading: store.isLoadingEVChargers,
                 cameraErrorMessage: store.errors[.cameras],
                 eventErrorMessage: store.errors[.events],
                 vmsErrorMessage: store.errors[.vms],
                 journeyErrorMessage: store.errors[.journeys],
+                timSignsErrorMessage: store.errors[.timSigns],
                 evChargersErrorMessage: store.evChargersError,
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
@@ -528,11 +531,12 @@ struct ContentView: View {
                 Text("Events").tag(TrafficMapLayer.events)
                 Text("VMS").tag(TrafficMapLayer.vms)
                 Text("Flow").tag(TrafficMapLayer.flow)
+                Text("TIM").tag(TrafficMapLayer.timSigns)
                 Text("EV").tag(TrafficMapLayer.evChargers)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 340)
+            .frame(width: 400)
 
             mapLayerFilters
 
@@ -568,6 +572,8 @@ struct ContentView: View {
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
         case .flow:
             flowFilters
+        case .timSigns:
+            EmptyView()
         case .evChargers:
             EmptyView()
         }
@@ -607,6 +613,10 @@ struct ContentView: View {
             let allLegs = scopedJourneys().flatMap(\.legs)
             let mapped = allLegs.filter { !$0.polylineLatitudes.isEmpty }.count
             return MapCounts(mapped: mapped, total: allLegs.count)
+        case .timSigns:
+            let items = scopedTIMSigns()
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
         case .evChargers:
             let items = store.evChargers
             let mapped = items.filter { $0.mapCoordinate != nil }.count
@@ -683,6 +693,10 @@ struct ContentView: View {
 
     private func scopedJourneys() -> [TrafficJourney] {
         store.scopedJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
+    }
+
+    private func scopedTIMSigns() -> [TIMSign] {
+        store.filteredTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
     }
 
     private func configureAutoRefresh() {

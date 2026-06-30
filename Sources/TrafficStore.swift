@@ -7,6 +7,7 @@ enum DataSection: String, CaseIterable, Identifiable {
     case events
     case vms
     case journeys
+    case timSigns
 
     var id: String {
         rawValue
@@ -20,6 +21,9 @@ final class TrafficStore {
     private(set) var events: [RoadEvent] = []
     private(set) var vmsSigns: [VMSSign] = []
     private(set) var journeys: [TrafficJourney] = []
+    // TIM roadside travel-time boards (/signs/tim/all). Refreshed each cycle
+    // like the other live sections and surfaced as a map layer.
+    private(set) var timSigns: [TIMSign] = []
     // EV Roam public charging stations. Static reference data fetched once (like
     // the canonical regions) rather than on every refresh, so it has its own
     // loading/error state instead of being a per-refresh DataSection.
@@ -52,6 +56,7 @@ final class TrafficStore {
     @ObservationIgnored private var eventCache: [FilterKey: [RoadEvent]] = [:]
     @ObservationIgnored private var vmsCache: [FilterKey: [VMSSign]] = [:]
     @ObservationIgnored private var journeyCache: [FilterKey: [TrafficJourney]] = [:]
+    @ObservationIgnored private var timCache: [FilterKey: [TIMSign]] = [:]
 
     init(service: TrafficAPIService = TrafficAPIService()) {
         self.service = service
@@ -90,9 +95,10 @@ final class TrafficStore {
         async let eventsTask: () = loadEvents()
         async let signsTask: () = loadVMS()
         async let journeysTask: () = loadJourneys()
+        async let timTask: () = loadTIMSigns()
         async let regionsTask: () = loadRegions()
         async let evChargersTask: () = loadEVChargers()
-        _ = await (camerasTask, eventsTask, signsTask, journeysTask, regionsTask, evChargersTask)
+        _ = await (camerasTask, eventsTask, signsTask, journeysTask, timTask, regionsTask, evChargersTask)
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
@@ -124,6 +130,12 @@ final class TrafficStore {
         let result = await service.fetchJourneysResult()
         apply(result, to: .journeys, keyPath: \.journeys)
         loadingSections.remove(.journeys)
+    }
+
+    private func loadTIMSigns() async {
+        let result = await service.fetchTIMSignsResult()
+        apply(result, to: .timSigns, keyPath: \.timSigns)
+        loadingSections.remove(.timSigns)
     }
 
     // EV charger locations are static, so fetch them only once (and retry on a
@@ -230,6 +242,18 @@ final class TrafficStore {
         return result
     }
 
+    func filteredTIMSigns(region: String, highway: String, search: String) -> [TIMSign] {
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = timCache[key] {
+            return cached
+        }
+        let result = timSigns
+            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        timCache[key] = result
+        return result
+    }
+
     // Fully-scoped slices: region/highway/search filtering (memoized above)
     // plus the per-section visibility flags the UI toggles. Keeping the whole
     // filter pipeline here matches "filtering lives in the store".
@@ -285,6 +309,7 @@ final class TrafficStore {
         eventCache.removeAll(keepingCapacity: true)
         vmsCache.removeAll(keepingCapacity: true)
         journeyCache.removeAll(keepingCapacity: true)
+        timCache.removeAll(keepingCapacity: true)
     }
 
     private func computeAllRegions() -> [String] {
@@ -292,6 +317,7 @@ final class TrafficStore {
             + events.compactMap(\.regionName)
             + vmsSigns.compactMap(\.regionName)
             + journeys.compactMap(\.regionName)
+            + timSigns.compactMap(\.regionName)
         return mergedRegionNames(canonical: canonicalRegions, derived: derived)
     }
 

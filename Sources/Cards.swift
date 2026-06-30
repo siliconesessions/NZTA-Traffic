@@ -572,6 +572,78 @@ struct EVChargerCard: View {
     }
 }
 
+struct TIMCard: View {
+    let sign: TIMSign
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label(sign.displayName, systemImage: "clock.fill")
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                if let region = sign.regionName {
+                    Badge(text: region, tint: .black)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            if sign.lines.isEmpty {
+                Text("No travel times available")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(sign.lines.enumerated()), id: \.offset) { index, line in
+                        TIMLineRow(line: line)
+                        if index < sign.lines.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
+        )
+    }
+}
+
+private struct TIMLineRow: View {
+    let line: TIMLine
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(line.destination ?? "—")
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+
+            Spacer()
+
+            if let time = line.timeText {
+                Text(time)
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
 struct VMSCard: View {
     let sign: VMSSign
 

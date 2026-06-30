@@ -47,6 +47,11 @@ struct TrafficAPIService {
         return payload.response.journey
     }
 
+    func fetchTIMSigns() async throws -> [TIMSign] {
+        let payload: TIMSignsPayload = try await request("/signs/tim/all")
+        return payload.response.tim
+    }
+
     func fetchRegions() async throws -> [Region] {
         let payload: RegionsPayload = try await request("/regions/all/10")
         return payload.response.region
@@ -75,6 +80,10 @@ struct TrafficAPIService {
 
     nonisolated func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
         await result { try await fetchJourneys() }
+    }
+
+    nonisolated func fetchTIMSignsResult() async -> Result<[TIMSign], Error> {
+        await result { try await fetchTIMSigns() }
     }
 
     nonisolated func fetchRegionsResult() async -> Result<[Region], Error> {

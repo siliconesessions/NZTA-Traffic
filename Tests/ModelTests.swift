@@ -12,6 +12,73 @@ func runModelTests(_ t: TestRunner) {
     testEventFields(t)
     testRegions(t)
     testEVChargers(t)
+    testTIMSigns(t)
+}
+
+// TIM travel-time board decoding. The upstream shape is loose: `page` is a
+// single object OR a list of pages OR absent; a line is either left+right
+// (destination + minutes, with `right` an Int OR a units-bearing string) or a
+// decorative center-only line; `way.id` is int-or-string. Lines without both a
+// destination and a time are dropped.
+private func testTIMSigns(_ t: TestRunner) {
+    t.group("TIM signs")
+
+    // page as a single object, integer `right` (minutes), string `way.id`,
+    // and a leading decorative center-only line that must be dropped.
+    let dictJson = #"""
+    {"response":{"tim":[
+      {"id":334,"latitude":-36.999,"longitude":174.788,"way":{"id":"20A","name":"20A"},
+       "region":{"id":2,"name":"Auckland"},
+       "page":{"line":[{"center":"VIA SH20 R12"},{"left":"SH1 GILLIES","right":70},{"left":"CITY CENTRE","right":79}],"pageTime":5}}
+    ]}}
+    """#
+    guard let payload = decodeModel(TIMSignsPayload.self, dictJson, t) else { return }
+    t.equal(payload.response.tim.count, 1, "tim payload decodes one sign")
+    guard let sign = payload.response.tim.first else { return }
+    t.equal(sign.lines.count, 2, "center-only line dropped, two travel lines kept")
+    t.equal(sign.lines.first?.destination, "SH1 GILLIES", "destination from left")
+    t.equal(sign.lines.first?.timeText, "70 min", "integer right formats as minutes")
+    t.equal(sign.lines.last?.timeText, "79 min", "second integer right formats as minutes")
+    t.equal(sign.regionName, "Auckland", "region decodes")
+    t.equal(sign.routeName, "20A", "way name decodes (string way.id tolerated)")
+    t.equal(sign.headline, "SH1 GILLIES 70 min", "headline is the first destination/time")
+    t.check(sign.mapCoordinate != nil, "valid lat/lon yields a map coordinate")
+
+    // page as a LIST of pages, integer `way.id`, a units-bearing string `right`
+    // ("29 MINS") passed through verbatim, plus a decorative second page.
+    let listJson = #"""
+    {"response":{"tim":[
+      {"id":350,"name":"Constellation Drive","latitude":-36.78,"longitude":174.73,"way":{"id":54,"name":"020"},
+       "page":[{"line":[{"left":"OTEHA","right":4},{"left":"WAINUI","right":"29 MINS"}],"pageTime":6},
+               {"line":[{"center":"ESTIMATED"},{"center":"MINUTES"}],"pageTime":1}]}
+    ]}}
+    """#
+    let listSign = decodeModel(TIMSignsPayload.self, listJson, t)?.response.tim.first
+    t.equal(listSign?.lines.count, 2, "page-as-list flattens to two travel lines")
+    t.equal(listSign?.lines.first?.timeText, "4 min", "list page integer right formats as minutes")
+    t.equal(listSign?.lines.last?.timeText, "29 MINS", "string right passed through verbatim")
+    t.equal(listSign?.routeName, "020", "way name decodes (integer way.id tolerated)")
+    t.equal(listSign?.displayName, "Constellation Drive", "name surfaces as displayName")
+    t.check(listSign?.summary?.contains("OTEHA 4 min") == true, "summary joins destination/time pairs")
+
+    // No `page` at all: decodes safely with no lines but still maps.
+    let noPageJson = #"{"response":{"tim":[{"id":343,"name":"Site 1","latitude":-36.87,"longitude":174.74}]}}"#
+    let noPageSign = decodeModel(TIMSignsPayload.self, noPageJson, t)?.response.tim.first
+    t.check(noPageSign?.lines.isEmpty == true, "missing page -> no lines")
+    t.check(noPageSign?.headline == nil, "no lines -> nil headline")
+    t.check(noPageSign?.mapCoordinate != nil, "sign without page still maps")
+
+    // Single (non-array) tim object still decodes via decodeFlexibleArray.
+    let single = #"{"response":{"tim":{"id":1,"name":"Solo","latitude":-41.2,"longitude":174.8,"page":{"line":[{"left":"CBD","right":12}]}}}}"#
+    t.equal(decodeModel(TIMSignsPayload.self, single, t)?.response.tim.count, 1, "single tim object decodes as one-element array")
+
+    // Filtering predicate: region/highway(haystack)/search. `sign` is the
+    // Auckland board decoded above.
+    t.check(sign.matches(region: "auckland", highway: "", search: ""), "region match is case-insensitive")
+    t.check(!sign.matches(region: "Otago", highway: "", search: ""), "wrong region excluded")
+    t.check(sign.matches(region: "", highway: "20a", search: ""), "highway haystack matches way name")
+    t.check(sign.matches(region: "", highway: "", search: "city centre"), "search matches a destination")
+    t.check(!sign.matches(region: "", highway: "", search: "zzz"), "non-matching search excluded")
 }
 
 // EV Roam GeoJSON FeatureCollection decoding: geometry [lon,lat] coordinate,
