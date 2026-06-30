@@ -16,6 +16,47 @@ func runModelTests(_ t: TestRunner) {
     testJourneyEnrichment(t)
     testCongestion(t)
     testCacheableSectionDecoding(t)
+    testDiagnosticsReport(t)
+}
+
+// Help → Export Diagnostics renders a plain-text report. Pins the formatting:
+// per-section error lines, error-free sections, and the `nzta.*` preference
+// filter that keeps unrelated UserDefaults keys out of the report.
+private func testDiagnosticsReport(_ t: TestRunner) {
+    t.group("diagnostics report")
+
+    let report = DiagnosticsReport(
+        appVersion: "2.1",
+        appBuild: "42",
+        generatedAt: Date(timeIntervalSince1970: 0),
+        lastUpdated: nil,
+        isOnline: false,
+        sections: [
+            .init(name: "Cameras", count: 12, error: nil),
+            .init(name: "Road Events", count: 0, error: "NZTA API returned HTTP 503.")
+        ],
+        preferences: ["nzta.autoRefreshEnabled": "true"]
+    )
+    let text = report.formattedText()
+
+    t.check(text.contains("App Version:  2.1 (build 42)"), "report includes app version and build")
+    t.check(text.contains("Network:      offline"), "report includes network state")
+    t.check(text.contains("Last Updated: never"), "report shows never when no last-updated date")
+    t.check(text.contains("Cameras: 12"), "error-free section renders as a plain count")
+    t.check(
+        text.contains("Road Events: 0 — ERROR: NZTA API returned HTTP 503."),
+        "section with an error renders its message"
+    )
+    t.check(text.contains("nzta.autoRefreshEnabled = true"), "report lists app preferences")
+
+    let defaults = UserDefaults(suiteName: "nzta.diagnostics.test")!
+    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
+    defaults.set(true, forKey: "nzta.autoRefreshEnabled")
+    defaults.set("ignored", forKey: "com.apple.unrelated.key")
+    let prefs = DiagnosticsReport.collectPreferences(from: defaults)
+    t.equal(prefs["nzta.autoRefreshEnabled"], "1", "collects nzta.* preferences")
+    t.check(prefs["com.apple.unrelated.key"] == nil, "ignores non-nzta preference keys")
+    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
 }
 
 // The offline cache stores each cacheable section's raw API response bytes and

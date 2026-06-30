@@ -8,6 +8,7 @@ struct CamerasTabView: View {
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
     let onPreview: (TrafficCamera) -> Void
+    var onRetry: (() -> Void)?
 
     private var onlineCount: Int {
         cameras.filter(\.isOnline).count
@@ -17,7 +18,7 @@ struct CamerasTabView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let errorMessage {
-                    ErrorBanner(message: errorMessage)
+                    ErrorBanner(message: errorMessage, onRetry: onRetry)
                 }
 
                 if isLoading && cameras.isEmpty {
@@ -56,6 +57,7 @@ struct RoadEventsTabView: View {
     let errorMessage: String?
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
+    var onRetry: (() -> Void)?
 
     private var closures: Int {
         events.filter(\.isClosure).count
@@ -69,7 +71,7 @@ struct RoadEventsTabView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let errorMessage {
-                    ErrorBanner(message: errorMessage)
+                    ErrorBanner(message: errorMessage, onRetry: onRetry)
                 }
 
                 if isLoading && events.isEmpty {
@@ -107,12 +109,13 @@ struct VMSTabView: View {
     let hideEmpty: Bool
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
+    var onRetry: (() -> Void)?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let errorMessage {
-                    ErrorBanner(message: errorMessage)
+                    ErrorBanner(message: errorMessage, onRetry: onRetry)
                 }
 
                 if isLoading && signs.isEmpty {
@@ -147,6 +150,7 @@ struct TravelTimesTabView: View {
     let errorMessage: String?
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
+    var onRetry: (() -> Void)?
 
     private var liveJourneyCount: Int {
         journeys.filter(\.hasLiveData).count
@@ -162,7 +166,7 @@ struct TravelTimesTabView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let errorMessage {
-                    ErrorBanner(message: errorMessage)
+                    ErrorBanner(message: errorMessage, onRetry: onRetry)
                 }
 
                 if isLoading && journeys.isEmpty {

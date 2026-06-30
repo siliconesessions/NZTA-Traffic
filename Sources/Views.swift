@@ -475,7 +475,8 @@ struct ContentView: View {
                 cacheToken: store.imageCacheToken,
                 hasActiveFilters: hasActiveFilters,
                 onClearFilters: clearAllFilters,
-                onPreview: { selectedCamera = $0 }
+                onPreview: { selectedCamera = $0 },
+                onRetry: { Task { await store.reload(.cameras) } }
             )
         }
     }
@@ -489,7 +490,8 @@ struct ContentView: View {
                 isLoading: store.isLoading(.events),
                 errorMessage: store.errors[.events],
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.events) } }
             )
         }
     }
@@ -504,7 +506,8 @@ struct ContentView: View {
                 errorMessage: store.errors[.vms],
                 hideEmpty: hideEmptyVMS,
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.vms) } }
             )
         }
     }
@@ -518,7 +521,8 @@ struct ContentView: View {
                 isLoading: store.isLoading(.journeys),
                 errorMessage: store.errors[.journeys],
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.journeys) } }
             )
         }
     }
@@ -552,8 +556,29 @@ struct ContentView: View {
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
-                onCameraPreview: { selectedCamera = $0 }
+                onCameraPreview: { selectedCamera = $0 },
+                onRetry: { layer in Task { await reloadMapLayer(layer) } }
             )
+        }
+    }
+
+    // Reload the data source backing the given map layer (per-layer Retry).
+    private func reloadMapLayer(_ layer: TrafficMapLayer) async {
+        switch layer {
+        case .cameras:
+            await store.reload(.cameras)
+        case .events:
+            await store.reload(.events)
+        case .vms:
+            await store.reload(.vms)
+        case .flow:
+            await store.reload(.journeys)
+        case .timSigns:
+            await store.reload(.timSigns)
+        case .congestion:
+            await store.reload(.congestion)
+        case .evChargers:
+            await store.reloadEVChargers()
         }
     }
 

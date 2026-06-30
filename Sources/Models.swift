@@ -2180,3 +2180,72 @@ extension KeyedDecodingContainer {
         return nil
     }
 }
+
+// Plain-text diagnostics snapshot for Help → Export Diagnostics. Pure /
+// Foundation-only so it can be unit-tested; the store gathers the live inputs
+// (section counts, recent per-section errors, preferences, app version) and the
+// view layer writes the rendered text to disk via NSSavePanel. Carries no
+// personal data — only counts, error strings, and the app's own `nzta.*`
+// preference keys.
+struct DiagnosticsReport {
+    struct SectionStat {
+        let name: String
+        let count: Int
+        let error: String?
+    }
+
+    let appVersion: String
+    let appBuild: String
+    let generatedAt: Date
+    let lastUpdated: Date?
+    let isOnline: Bool
+    let sections: [SectionStat]
+    let preferences: [String: String]
+
+    // Collects the app's own persisted preferences (the `nzta.*` @AppStorage
+    // keys) from UserDefaults, stringified for the report.
+    static func collectPreferences(from defaults: UserDefaults = .standard) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("nzta.") {
+            result[key] = String(describing: value)
+        }
+        return result
+    }
+
+    func formattedText() -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        lines.append("NZTA Traffic — Diagnostics Report")
+        lines.append("=================================")
+        lines.append("Generated:    \(isoFormatter.string(from: generatedAt))")
+        lines.append("App Version:  \(appVersion) (build \(appBuild))")
+        lines.append("Network:      \(isOnline ? "online" : "offline")")
+        if let lastUpdated {
+            lines.append("Last Updated: \(isoFormatter.string(from: lastUpdated))")
+        } else {
+            lines.append("Last Updated: never")
+        }
+        lines.append("")
+        lines.append("Data Sections")
+        lines.append("-------------")
+        for section in sections {
+            if let error = section.error, !error.isEmpty {
+                lines.append("\(section.name): \(section.count) — ERROR: \(error)")
+            } else {
+                lines.append("\(section.name): \(section.count)")
+            }
+        }
+        lines.append("")
+        lines.append("Preferences")
+        lines.append("-----------")
+        if preferences.isEmpty {
+            lines.append("(none)")
+        } else {
+            for key in preferences.keys.sorted() {
+                lines.append("\(key) = \(preferences[key] ?? "")")
+            }
+        }
+        lines.append("")
+        return lines.joined(separator: "\n")
+    }
+}

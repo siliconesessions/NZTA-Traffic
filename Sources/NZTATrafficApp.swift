@@ -1,8 +1,14 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct NZTATrafficApp: App {
+    // The single TrafficStore is owned at the App level (rather than inside
+    // ContentView) so the main window, the MenuBarExtra, and the Export
+    // Diagnostics command all read the same live data.
+    @State private var store: TrafficStore
+
     init() {
         // A bounded shared cache lets camera images persist across refreshes and
         // app launches; AsyncImage (URLSession.shared) revalidates via HTTP
@@ -12,16 +18,19 @@ struct NZTATrafficApp: App {
             diskCapacity: 200_000_000,
             directory: nil
         )
+        // TrafficStore() is @MainActor-isolated; App.init runs on the main thread
+        // at launch, so assume that isolation to build the store for @State.
+        _store = State(initialValue: MainActor.assumeIsolated { TrafficStore() })
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(store: store)
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1180, height: 780)
         .commands {
-            NZTATrafficCommands()
+            NZTATrafficCommands(store: store)
         }
 
         Window("NZTA Traffic Help", id: "help") {
@@ -32,11 +41,16 @@ struct NZTATrafficApp: App {
         Settings {
             SettingsView()
         }
+
+        MenuBarExtra("NZTA Traffic", systemImage: "car.fill") {
+            MenuBarContent(store: store)
+        }
     }
 }
 
 struct NZTATrafficCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    let store: TrafficStore
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -50,7 +64,27 @@ struct NZTATrafficCommands: Commands {
                 openWindow(id: "help")
             }
             .keyboardShortcut("?", modifiers: .command)
+            Divider()
+            Button("Export Diagnostics…") {
+                exportDiagnostics()
+            }
         }
+    }
+
+    // Write a plain-text diagnostics report (counts, recent per-section errors,
+    // preferences, app version — no personal data) to a user-chosen location.
+    private func exportDiagnostics() {
+        let report = store.diagnosticsReport()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "NZTA-Traffic-Diagnostics.txt"
+        panel.canCreateDirectories = true
+        panel.title = "Export Diagnostics"
+        panel.message = "Save a diagnostics report (counts, recent errors, preferences, app version)."
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        try? report.formattedText().write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func showAboutPanel() {
@@ -82,5 +116,54 @@ struct NZTATrafficCommands: Commands {
         }
 
         NSApplication.shared.orderFrontStandardAboutPanel(options: options)
+    }
+}
+
+// Lightweight at-a-glance menu shown from the macOS menu bar. Reads the same
+// shared TrafficStore as the main window (observed, so counts stay live) and
+// offers refresh / open-window / quit. Intentionally minimal — it is a glance,
+// not a second UI.
+struct MenuBarContent: View {
+    let store: TrafficStore
+
+    private var onlineCameras: Int {
+        store.cameras.filter(\.isOnline).count
+    }
+
+    var body: some View {
+        Text("NZTA Traffic")
+            .font(.headline)
+        Divider()
+        Text("Cameras: \(store.cameras.count) (\(onlineCameras) online)")
+        Text("Road events: \(store.events.count)")
+        Text("Active closures: \(store.criticalAlertCount)")
+        Text("VMS signs: \(store.vmsSigns.count)")
+        Text("Travel times: \(store.journeys.count)")
+        if let updated = store.lastUpdated {
+            Text("Updated \(updated.formatted(.relative(presentation: .named)))")
+        } else {
+            Text("Not yet updated")
+        }
+        Divider()
+        Button("Refresh Now") {
+            Task { await store.loadAllData(bustImageCache: true) }
+        }
+        .disabled(store.isRefreshing)
+        Button("Open NZTA Traffic") {
+            activateMainWindow()
+        }
+        Divider()
+        Button("Quit NZTA Traffic") {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    // Bring the app and its existing main window forward.
+    private func activateMainWindow() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        for window in NSApplication.shared.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
     }
 }

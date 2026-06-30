@@ -103,6 +103,8 @@ struct TrafficMapTabView: View {
     @Binding var visibleSpan: MKCoordinateSpan
     @Binding var selectedLayer: TrafficMapLayer
     let onCameraPreview: (TrafficCamera) -> Void
+    // Reloads the data behind the currently selected map layer (per-layer Retry).
+    var onRetry: ((TrafficMapLayer) -> Void)?
 
     @State private var selectedDetail: TrafficMapDetail?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -339,10 +341,13 @@ struct TrafficMapTabView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let errorMessage {
-                ErrorBanner(message: errorMessage)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+                ErrorBanner(
+                    message: errorMessage,
+                    onRetry: onRetry.map { handler in { handler(selectedLayer) } }
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             }
 
             ZStack(alignment: .topLeading) {

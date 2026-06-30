@@ -153,6 +153,69 @@ final class TrafficStore {
         isRefreshing = false
     }
 
+    /// Reloads a single section, used by the per-section "Retry" button on an
+    /// error banner. Mirrors the per-section work `loadAllData` does but scoped
+    /// to one section, so an isolated failure can be retried without re-fetching
+    /// everything. The matching `loadX` clears the section's loading flag and
+    /// (on failure) repopulates `errors`.
+    func reload(_ section: DataSection) async {
+        loadingSections.insert(section)
+        errors[section] = nil
+        switch section {
+        case .cameras:
+            await loadCameras()
+        case .events:
+            await loadEvents()
+        case .vms:
+            await loadVMS()
+        case .journeys:
+            await loadJourneys()
+        case .timSigns:
+            await loadTIMSigns()
+        case .congestion:
+            await loadCongestion()
+        }
+        allRegions = computeAllRegions()
+        await refreshCacheBannerState()
+    }
+
+    /// Force a re-fetch of the otherwise fetch-once EV charger layer, used by the
+    /// map's per-layer Retry after a failed initial load. Clearing the array lets
+    /// `loadEVChargers`' "already loaded" guard fall through and re-fetch.
+    func reloadEVChargers() async {
+        evChargers = []
+        evChargersError = nil
+        await loadEVChargers()
+    }
+
+    /// Snapshot of current section counts, recent per-section errors, app version
+    /// and preferences for Help → Export Diagnostics. Assembled on the main actor
+    /// (it reads observed state); the command writes the rendered text to disk.
+    func diagnosticsReport() -> DiagnosticsReport {
+        let sections: [DiagnosticsReport.SectionStat] = [
+            .init(name: "Cameras", count: cameras.count, error: errors[.cameras]),
+            .init(name: "Cameras Online", count: cameras.filter(\.isOnline).count, error: nil),
+            .init(name: "Road Events", count: events.count, error: errors[.events]),
+            .init(name: "Active Closures", count: criticalAlertCount, error: nil),
+            .init(name: "VMS Signs", count: vmsSigns.count, error: errors[.vms]),
+            .init(name: "Travel Times", count: journeys.count, error: errors[.journeys]),
+            .init(name: "TIM Signs", count: timSigns.count, error: errors[.timSigns]),
+            .init(name: "Congestion Segments", count: congestion.count, error: errors[.congestion]),
+            .init(name: "EV Chargers", count: evChargers.count, error: evChargersError)
+        ]
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return DiagnosticsReport(
+            appVersion: version,
+            appBuild: build,
+            generatedAt: Date(),
+            lastUpdated: lastUpdated,
+            isOnline: isOnline,
+            sections: sections,
+            preferences: DiagnosticsReport.collectPreferences()
+        )
+    }
+
     /// Populates empty sections from the on-disk cache so the UI has content to
     /// show immediately on launch, ahead of (or in place of) the first live
     /// fetch. Decoding runs off the main actor. Only fills sections that are

@@ -279,6 +279,9 @@ struct DataSectionPill: View {
 
 struct ErrorBanner: View {
     let message: String
+    // When supplied, a "Retry" button is shown that re-fetches just this
+    // section (see TrafficStore.reload). Nil keeps the banner purely informational.
+    var onRetry: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -288,6 +291,11 @@ struct ErrorBanner: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
+            if let onRetry {
+                Button("Retry", action: onRetry)
+                    .controlSize(.small)
+                    .help("Reload this section")
+            }
         }
         .padding(14)
         .background(Color.red.opacity(0.09))
