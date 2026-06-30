@@ -23,20 +23,32 @@ struct StatCard: View {
     let stat: StatItem
 
     var body: some View {
-        VStack(spacing: 4) {
-            Text(stat.value)
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                .monospacedDigit()
-            Text(stat.title)
-                .font(.caption.weight(.medium))
-                .opacity(0.9)
+        HStack(spacing: 0) {
+            // A slim accent bar carries the stat's tint instead of flooding the
+            // whole card, so it reads as part of the card family and sits well
+            // on a dark window.
+            Rectangle()
+                .fill(stat.tint)
+                .frame(width: 4)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(stat.value)
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                Text(stat.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 14)
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
-        .padding(.horizontal, 14)
-        .background(stat.tint)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
+        )
     }
 }
 

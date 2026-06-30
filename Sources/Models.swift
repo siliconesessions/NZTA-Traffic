@@ -1567,6 +1567,9 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
     let polylineLatitudes: [Double]
     let polylineLongitudes: [Double]
     let flowKind: FlowKind
+    // Parsed once at decode time rather than re-running parseTimeIntervalString
+    // every access — leg time is read repeatedly when aggregating journeys.
+    let currentTimeSeconds: TimeInterval?
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -1600,6 +1603,12 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
         way = wayValue
         flowKind = computeFlowKind(flow: flowValue, coverage: coverageValue)
 
+        if let parsedTime = parseTimeIntervalString(timeValue), parsedTime > 0 {
+            currentTimeSeconds = parsedTime
+        } else {
+            currentTimeSeconds = nil
+        }
+
         let sequenceTag = sequenceValue.map { String($0) } ?? "?"
         let nameTag = nameValue ?? wayValue?.name ?? "leg"
         id = "leg|\(nameTag)|\(sequenceTag)"
@@ -1616,13 +1625,6 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
             return true
         }
         return false
-    }
-
-    var currentTimeSeconds: TimeInterval? {
-        guard let value = parseTimeIntervalString(time), value > 0 else {
-            return nil
-        }
-        return value
     }
 
     var polyline: [CLLocationCoordinate2D] {

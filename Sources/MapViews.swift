@@ -357,16 +357,16 @@ struct TrafficMapTabView: View {
                         // the live per-leg segments drawn on top for detail.
                         ForEach(journeyRoutes) { route in
                             MapPolyline(coordinates: route.coordinates)
-                                .stroke(route.flowKind.color.opacity(0.4), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                                .stroke(route.flowKind.color.opacity(0.4), style: StrokeStyle(lineWidth: 9 * zoomScale, lineCap: .round, lineJoin: .round))
                         }
                         ForEach(flowLegs) { leg in
                             MapPolyline(coordinates: leg.coordinates)
-                                .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                                .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5 * zoomScale, lineCap: .round, lineJoin: .round))
                         }
                     } else if selectedLayer == .congestion {
                         ForEach(congestionOverlays) { segment in
                             MapPolyline(coordinates: segment.coordinates)
-                                .stroke(segment.level.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                                .stroke(segment.level.color, style: StrokeStyle(lineWidth: 6 * zoomScale, lineCap: .round, lineJoin: .round))
                         }
                     } else {
                         ForEach(mapItems) { item in
@@ -383,7 +383,7 @@ struct TrafficMapTabView: View {
                                     coordinate: coordinate,
                                     anchor: .center
                                 ) {
-                                    TrafficMapClusterMarker(count: members.count, layer: selectedLayer) {
+                                    TrafficMapClusterMarker(count: members.count, layer: selectedLayer, sizeScale: zoomScale) {
                                         zoomIn(toCluster: members)
                                     }
                                 }
@@ -421,6 +421,18 @@ struct TrafficMapTabView: View {
 
     private var mapItems: [TrafficMapItem] {
         clusterMapFeatures(features, span: visibleSpan)
+    }
+
+    // A multiplier that grows polylines and cluster bubbles as the user zooms
+    // in and shrinks them when zoomed out to the whole country, so strokes stay
+    // legible at street level without smothering the national view. Derived
+    // from the visible span (degrees) and clamped to a tasteful range.
+    private var zoomScale: CGFloat {
+        let maxSpan = max(visibleSpan.latitudeDelta, visibleSpan.longitudeDelta)
+        // ~0.05° (street) → 1.6×, ~8°+ (national) → 0.7×, interpolated between.
+        let clamped = min(max(maxSpan, 0.05), 8.0)
+        let t = (clamped - 0.05) / (8.0 - 0.05)
+        return 1.6 - t * (1.6 - 0.7)
     }
 
     private func select(_ feature: TrafficMapFeature) {
@@ -737,6 +749,9 @@ private struct TrafficMapMarker: View {
 private struct TrafficMapClusterMarker: View {
     let count: Int
     let layer: TrafficMapLayer
+    // Zoom-derived multiplier (see TrafficMapTabView.zoomScale) so bubbles grow
+    // when zoomed in and shrink at national scale.
+    var sizeScale: CGFloat = 1
     let onSelect: () -> Void
 
     var body: some View {
@@ -761,16 +776,20 @@ private struct TrafficMapClusterMarker: View {
     }
 
     private var diameter: CGFloat {
+        let base: CGFloat
         switch count {
         case ..<10:
-            return 32
+            base = 32
         case ..<50:
-            return 38
+            base = 38
         case ..<200:
-            return 44
+            base = 44
         default:
-            return 50
+            base = 50
         }
+        // Clamp so the bubble never gets so small the count is unreadable nor so
+        // large it dominates the map.
+        return min(max(base * sizeScale, 26), 64)
     }
 }
 

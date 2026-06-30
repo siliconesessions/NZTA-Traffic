@@ -192,7 +192,7 @@ private func testJourneyEnrichment(_ t: TestRunner) {
       "geometry": "MULTILINESTRING ((174.0 -41.0, 174.5 -41.5, 175.0 -42.0))",
       "legs": [
         {"name": "A to B", "sequenceNumber": 1, "speed": 90, "flow": 0.95, "coverage": 1, "geometry": "LINESTRING (174.0 -41.0, 174.5 -41.5)"},
-        {"name": "B to C", "sequenceNumber": 2, "speed": 22, "flow": 0.24, "coverage": 1, "geometry": "LINESTRING (174.5 -41.5, 175.0 -42.0)"},
+        {"name": "B to C", "sequenceNumber": 2, "speed": 22, "flow": 0.24, "coverage": 1, "time": "0:05:30", "geometry": "LINESTRING (174.5 -41.5, 175.0 -42.0)"},
         {"name": "Stale", "sequenceNumber": 3, "speed": -1, "flow": 0, "coverage": 0}
       ]
     }
@@ -209,6 +209,7 @@ private func testJourneyEnrichment(_ t: TestRunner) {
     let slowest = journey.slowestLeg
     t.equal(slowest?.name, "B to C", "slowest leg is the lowest-flow live leg")
     t.check(slowest?.flowKind == .congested, "slowest leg flowKind reflects congestion")
+    t.nearlyEqual(slowest?.currentTimeSeconds ?? -1, 330, "leg time HH:MM:SS parses to cached seconds")
     t.check(journey.slowestLeg?.name != "Stale", "stale (no live data) leg is never the slowest")
 
     // A journey with no live legs has no bottleneck to surface.

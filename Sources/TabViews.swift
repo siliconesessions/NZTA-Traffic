@@ -38,7 +38,7 @@ struct CamerasTabView: View {
                         )
                     } else {
                         StatsRow(stats: [
-                            StatItem(title: "Total Cameras", value: "\(cameras.count)", tint: .black),
+                            StatItem(title: "Total Cameras", value: "\(cameras.count)", tint: .gray),
                             StatItem(title: "Online", value: "\(onlineCount)", tint: .green)
                         ])
 
@@ -114,7 +114,7 @@ struct RoadEventsTabView: View {
                         )
                     } else {
                         StatsRow(stats: [
-                            StatItem(title: "Total Events", value: "\(events.count)", tint: .black),
+                            StatItem(title: "Total Events", value: "\(events.count)", tint: .gray),
                             StatItem(title: "Road Closures", value: "\(closures)", tint: .red),
                             StatItem(title: "Delays", value: "\(delays)", tint: .orange)
                         ])
@@ -231,7 +231,7 @@ struct TravelTimesTabView: View {
                         )
                     } else {
                         StatsRow(stats: [
-                            StatItem(title: "Total Journeys", value: "\(journeys.count)", tint: .black),
+                            StatItem(title: "Total Journeys", value: "\(journeys.count)", tint: .gray),
                             StatItem(title: "With Live Data", value: "\(liveJourneyCount)", tint: .blue),
                             StatItem(title: "Slow / Congested", value: "\(slowJourneyCount)", tint: .orange)
                         ])

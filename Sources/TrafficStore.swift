@@ -519,11 +519,28 @@ final class TrafficStore {
     }
 
     private func computeAllRegions() -> [String] {
-        let derived = cameras.compactMap(\.regionName)
-            + events.compactMap(\.regionName)
-            + vmsSigns.compactMap(\.regionName)
-            + journeys.compactMap(\.regionName)
-            + timSigns.compactMap(\.regionName)
+        // Gather every feature's region name in a single pass into one
+        // pre-sized buffer rather than building (and then concatenating) five
+        // separate compactMap arrays.
+        var derived: [String] = []
+        derived.reserveCapacity(
+            cameras.count + events.count + vmsSigns.count + journeys.count + timSigns.count
+        )
+        for camera in cameras {
+            if let region = camera.regionName { derived.append(region) }
+        }
+        for event in events {
+            if let region = event.regionName { derived.append(region) }
+        }
+        for sign in vmsSigns {
+            if let region = sign.regionName { derived.append(region) }
+        }
+        for journey in journeys {
+            if let region = journey.regionName { derived.append(region) }
+        }
+        for sign in timSigns {
+            if let region = sign.regionName { derived.append(region) }
+        }
         return mergedRegionNames(canonical: canonicalRegions, derived: derived)
     }
 
