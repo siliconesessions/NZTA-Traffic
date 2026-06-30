@@ -185,6 +185,23 @@ extension FlowKind {
     }
 }
 
+extension CongestionLevel {
+    var color: Color {
+        switch self {
+        case .freeFlow:
+            return .green
+        case .moderate:
+            return .yellow
+        case .heavy:
+            return .orange
+        case .congested:
+            return .red
+        case .unknown:
+            return .gray
+        }
+    }
+}
+
 struct DataSectionPill: View {
     let icon: String
     let label: String

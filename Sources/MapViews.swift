@@ -13,6 +13,7 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case flow = "Traffic Flow"
     case timSigns = "Travel Time Signs"
     case evChargers = "EV Chargers"
+    case congestion = "Auckland Congestion"
 
     var id: String {
         rawValue
@@ -32,6 +33,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "Loading travel time signs..."
         case .evChargers:
             return "Loading EV chargers..."
+        case .congestion:
+            return "Loading Auckland congestion..."
         }
     }
 
@@ -49,6 +52,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No travel time signs found matching your filters"
         case .evChargers:
             return "No EV chargers available"
+        case .congestion:
+            return "No Auckland congestion data available"
         }
     }
 
@@ -66,6 +71,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No filtered travel time signs have usable map coordinates"
         case .evChargers:
             return "No EV chargers have usable map coordinates"
+        case .congestion:
+            return "No Auckland congestion segments have usable geometry"
         }
     }
 }
@@ -77,18 +84,21 @@ struct TrafficMapTabView: View {
     let journeys: [TrafficJourney]
     let timSigns: [TIMSign]
     let evChargers: [EVCharger]
+    let congestion: [CongestionSegment]
     let camerasLoading: Bool
     let eventsLoading: Bool
     let vmsLoading: Bool
     let journeysLoading: Bool
     let timSignsLoading: Bool
     let evChargersLoading: Bool
+    let congestionLoading: Bool
     let cameraErrorMessage: String?
     let eventErrorMessage: String?
     let vmsErrorMessage: String?
     let journeyErrorMessage: String?
     let timSignsErrorMessage: String?
     let evChargersErrorMessage: String?
+    let congestionErrorMessage: String?
     @Binding var position: MapCameraPosition
     @Binding var visibleSpan: MKCoordinateSpan
     @Binding var selectedLayer: TrafficMapLayer
@@ -134,8 +144,25 @@ struct TrafficMapTabView: View {
                 }
                 return .evCharger(charger, coordinate)
             }
-        case .flow:
+        case .flow, .congestion:
             return []
+        }
+    }
+
+    private var congestionOverlays: [CongestionOverlay] {
+        guard selectedLayer == .congestion else {
+            return []
+        }
+        return congestion.compactMap { segment in
+            let coordinates = segment.polyline
+            guard coordinates.count >= 2 else {
+                return nil
+            }
+            return CongestionOverlay(
+                id: segment.id,
+                coordinates: coordinates,
+                level: segment.level
+            )
         }
     }
 
@@ -193,6 +220,8 @@ struct TrafficMapTabView: View {
             return timSigns.count
         case .evChargers:
             return evChargers.count
+        case .congestion:
+            return congestion.count
         }
     }
 
@@ -202,6 +231,8 @@ struct TrafficMapTabView: View {
             return !features.isEmpty
         case .flow:
             return !flowLegs.isEmpty || !journeyRoutes.isEmpty
+        case .congestion:
+            return !congestionOverlays.isEmpty
         }
     }
 
@@ -219,6 +250,8 @@ struct TrafficMapTabView: View {
             return timSignsLoading
         case .evChargers:
             return evChargersLoading
+        case .congestion:
+            return congestionLoading
         }
     }
 
@@ -236,6 +269,8 @@ struct TrafficMapTabView: View {
             return timSignsErrorMessage
         case .evChargers:
             return evChargersErrorMessage
+        case .congestion:
+            return congestionErrorMessage
         }
     }
 
@@ -322,6 +357,11 @@ struct TrafficMapTabView: View {
                         ForEach(flowLegs) { leg in
                             MapPolyline(coordinates: leg.coordinates)
                                 .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        }
+                    } else if selectedLayer == .congestion {
+                        ForEach(congestionOverlays) { segment in
+                            MapPolyline(coordinates: segment.coordinates)
+                                .stroke(segment.level.color, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
                         }
                     } else {
                         ForEach(mapItems) { item in
@@ -566,6 +606,12 @@ private struct FlowRouteOverlay: Identifiable {
     let flowKind: FlowKind
 }
 
+private struct CongestionOverlay: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let level: CongestionLevel
+}
+
 private enum TrafficMapItem: Identifiable {
     case single(TrafficMapFeature)
     case cluster(id: String, coordinate: CLLocationCoordinate2D, members: [TrafficMapFeature])
@@ -738,6 +784,8 @@ private extension TrafficMapLayer {
             return .cyan
         case .evChargers:
             return .green
+        case .congestion:
+            return .orange
         }
     }
 }
@@ -781,6 +829,10 @@ private struct MapLegend: View {
             return [("Travel time", .cyan)]
         case .evChargers:
             return [("DC fast", .purple), ("AC", .teal)]
+        case .congestion:
+            return CongestionLevel.allCases
+                .filter { $0 != .unknown }
+                .map { ($0.label, $0.color) }
         }
     }
 }

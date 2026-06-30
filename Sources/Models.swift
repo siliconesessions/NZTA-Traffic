@@ -1041,6 +1041,274 @@ func computeFlowKind(flow: Double?, coverage: Double?) -> FlowKind {
     return .congested
 }
 
+// Congestion severity for the Auckland motorway conditions feed
+// (traffic-conditions/rest/2). The feed reports four named levels; `unknown`
+// covers any value we do not recognise so an unexpected token never crashes the
+// parse. Stored as a String rawValue so it can back an @AppStorage/SceneStorage
+// value and so the map legend can iterate `allCases`.
+enum CongestionLevel: String, CaseIterable, Identifiable, Hashable {
+    case freeFlow
+    case moderate
+    case heavy
+    case congested
+    case unknown
+
+    var id: String {
+        rawValue
+    }
+
+    var label: String {
+        switch self {
+        case .freeFlow:
+            return "Free Flow"
+        case .moderate:
+            return "Moderate"
+        case .heavy:
+            return "Heavy"
+        case .congested:
+            return "Congested"
+        case .unknown:
+            return "Unknown"
+        }
+    }
+
+    // Higher == worse traffic, for ordering/emphasis. `unknown` sorts below
+    // everything real.
+    var severityRank: Int {
+        switch self {
+        case .unknown:
+            return -1
+        case .freeFlow:
+            return 0
+        case .moderate:
+            return 1
+        case .heavy:
+            return 2
+        case .congested:
+            return 3
+        }
+    }
+}
+
+// Maps a raw congestion string ("Free Flow", "Heavy", …) from the XML feed to a
+// CongestionLevel, case- and whitespace-insensitively. Unrecognised/missing
+// values become `.unknown`.
+func congestionLevel(from raw: String?) -> CongestionLevel {
+    guard let value = cleanText(raw)?.lowercased() else {
+        return .unknown
+    }
+    switch value {
+    case "free flow", "freeflow":
+        return .freeFlow
+    case "moderate":
+        return .moderate
+    case "heavy":
+        return .heavy
+    case "congested":
+        return .congested
+    default:
+        return .unknown
+    }
+}
+
+// One motorway segment ("location") from the Auckland traffic-conditions feed:
+// a directional stretch of motorway with start/end coordinates and a congestion
+// level. Rendered on the map as a colour-coded polyline. Coordinates are stored
+// pre-validated (invalid/(0,0) pairs are dropped during parsing).
+struct CongestionSegment: Identifiable, Hashable {
+    let id: String
+    let motorwayName: String?
+    let name: String?
+    let direction: String?
+    let level: CongestionLevel
+    let startLatitude: Double?
+    let startLongitude: Double?
+    let endLatitude: Double?
+    let endLongitude: Double?
+
+    var startCoordinate: CLLocationCoordinate2D? {
+        validatedCoordinate(latitude: startLatitude, longitude: startLongitude)
+    }
+
+    var endCoordinate: CLLocationCoordinate2D? {
+        validatedCoordinate(latitude: endLatitude, longitude: endLongitude)
+    }
+
+    // Ordered start -> end coordinates, dropping either end that is missing.
+    // A segment with both ends yields a drawable 2-point polyline.
+    var polyline: [CLLocationCoordinate2D] {
+        [startCoordinate, endCoordinate].compactMap { $0 }
+    }
+
+    // Representative point (midpoint when both ends are present) for labels.
+    var mapCoordinate: CLLocationCoordinate2D? {
+        if let start = startCoordinate, let end = endCoordinate {
+            return validatedCoordinate(
+                latitude: (start.latitude + end.latitude) / 2,
+                longitude: (start.longitude + end.longitude) / 2
+            )
+        }
+        return startCoordinate ?? endCoordinate
+    }
+
+    var displayName: String {
+        name ?? motorwayName ?? "Motorway segment"
+    }
+
+    var routeLine: String? {
+        joinNonEmpty([motorwayName, direction], separator: " · ")
+    }
+}
+
+// XMLParser-based decoder for the Auckland traffic-conditions feed
+// (traffic-conditions/rest/2) — the one NZTA endpoint that is XML, not JSON.
+// The shape is:
+//   getTrafficConditionsResponse > trafficConditions > motorways* >
+//     name (motorway), locations* > { congestion, direction, name (segment),
+//     startLat/Lon, endLat/Lon, id, … }
+// Note both `motorways` and `locations` carry a `name` child, so the delegate
+// tracks the parent element to disambiguate. Element names are matched by their
+// local part so the `tns:` namespace prefix is irrelevant. Foundation only.
+final class CongestionXMLParser: NSObject, XMLParserDelegate {
+    // Returns nil only when the document is not well-formed XML; an empty list
+    // is a valid (if unexpected) successful parse.
+    static func parse(_ data: Data) -> [CongestionSegment]? {
+        let delegate = CongestionXMLParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse() else {
+            return nil
+        }
+        return delegate.segments
+    }
+
+    private var segments: [CongestionSegment] = []
+    private var elementStack: [String] = []
+    private var buffer = ""
+    private var currentMotorwayName: String?
+
+    // Fields for the `locations` element currently being parsed.
+    private var locId: String?
+    private var locName: String?
+    private var locCongestion: String?
+    private var locDirection: String?
+    private var locStartLat: Double?
+    private var locStartLon: Double?
+    private var locEndLat: Double?
+    private var locEndLon: Double?
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let local = localName(elementName)
+        elementStack.append(local)
+        buffer = ""
+        switch local {
+        case "motorways":
+            currentMotorwayName = nil
+        case "locations":
+            locId = nil
+            locName = nil
+            locCongestion = nil
+            locDirection = nil
+            locStartLat = nil
+            locStartLon = nil
+            locEndLat = nil
+            locEndLon = nil
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        buffer += string
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        let local = localName(elementName)
+        let text = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parent = elementStack.count >= 2 ? elementStack[elementStack.count - 2] : ""
+
+        switch local {
+        case "name":
+            if parent == "locations" {
+                locName = text.isEmpty ? nil : text
+            } else if parent == "motorways" {
+                currentMotorwayName = text.isEmpty ? nil : text
+            }
+        case "id" where parent == "locations":
+            locId = text.isEmpty ? nil : text
+        case "congestion":
+            locCongestion = text
+        case "direction" where parent == "locations":
+            locDirection = text.isEmpty ? nil : text
+        case "startLat":
+            locStartLat = Double(text)
+        case "startLon":
+            locStartLon = Double(text)
+        case "endLat":
+            locEndLat = Double(text)
+        case "endLon":
+            locEndLon = Double(text)
+        case "locations":
+            appendCurrentSegment()
+        default:
+            break
+        }
+
+        if !elementStack.isEmpty {
+            elementStack.removeLast()
+        }
+        buffer = ""
+    }
+
+    private func appendCurrentSegment() {
+        // Keep only segments with at least one usable coordinate; everything
+        // else cannot be drawn on the map.
+        let start = validatedCoordinate(latitude: locStartLat, longitude: locStartLon)
+        let end = validatedCoordinate(latitude: locEndLat, longitude: locEndLon)
+        guard start != nil || end != nil else {
+            return
+        }
+        let identifier = deterministicID(
+            decodedId: nil,
+            fallback: [locId, currentMotorwayName, locName, locDirection],
+            typeTag: "congestion"
+        )
+        segments.append(
+            CongestionSegment(
+                id: identifier,
+                motorwayName: currentMotorwayName,
+                name: locName,
+                direction: locDirection,
+                level: congestionLevel(from: locCongestion),
+                startLatitude: start?.latitude,
+                startLongitude: start?.longitude,
+                endLatitude: end?.latitude,
+                endLongitude: end?.longitude
+            )
+        )
+    }
+
+    // Strips any namespace prefix ("tns:congestion" -> "congestion") so matching
+    // does not depend on XMLParser's namespace-processing configuration.
+    private func localName(_ elementName: String) -> String {
+        if let colon = elementName.lastIndex(of: ":") {
+            return String(elementName[elementName.index(after: colon)...])
+        }
+        return elementName
+    }
+}
+
 func parseWKTLineStringCoords(_ wkt: String?) -> (latitudes: [Double], longitudes: [Double]) {
     guard let wkt = cleanText(wkt), !wkt.isEmpty else {
         return ([], [])

@@ -503,18 +503,21 @@ struct ContentView: View {
                 journeys: scopedJourneys(),
                 timSigns: scopedTIMSigns(),
                 evChargers: store.evChargers,
+                congestion: store.congestion,
                 camerasLoading: store.isLoading(.cameras),
                 eventsLoading: store.isLoading(.events),
                 vmsLoading: store.isLoading(.vms),
                 journeysLoading: store.isLoading(.journeys),
                 timSignsLoading: store.isLoading(.timSigns),
                 evChargersLoading: store.isLoadingEVChargers,
+                congestionLoading: store.isLoading(.congestion),
                 cameraErrorMessage: store.errors[.cameras],
                 eventErrorMessage: store.errors[.events],
                 vmsErrorMessage: store.errors[.vms],
                 journeyErrorMessage: store.errors[.journeys],
                 timSignsErrorMessage: store.errors[.timSigns],
                 evChargersErrorMessage: store.evChargersError,
+                congestionErrorMessage: store.errors[.congestion],
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
@@ -533,10 +536,11 @@ struct ContentView: View {
                 Text("Flow").tag(TrafficMapLayer.flow)
                 Text("TIM").tag(TrafficMapLayer.timSigns)
                 Text("EV").tag(TrafficMapLayer.evChargers)
+                Text("Akl Jam").tag(TrafficMapLayer.congestion)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 400)
+            .frame(width: 470)
 
             mapLayerFilters
 
@@ -575,6 +579,8 @@ struct ContentView: View {
         case .timSigns:
             EmptyView()
         case .evChargers:
+            EmptyView()
+        case .congestion:
             EmptyView()
         }
     }
@@ -620,6 +626,10 @@ struct ContentView: View {
         case .evChargers:
             let items = store.evChargers
             let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
+        case .congestion:
+            let items = store.congestion
+            let mapped = items.filter { $0.polyline.count >= 2 }.count
             return MapCounts(mapped: mapped, total: items.count)
         }
     }

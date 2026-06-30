@@ -9,6 +9,10 @@ struct TrafficAPIService {
     // fetched as an absolute URL with no cache-busting token. resultRecordCount
     // covers the full ~636-feature dataset in a single page.
     private let evChargersURL = "https://services.arcgis.com/CXBb7LAjgIIdcsPt/arcgis/rest/services/EV_Roam_charging_stations/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=geojson&resultRecordCount=2000"
+    // Auckland motorway congestion conditions. This is the one NZTA endpoint
+    // that serves application/xml rather than JSON, so it is fetched as raw Data
+    // and decoded with an XMLParser (CongestionXMLParser) instead of JSONDecoder.
+    private let congestionURL = "https://trafficnz.info/service/traffic-conditions/rest/2"
     private let session: URLSession
     private let decoder: JSONDecoder
 
@@ -62,6 +66,15 @@ struct TrafficAPIService {
         return payload.features
     }
 
+    func fetchCongestion() async throws -> [CongestionSegment] {
+        let data = try await requestData(congestionURL, accept: "application/xml")
+        guard let segments = CongestionXMLParser.parse(data) else {
+            let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
+            throw TrafficAPIError.decoding("Unable to parse congestion XML", prefix)
+        }
+        return segments
+    }
+
     // These entry points are `nonisolated` so that, when called from the
     // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
     // decode of large payloads run on the cooperative thread pool rather than
@@ -94,6 +107,10 @@ struct TrafficAPIService {
         await result { try await fetchEVChargers() }
     }
 
+    nonisolated func fetchCongestionResult() async -> Result<[CongestionSegment], Error> {
+        await result { try await fetchCongestion() }
+    }
+
     nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
         try await requestAbsolute(baseURL + path)
     }
@@ -120,6 +137,55 @@ struct TrafficAPIService {
             }
         }
         throw TrafficAPIError.transport("Exhausted \(maxAttempts) attempts")
+    }
+
+    // Raw-Data variant of requestAbsolute for non-JSON endpoints (the XML
+    // congestion feed). Shares the same retry/backoff and status-code handling;
+    // the caller is responsible for parsing the returned bytes.
+    nonisolated private func requestData(_ urlString: String, accept: String) async throws -> Data {
+        guard let url = URL(string: urlString) else {
+            throw TrafficAPIError.invalidURL(urlString)
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
+        urlRequest.setValue("NZTA Traffic macOS", forHTTPHeaderField: "User-Agent")
+
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            do {
+                return try await performDataRequest(urlRequest)
+            } catch let error as TrafficAPIError where error.isRetriable && attempt < maxAttempts {
+                try? await Task.sleep(for: .seconds(pow(2.0, Double(attempt - 1))))
+            }
+        }
+        throw TrafficAPIError.transport("Exhausted \(maxAttempts) attempts")
+    }
+
+    nonisolated private func performDataRequest(_ urlRequest: URLRequest) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch {
+            throw TrafficAPIError.transport(error.localizedDescription)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TrafficAPIError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw TrafficAPIError.httpStatus(httpResponse.statusCode)
+        }
+
+        guard !data.isEmpty else {
+            throw TrafficAPIError.emptyResponse
+        }
+
+        return data
     }
 
     nonisolated private func performRequest<T: Decodable>(_ urlRequest: URLRequest) async throws -> T {

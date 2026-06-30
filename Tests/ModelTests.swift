@@ -14,6 +14,102 @@ func runModelTests(_ t: TestRunner) {
     testEVChargers(t)
     testTIMSigns(t)
     testJourneyEnrichment(t)
+    testCongestion(t)
+}
+
+// Auckland congestion XML feed (traffic-conditions/rest/2). Verifies the
+// XMLParser-based decode: namespaced `tns:` elements, the shared `name` element
+// disambiguated by parent (motorway vs. segment), level-string mapping,
+// start/end coordinate parsing into a drawable polyline, and the dropping of
+// segments whose only coordinates are invalid (0,0).
+private func testCongestion(_ t: TestRunner) {
+    t.group("Auckland congestion (XML)")
+
+    let xml = #"""
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <tns:getTrafficConditionsResponse xmlns:tns="https://infoconnect.example/schemas/traffic2">
+      <tns:trafficConditions>
+        <tns:lastUpdated>2026-06-30T17:18:16.235+12:00</tns:lastUpdated>
+        <tns:motorways>
+          <tns:name>Northern Motorway</tns:name>
+          <tns:locations>
+            <tns:congestion>Free Flow</tns:congestion>
+            <tns:direction>Southbound</tns:direction>
+            <tns:endLat>-36.7506</tns:endLat>
+            <tns:endLon>174.7260</tns:endLon>
+            <tns:id>2</tns:id>
+            <tns:inOut>In</tns:inOut>
+            <tns:name>Oteha Valley Rd - Upper Harb Hwy</tns:name>
+            <tns:order>1</tns:order>
+            <tns:startLat>-36.7183</tns:startLat>
+            <tns:startLon>174.7126</tns:startLon>
+          </tns:locations>
+          <tns:locations>
+            <tns:congestion>Heavy</tns:congestion>
+            <tns:direction>Southbound</tns:direction>
+            <tns:endLat>-36.8124</tns:endLat>
+            <tns:endLon>174.7533</tns:endLon>
+            <tns:id>8</tns:id>
+            <tns:inOut>In</tns:inOut>
+            <tns:name>Esmonde Rd - Onewa</tns:name>
+            <tns:order>4</tns:order>
+            <tns:startLat>-36.7993</tns:startLat>
+            <tns:startLon>174.7613</tns:startLon>
+          </tns:locations>
+        </tns:motorways>
+        <tns:motorways>
+          <tns:name>Southern Motorway</tns:name>
+          <tns:locations>
+            <tns:congestion>Congested</tns:congestion>
+            <tns:direction>Northbound</tns:direction>
+            <tns:endLat>0</tns:endLat>
+            <tns:endLon>0</tns:endLon>
+            <tns:id>40</tns:id>
+            <tns:name>Bad Coords</tns:name>
+            <tns:startLat>0</tns:startLat>
+            <tns:startLon>0</tns:startLon>
+          </tns:locations>
+        </tns:motorways>
+      </tns:trafficConditions>
+    </tns:getTrafficConditionsResponse>
+    """#
+
+    guard let segments = CongestionXMLParser.parse(Data(xml.utf8)) else {
+        t.check(false, "congestion XML parses to a non-nil result")
+        return
+    }
+    t.equal(segments.count, 2, "two valid segments kept, the (0,0) one dropped")
+
+    guard let first = segments.first else { return }
+    t.equal(first.motorwayName, "Northern Motorway", "motorway name propagates to its segments")
+    t.equal(first.name, "Oteha Valley Rd - Upper Harb Hwy", "segment name from the locations-level name")
+    t.equal(first.direction, "Southbound", "segment direction decodes")
+    t.check(first.level == .freeFlow, "Free Flow maps to .freeFlow")
+    t.equal(first.polyline.count, 2, "both ends present -> 2-point polyline")
+    if first.polyline.count == 2 {
+        t.nearlyEqual(first.polyline.first?.latitude, -36.7183, "polyline starts at startLat/Lon")
+        t.nearlyEqual(first.polyline.last?.longitude, 174.7260, "polyline ends at endLat/Lon")
+    }
+    t.check(first.mapCoordinate != nil, "valid segment yields a midpoint coordinate")
+
+    let second = segments[1]
+    t.check(second.level == .heavy, "Heavy maps to .heavy")
+    t.equal(second.motorwayName, "Northern Motorway", "second segment still under the first motorway")
+
+    // The (0,0) Southern Motorway segment is dropped entirely.
+    t.check(!segments.contains { $0.motorwayName == "Southern Motorway" }, "invalid-coordinate segment dropped")
+
+    // Level-string mapping in isolation, including the unknown fallback.
+    t.check(congestionLevel(from: "Free Flow") == .freeFlow, "Free Flow string")
+    t.check(congestionLevel(from: "MODERATE") == .moderate, "Moderate is case-insensitive")
+    t.check(congestionLevel(from: "Heavy") == .heavy, "Heavy string")
+    t.check(congestionLevel(from: "Congested") == .congested, "Congested string")
+    t.check(congestionLevel(from: "weird") == .unknown, "unrecognised value -> unknown")
+    t.check(congestionLevel(from: nil) == .unknown, "nil -> unknown")
+    t.check(CongestionLevel.congested.severityRank > CongestionLevel.freeFlow.severityRank, "congested ranks worse than free flow")
+
+    // Malformed XML must fail the parse (returns nil) rather than crashing.
+    t.check(CongestionXMLParser.parse(Data("not xml <<".utf8)) == nil, "malformed XML -> nil")
 }
 
 // Journey-level route geometry (WKT MULTILINESTRING -> single overlay polyline)

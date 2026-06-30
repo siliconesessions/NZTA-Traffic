@@ -8,6 +8,7 @@ enum DataSection: String, CaseIterable, Identifiable {
     case vms
     case journeys
     case timSigns
+    case congestion
 
     var id: String {
         rawValue
@@ -24,6 +25,9 @@ final class TrafficStore {
     // TIM roadside travel-time boards (/signs/tim/all). Refreshed each cycle
     // like the other live sections and surfaced as a map layer.
     private(set) var timSigns: [TIMSign] = []
+    // Auckland motorway congestion segments (traffic-conditions/rest/2, XML).
+    // Live data refreshed each cycle and rendered as a colour-coded map layer.
+    private(set) var congestion: [CongestionSegment] = []
     // EV Roam public charging stations. Static reference data fetched once (like
     // the canonical regions) rather than on every refresh, so it has its own
     // loading/error state instead of being a per-refresh DataSection.
@@ -96,9 +100,10 @@ final class TrafficStore {
         async let signsTask: () = loadVMS()
         async let journeysTask: () = loadJourneys()
         async let timTask: () = loadTIMSigns()
+        async let congestionTask: () = loadCongestion()
         async let regionsTask: () = loadRegions()
         async let evChargersTask: () = loadEVChargers()
-        _ = await (camerasTask, eventsTask, signsTask, journeysTask, timTask, regionsTask, evChargersTask)
+        _ = await (camerasTask, eventsTask, signsTask, journeysTask, timTask, congestionTask, regionsTask, evChargersTask)
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
@@ -136,6 +141,12 @@ final class TrafficStore {
         let result = await service.fetchTIMSignsResult()
         apply(result, to: .timSigns, keyPath: \.timSigns)
         loadingSections.remove(.timSigns)
+    }
+
+    private func loadCongestion() async {
+        let result = await service.fetchCongestionResult()
+        apply(result, to: .congestion, keyPath: \.congestion)
+        loadingSections.remove(.congestion)
     }
 
     // EV charger locations are static, so fetch them only once (and retry on a
