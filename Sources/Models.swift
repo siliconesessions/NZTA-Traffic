@@ -237,6 +237,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let status: String?
     let supplier: String?
     let startDate: String?
+    let direction: String?
+    let travelDirection: String?
     let directLineDistance1: String?
     let directLineDistance2: String?
     let directLineDistance3: String?
@@ -306,6 +308,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         status = cleanText(container.decodeLossyString(forKey: .status))
         supplier = cleanText(container.decodeLossyString(forKey: .supplier))
         startDate = startDateValue
+        direction = cleanText(container.decodeLossyString(forKey: .direction))
+        travelDirection = cleanText(container.decodeLossyString(forKey: .travelDirection))
         directLineDistance1 = cleanText(container.decodeLossyString(forKey: .directLineDistance1))
         directLineDistance2 = cleanText(container.decodeLossyString(forKey: .directLineDistance2))
         directLineDistance3 = cleanText(container.decodeLossyString(forKey: .directLineDistance3))
@@ -391,6 +395,21 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         directLineDistance1 ?? directLineDistance2 ?? directLineDistance3
     }
 
+    // Carriageway affected, e.g. "Southbound" or "Both Directions" (rest/5).
+    // Prefer the human-readable `direction`; fall back to a tidied
+    // `travelDirection` enum token ("BOTH_DIRECTIONS" -> "Both Directions").
+    var directionText: String? {
+        if let direction {
+            return direction
+        }
+        guard let travelDirection else {
+            return nil
+        }
+        return travelDirection
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+
     func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
         matchesRegion(regionName, selectedRegion: selectedRegion)
             && matchesNeedle(selectedHighway, in: highwayHaystack)
@@ -419,6 +438,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         case status
         case supplier
         case startDate
+        case direction
+        case travelDirection
         case directLineDistance1
         case directLineDistance2
         case directLineDistance3

@@ -1,7 +1,9 @@
 import Foundation
 
 struct TrafficAPIService {
-    private let baseURL = "https://trafficnz.info/service/traffic/rest/4"
+    // rest/5 is a drop-in superset of rest/4 (cameras/VMS/journeys identical
+    // wrappers); road events additionally carry `direction`/`travelDirection`.
+    private let baseURL = "https://trafficnz.info/service/traffic/rest/5"
     private let session: URLSession
     private let decoder: JSONDecoder
 

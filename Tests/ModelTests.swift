@@ -110,6 +110,23 @@ private func testEventFields(_ t: TestRunner) {
     t.equal(noFlag?.planned, nil, "absent planned -> nil")
     t.check(noFlag?.isPlanned == false, "absent planned reads as incident")
 
+    // rest/5 carriageway direction fields.
+    let dirJson = #"{"id":"e4","eventDescription":"Slip","direction":"Southbound","travelDirection":"ONE_DIRECTION"}"#
+    guard let dir = decodeModel(RoadEvent.self, dirJson, t) else { return }
+    t.equal(dir.direction, "Southbound", "direction decodes")
+    t.equal(dir.travelDirection, "ONE_DIRECTION", "travelDirection decodes")
+    t.equal(dir.directionText, "Southbound", "directionText prefers human-readable direction")
+
+    let bothJson = #"{"id":"e5","eventDescription":"Roadworks","direction":"Both Directions","travelDirection":"BOTH_DIRECTIONS"}"#
+    t.equal(decodeModel(RoadEvent.self, bothJson, t)?.directionText, "Both Directions", "directionText reads Both Directions")
+
+    // Falls back to a tidied travelDirection token when `direction` is absent.
+    let fallbackJson = #"{"id":"e6","eventDescription":"Crash","travelDirection":"BOTH_DIRECTIONS"}"#
+    t.equal(decodeModel(RoadEvent.self, fallbackJson, t)?.directionText, "Both Directions", "directionText tidies travelDirection fallback")
+
+    let noDirJson = #"{"id":"e7","eventDescription":"Crash"}"#
+    t.check(decodeModel(RoadEvent.self, noDirJson, t)?.directionText == nil, "absent direction -> nil directionText")
+
     t.check(EventIslandFilter.all.matches("North Island"), "all matches any island")
     t.check(EventIslandFilter.all.matches(nil), "all matches nil island")
     t.check(EventIslandFilter.south.matches("South Island"), "south matches South Island")

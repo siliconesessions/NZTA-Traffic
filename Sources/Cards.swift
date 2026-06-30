@@ -358,6 +358,12 @@ struct RoadEventCard: View {
                     }
                 }
 
+                if let direction = event.directionText {
+                    Label(direction, systemImage: directionSymbol)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+
                 if let location = event.locationArea {
                     Label(location, systemImage: "location.fill")
                         .font(.subheadline)
@@ -408,6 +414,27 @@ struct RoadEventCard: View {
             return .yellow
         }
         return .gray
+    }
+
+    // Pick a directional glyph from the carriageway text; default to a
+    // two-way arrow for "Both Directions" or anything unrecognised.
+    private var directionSymbol: String {
+        guard let direction = event.directionText?.lowercased() else {
+            return "arrow.left.and.right"
+        }
+        if direction.contains("north") {
+            return "arrow.up"
+        }
+        if direction.contains("south") {
+            return "arrow.down"
+        }
+        if direction.contains("east") {
+            return "arrow.right"
+        }
+        if direction.contains("west") {
+            return "arrow.left"
+        }
+        return "arrow.left.and.right"
     }
 }
 
