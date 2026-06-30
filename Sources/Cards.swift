@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct JourneyCard: View {
@@ -31,6 +32,8 @@ struct JourneyCard: View {
                 Spacer().frame(height: 10)
             }
 
+            slowestLegCallout
+
             if !journey.legs.isEmpty {
                 Divider()
                 ForEach(Array(journey.legs.enumerated()), id: \.offset) { index, leg in
@@ -53,6 +56,42 @@ struct JourneyCard: View {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
         )
+    }
+
+    // The journey's bottleneck. Only highlighted when it's genuinely slow or
+    // congested so the callout flags a problem rather than restating free flow.
+    private var bottleneckLeg: TrafficJourneyLeg? {
+        guard let leg = journey.slowestLeg,
+              leg.flowKind == .slow || leg.flowKind == .congested else {
+            return nil
+        }
+        return leg
+    }
+
+    @ViewBuilder
+    private var slowestLegCallout: some View {
+        if let leg = bottleneckLeg {
+            HStack(spacing: 8) {
+                Image(systemName: "tortoise.fill")
+                    .font(.caption2)
+                    .foregroundStyle(leg.flowKind.color)
+                Text("Slowest leg")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(leg.name ?? "Leg")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                if let speed = leg.speed, speed > 0 {
+                    Text("\(Int(speed.rounded())) km/h")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Badge(text: leg.flowKind.label, tint: leg.flowKind.color)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
     }
 
     private var summaryLine: String? {
@@ -282,6 +321,13 @@ struct CameraPreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // The legacy /camera/view/<id> page (camera.viewUrl) now 404s — trafficnz.info
+    // redirects to journeys.nzta.govt.nz and the old view path is dead. Link to the
+    // working full-resolution image path instead so the button isn't a dead link.
+    private var largerViewURL: URL? {
+        camera.imageURL(cacheToken: cacheToken)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
@@ -294,6 +340,14 @@ struct CameraPreviewView: View {
                     }
                 }
                 Spacer()
+                if let largerViewURL {
+                    Button {
+                        NSWorkspace.shared.open(largerViewURL)
+                    } label: {
+                        Label("Open full image", systemImage: "arrow.up.forward.app")
+                    }
+                    .help("Open the full-resolution camera image in your browser")
+                }
                 Button("Close") {
                     dismiss()
                 }
@@ -347,14 +401,32 @@ struct RoadEventCard: View {
 
                     Spacer()
 
-                    if let impact = event.impact {
-                        Badge(text: impact, tint: impactColor)
+                    HStack(spacing: 6) {
+                        Badge(
+                            text: event.isPlanned ? "Planned" : "Incident",
+                            tint: event.isPlanned ? .blue : .indigo
+                        )
+                        if let impact = event.impact {
+                            Badge(text: impact, tint: impactColor)
+                        }
                     }
+                }
+
+                if let direction = event.directionText {
+                    Label(direction, systemImage: directionSymbol)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
 
                 if let location = event.locationArea {
                     Label(location, systemImage: "location.fill")
                         .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let near = event.nearestLandmark {
+                    Label(near, systemImage: "mappin.and.ellipse")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -397,6 +469,27 @@ struct RoadEventCard: View {
         }
         return .gray
     }
+
+    // Pick a directional glyph from the carriageway text; default to a
+    // two-way arrow for "Both Directions" or anything unrecognised.
+    private var directionSymbol: String {
+        guard let direction = event.directionText?.lowercased() else {
+            return "arrow.left.and.right"
+        }
+        if direction.contains("north") {
+            return "arrow.up"
+        }
+        if direction.contains("south") {
+            return "arrow.down"
+        }
+        if direction.contains("east") {
+            return "arrow.right"
+        }
+        if direction.contains("west") {
+            return "arrow.left"
+        }
+        return "arrow.left.and.right"
+    }
 }
 
 struct EventMetaGrid: View {
@@ -407,11 +500,17 @@ struct EventMetaGrid: View {
             if let eventType = event.eventType {
                 SmallMeta(text: eventType, systemImage: "tag")
             }
-            if let started = formatTrafficDate(event.startDate) {
-                SmallMeta(text: "Started: \(started)", systemImage: "clock")
+            if let started = startedText {
+                SmallMeta(text: started, systemImage: "clock")
             }
-            if let expected = formatTrafficDate(event.expectedResolution) {
-                SmallMeta(text: "Expected: \(expected)", systemImage: "calendar")
+            if let updated = updatedText {
+                SmallMeta(text: updated, systemImage: "arrow.clockwise")
+            }
+            if let ends = endsText {
+                SmallMeta(text: ends, systemImage: "calendar")
+            }
+            if let island = event.eventIsland {
+                SmallMeta(text: island, systemImage: "map")
             }
             if let source = event.informationSource {
                 SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
@@ -420,6 +519,28 @@ struct EventMetaGrid: View {
                 SmallMeta(text: status, systemImage: "checkmark.circle")
             }
         }
+    }
+
+    // Prefer a relative reading ("Started 2 days ago"); fall back to the
+    // absolute NZ date when the timestamp can't be parsed into a relative one.
+    private var startedText: String? {
+        if let relative = formatRelativeTrafficDate(event.startDate) {
+            return "Started \(relative)"
+        }
+        return formatTrafficDate(event.startDate).map { "Started: \($0)" }
+    }
+
+    private var updatedText: String? {
+        formatRelativeTrafficDate(event.eventModified).map { "Updated \($0)" }
+    }
+
+    // The API rarely sends `endDate`; when absent fall back to the planned
+    // resolution estimate so the card still carries a "when" cue.
+    private var endsText: String? {
+        if let relative = formatRelativeTrafficDate(event.endDate) {
+            return "Ends \(relative)"
+        }
+        return formatTrafficDate(event.expectedResolution).map { "Expected: \($0)" }
     }
 }
 
@@ -432,6 +553,132 @@ struct SmallMeta: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
+    }
+}
+
+struct EVChargerCard: View {
+    let charger: EVCharger
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label(charger.displayName, systemImage: "bolt.fill")
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                if let power = charger.powerSummary {
+                    Badge(text: power, tint: charger.isDC ? .purple : .teal)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+                if let op = charger.operatorName {
+                    SmallMeta(text: op, systemImage: "building.2")
+                }
+                if let address = charger.address {
+                    SmallMeta(text: address, systemImage: "mappin.and.ellipse")
+                }
+                if let connectors = charger.connectorSummary {
+                    SmallMeta(text: connectors, systemImage: "powerplug")
+                }
+                if let count = charger.connectorCount {
+                    SmallMeta(text: "\(count) connector\(count == 1 ? "" : "s")", systemImage: "number")
+                }
+                if let is24Hours = charger.is24Hours {
+                    SmallMeta(text: is24Hours ? "Open 24 hours" : "Limited hours", systemImage: "clock")
+                }
+                if let hasCost = charger.hasChargingCost {
+                    SmallMeta(text: hasCost ? "Charging cost applies" : "Free charging", systemImage: "dollarsign.circle")
+                }
+            }
+            .padding(16)
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
+        )
+    }
+}
+
+struct TIMCard: View {
+    let sign: TIMSign
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label(sign.displayName, systemImage: "clock.fill")
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                if let region = sign.regionName {
+                    Badge(text: region, tint: .black)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            if sign.lines.isEmpty {
+                Text("No travel times available")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(sign.lines.enumerated()), id: \.offset) { index, line in
+                        TIMLineRow(line: line)
+                        if index < sign.lines.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
+        )
+    }
+}
+
+private struct TIMLineRow: View {
+    let line: TIMLine
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(line.destination ?? "—")
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+
+            Spacer()
+
+            if let time = line.timeText {
+                Text(time)
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 }
 

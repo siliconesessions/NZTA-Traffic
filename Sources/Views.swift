@@ -41,6 +41,9 @@ struct ContentView: View {
     @AppStorage("nzta.event.showDelays") private var showEventDelays = true
     @AppStorage("nzta.event.showCaution") private var showEventCaution = true
     @AppStorage("nzta.event.showOther") private var showEventOther = true
+    @AppStorage("nzta.event.showPlanned") private var showEventPlanned = true
+    @AppStorage("nzta.event.showUnplanned") private var showEventUnplanned = true
+    @AppStorage("nzta.event.island") private var eventIslandFilter: EventIslandFilter = .all
     @AppStorage("nzta.camera.showOnline") private var showCameraOnline = true
     @AppStorage("nzta.camera.showOffline") private var showCameraOffline = true
     @AppStorage("nzta.camera.showMaintenance") private var showCameraMaintenance = true
@@ -77,6 +80,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            offlineBanner
             Divider()
             filters
             Divider()
@@ -87,6 +91,8 @@ struct ContentView: View {
         .background(tabShortcuts)
         .background(searchFocusShortcut)
         .task {
+            // Show any cached data instantly, then fetch live and replace it.
+            await store.primeFromCache()
             await store.loadAllData()
         }
         .onAppear {
@@ -272,6 +278,34 @@ struct ContentView: View {
         .background(.background)
     }
 
+    // Offline / cached-data banner under the header. Hidden in the normal online
+    // case; appears when unreachable or while any section is served from cache.
+    @ViewBuilder
+    private var offlineBanner: some View {
+        if store.shouldShowOfflineBanner {
+            OfflineBanner(message: offlineBannerMessage)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .background(.background)
+        }
+    }
+
+    private var offlineBannerMessage: String {
+        let suffix: String
+        if let timestamp = store.cacheTimestamp {
+            suffix = " from \(timestamp.formatted(.relative(presentation: .named)))"
+        } else {
+            suffix = ""
+        }
+        if !store.isOnline {
+            return store.isServingCachedData
+                ? "Offline — showing cached data\(suffix)"
+                : "Offline — no internet connection. Showing the latest available data."
+        }
+        // Online, but a fetch failed and we fell back to the on-disk cache.
+        return "Showing cached data\(suffix) — couldn’t reach NZTA."
+    }
+
     private var lastUpdatedText: String {
         guard let lastUpdated = store.lastUpdated else {
             return "Not yet"
@@ -441,7 +475,8 @@ struct ContentView: View {
                 cacheToken: store.imageCacheToken,
                 hasActiveFilters: hasActiveFilters,
                 onClearFilters: clearAllFilters,
-                onPreview: { selectedCamera = $0 }
+                onPreview: { selectedCamera = $0 },
+                onRetry: { Task { await store.reload(.cameras) } }
             )
         }
     }
@@ -455,7 +490,8 @@ struct ContentView: View {
                 isLoading: store.isLoading(.events),
                 errorMessage: store.errors[.events],
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.events) } }
             )
         }
     }
@@ -470,7 +506,8 @@ struct ContentView: View {
                 errorMessage: store.errors[.vms],
                 hideEmpty: hideEmptyVMS,
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.vms) } }
             )
         }
     }
@@ -484,7 +521,8 @@ struct ContentView: View {
                 isLoading: store.isLoading(.journeys),
                 errorMessage: store.errors[.journeys],
                 hasActiveFilters: hasActiveFilters,
-                onClearFilters: clearAllFilters
+                onClearFilters: clearAllFilters,
+                onRetry: { Task { await store.reload(.journeys) } }
             )
         }
     }
@@ -498,19 +536,49 @@ struct ContentView: View {
                 events: scopedEvents(),
                 vmsSigns: scopedVMSSigns(),
                 journeys: scopedJourneys(),
+                timSigns: scopedTIMSigns(),
+                evChargers: store.evChargers,
+                congestion: store.congestion,
                 camerasLoading: store.isLoading(.cameras),
                 eventsLoading: store.isLoading(.events),
                 vmsLoading: store.isLoading(.vms),
                 journeysLoading: store.isLoading(.journeys),
+                timSignsLoading: store.isLoading(.timSigns),
+                evChargersLoading: store.isLoadingEVChargers,
+                congestionLoading: store.isLoading(.congestion),
                 cameraErrorMessage: store.errors[.cameras],
                 eventErrorMessage: store.errors[.events],
                 vmsErrorMessage: store.errors[.vms],
                 journeyErrorMessage: store.errors[.journeys],
+                timSignsErrorMessage: store.errors[.timSigns],
+                evChargersErrorMessage: store.evChargersError,
+                congestionErrorMessage: store.errors[.congestion],
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
-                onCameraPreview: { selectedCamera = $0 }
+                onCameraPreview: { selectedCamera = $0 },
+                onRetry: { layer in Task { await reloadMapLayer(layer) } }
             )
+        }
+    }
+
+    // Reload the data source backing the given map layer (per-layer Retry).
+    private func reloadMapLayer(_ layer: TrafficMapLayer) async {
+        switch layer {
+        case .cameras:
+            await store.reload(.cameras)
+        case .events:
+            await store.reload(.events)
+        case .vms:
+            await store.reload(.vms)
+        case .flow:
+            await store.reload(.journeys)
+        case .timSigns:
+            await store.reload(.timSigns)
+        case .congestion:
+            await store.reload(.congestion)
+        case .evChargers:
+            await store.reloadEVChargers()
         }
     }
 
@@ -522,10 +590,13 @@ struct ContentView: View {
                 Text("Events").tag(TrafficMapLayer.events)
                 Text("VMS").tag(TrafficMapLayer.vms)
                 Text("Flow").tag(TrafficMapLayer.flow)
+                Text("TIM").tag(TrafficMapLayer.timSigns)
+                Text("EV").tag(TrafficMapLayer.evChargers)
+                Text("Akl Jam").tag(TrafficMapLayer.congestion)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 280)
+            .frame(width: 470)
 
             mapLayerFilters
 
@@ -561,6 +632,12 @@ struct ContentView: View {
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
         case .flow:
             flowFilters
+        case .timSigns:
+            EmptyView()
+        case .evChargers:
+            EmptyView()
+        case .congestion:
+            EmptyView()
         }
     }
 
@@ -598,6 +675,18 @@ struct ContentView: View {
             let allLegs = scopedJourneys().flatMap(\.legs)
             let mapped = allLegs.filter { !$0.polylineLatitudes.isEmpty }.count
             return MapCounts(mapped: mapped, total: allLegs.count)
+        case .timSigns:
+            let items = scopedTIMSigns()
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
+        case .evChargers:
+            let items = store.evChargers
+            let mapped = items.filter { $0.mapCoordinate != nil }.count
+            return MapCounts(mapped: mapped, total: items.count)
+        case .congestion:
+            let items = store.congestion
+            let mapped = items.filter { $0.polyline.count >= 2 }.count
+            return MapCounts(mapped: mapped, total: items.count)
         }
     }
 
@@ -614,7 +703,10 @@ struct ContentView: View {
             showClosures: $showEventClosures,
             showDelays: $showEventDelays,
             showCaution: $showEventCaution,
-            showOther: $showEventOther
+            showOther: $showEventOther,
+            showPlanned: $showEventPlanned,
+            showUnplanned: $showEventUnplanned,
+            island: $eventIslandFilter
         )
     }
 
@@ -640,7 +732,15 @@ struct ContentView: View {
     }
 
     private func scopedEvents() -> [RoadEvent] {
-        store.scopedEvents(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, impacts: allowedEventImpacts)
+        store.scopedEvents(
+            region: selectedRegion,
+            highway: debouncedHighway,
+            search: debouncedSearch,
+            impacts: allowedEventImpacts,
+            showPlanned: showEventPlanned,
+            showUnplanned: showEventUnplanned,
+            island: eventIslandFilter
+        )
     }
 
     private func scopedVMSSigns() -> [VMSSign] {
@@ -659,6 +759,10 @@ struct ContentView: View {
 
     private func scopedJourneys() -> [TrafficJourney] {
         store.scopedJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
+    }
+
+    private func scopedTIMSigns() -> [TIMSign] {
+        store.filteredTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
     }
 
     private func configureAutoRefresh() {

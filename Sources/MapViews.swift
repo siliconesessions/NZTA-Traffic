@@ -11,6 +11,9 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case events = "Road Events"
     case vms = "VMS Signs"
     case flow = "Traffic Flow"
+    case timSigns = "Travel Time Signs"
+    case evChargers = "EV Chargers"
+    case congestion = "Auckland Congestion"
 
     var id: String {
         rawValue
@@ -26,6 +29,12 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "Loading VMS signs..."
         case .flow:
             return "Loading travel times..."
+        case .timSigns:
+            return "Loading travel time signs..."
+        case .evChargers:
+            return "Loading EV chargers..."
+        case .congestion:
+            return "Loading Auckland congestion..."
         }
     }
 
@@ -39,6 +48,12 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No VMS signs found matching your filters"
         case .flow:
             return "No journeys found matching your filters"
+        case .timSigns:
+            return "No travel time signs found matching your filters"
+        case .evChargers:
+            return "No EV chargers available"
+        case .congestion:
+            return "No Auckland congestion data available"
         }
     }
 
@@ -52,6 +67,12 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No filtered VMS signs have usable map coordinates"
         case .flow:
             return "No filtered journey legs have usable geometry"
+        case .timSigns:
+            return "No filtered travel time signs have usable map coordinates"
+        case .evChargers:
+            return "No EV chargers have usable map coordinates"
+        case .congestion:
+            return "No Auckland congestion segments have usable geometry"
         }
     }
 }
@@ -61,18 +82,29 @@ struct TrafficMapTabView: View {
     let events: [RoadEvent]
     let vmsSigns: [VMSSign]
     let journeys: [TrafficJourney]
+    let timSigns: [TIMSign]
+    let evChargers: [EVCharger]
+    let congestion: [CongestionSegment]
     let camerasLoading: Bool
     let eventsLoading: Bool
     let vmsLoading: Bool
     let journeysLoading: Bool
+    let timSignsLoading: Bool
+    let evChargersLoading: Bool
+    let congestionLoading: Bool
     let cameraErrorMessage: String?
     let eventErrorMessage: String?
     let vmsErrorMessage: String?
     let journeyErrorMessage: String?
+    let timSignsErrorMessage: String?
+    let evChargersErrorMessage: String?
+    let congestionErrorMessage: String?
     @Binding var position: MapCameraPosition
     @Binding var visibleSpan: MKCoordinateSpan
     @Binding var selectedLayer: TrafficMapLayer
     let onCameraPreview: (TrafficCamera) -> Void
+    // Reloads the data behind the currently selected map layer (per-layer Retry).
+    var onRetry: ((TrafficMapLayer) -> Void)?
 
     @State private var selectedDetail: TrafficMapDetail?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -100,8 +132,39 @@ struct TrafficMapTabView: View {
                 }
                 return .vms(sign, coordinate)
             }
-        case .flow:
+        case .timSigns:
+            return timSigns.compactMap { sign in
+                guard let coordinate = sign.mapCoordinate else {
+                    return nil
+                }
+                return .tim(sign, coordinate)
+            }
+        case .evChargers:
+            return evChargers.compactMap { charger in
+                guard let coordinate = charger.mapCoordinate else {
+                    return nil
+                }
+                return .evCharger(charger, coordinate)
+            }
+        case .flow, .congestion:
             return []
+        }
+    }
+
+    private var congestionOverlays: [CongestionOverlay] {
+        guard selectedLayer == .congestion else {
+            return []
+        }
+        return congestion.compactMap { segment in
+            let coordinates = segment.polyline
+            guard coordinates.count >= 2 else {
+                return nil
+            }
+            return CongestionOverlay(
+                id: segment.id,
+                coordinates: coordinates,
+                level: segment.level
+            )
         }
     }
 
@@ -128,6 +191,23 @@ struct TrafficMapTabView: View {
         return overlays
     }
 
+    private var journeyRoutes: [FlowRouteOverlay] {
+        guard selectedLayer == .flow else {
+            return []
+        }
+        return journeys.compactMap { journey in
+            let coordinates = journey.routePolyline
+            guard coordinates.count >= 2 else {
+                return nil
+            }
+            return FlowRouteOverlay(
+                id: "route|\(journey.id)",
+                coordinates: coordinates,
+                flowKind: journey.overallFlowKind
+            )
+        }
+    }
+
     private var totalCount: Int {
         switch selectedLayer {
         case .cameras:
@@ -138,15 +218,23 @@ struct TrafficMapTabView: View {
             return vmsSigns.count
         case .flow:
             return journeys.count
+        case .timSigns:
+            return timSigns.count
+        case .evChargers:
+            return evChargers.count
+        case .congestion:
+            return congestion.count
         }
     }
 
     private var hasMapContent: Bool {
         switch selectedLayer {
-        case .cameras, .events, .vms:
+        case .cameras, .events, .vms, .timSigns, .evChargers:
             return !features.isEmpty
         case .flow:
-            return !flowLegs.isEmpty
+            return !flowLegs.isEmpty || !journeyRoutes.isEmpty
+        case .congestion:
+            return !congestionOverlays.isEmpty
         }
     }
 
@@ -160,6 +248,12 @@ struct TrafficMapTabView: View {
             return vmsLoading
         case .flow:
             return journeysLoading
+        case .timSigns:
+            return timSignsLoading
+        case .evChargers:
+            return evChargersLoading
+        case .congestion:
+            return congestionLoading
         }
     }
 
@@ -173,6 +267,12 @@ struct TrafficMapTabView: View {
             return vmsErrorMessage
         case .flow:
             return journeyErrorMessage
+        case .timSigns:
+            return timSignsErrorMessage
+        case .evChargers:
+            return evChargersErrorMessage
+        case .congestion:
+            return congestionErrorMessage
         }
     }
 
@@ -241,18 +341,32 @@ struct TrafficMapTabView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let errorMessage {
-                ErrorBanner(message: errorMessage)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+                ErrorBanner(
+                    message: errorMessage,
+                    onRetry: onRetry.map { handler in { handler(selectedLayer) } }
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             }
 
             ZStack(alignment: .topLeading) {
                 Map(position: $position) {
                     if selectedLayer == .flow {
+                        // Full journey route as a single casing underneath, with
+                        // the live per-leg segments drawn on top for detail.
+                        ForEach(journeyRoutes) { route in
+                            MapPolyline(coordinates: route.coordinates)
+                                .stroke(route.flowKind.color.opacity(0.4), style: StrokeStyle(lineWidth: 9 * zoomScale, lineCap: .round, lineJoin: .round))
+                        }
                         ForEach(flowLegs) { leg in
                             MapPolyline(coordinates: leg.coordinates)
-                                .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                                .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5 * zoomScale, lineCap: .round, lineJoin: .round))
+                        }
+                    } else if selectedLayer == .congestion {
+                        ForEach(congestionOverlays) { segment in
+                            MapPolyline(coordinates: segment.coordinates)
+                                .stroke(segment.level.color, style: StrokeStyle(lineWidth: 6 * zoomScale, lineCap: .round, lineJoin: .round))
                         }
                     } else {
                         ForEach(mapItems) { item in
@@ -269,7 +383,7 @@ struct TrafficMapTabView: View {
                                     coordinate: coordinate,
                                     anchor: .center
                                 ) {
-                                    TrafficMapClusterMarker(count: members.count, layer: selectedLayer) {
+                                    TrafficMapClusterMarker(count: members.count, layer: selectedLayer, sizeScale: zoomScale) {
                                         zoomIn(toCluster: members)
                                     }
                                 }
@@ -309,6 +423,18 @@ struct TrafficMapTabView: View {
         clusterMapFeatures(features, span: visibleSpan)
     }
 
+    // A multiplier that grows polylines and cluster bubbles as the user zooms
+    // in and shrinks them when zoomed out to the whole country, so strokes stay
+    // legible at street level without smothering the national view. Derived
+    // from the visible span (degrees) and clamped to a tasteful range.
+    private var zoomScale: CGFloat {
+        let maxSpan = max(visibleSpan.latitudeDelta, visibleSpan.longitudeDelta)
+        // ~0.05° (street) → 1.6×, ~8°+ (national) → 0.7×, interpolated between.
+        let clamped = min(max(maxSpan, 0.05), 8.0)
+        let t = (clamped - 0.05) / (8.0 - 0.05)
+        return 1.6 - t * (1.6 - 0.7)
+    }
+
     private func select(_ feature: TrafficMapFeature) {
         switch feature {
         case .camera(let camera, _):
@@ -317,6 +443,10 @@ struct TrafficMapTabView: View {
             selectedDetail = .event(event)
         case .vms(let sign, _):
             selectedDetail = .vms(sign)
+        case .tim(let sign, _):
+            selectedDetail = .tim(sign)
+        case .evCharger(let charger, _):
+            selectedDetail = .evCharger(charger)
         }
     }
 
@@ -361,6 +491,8 @@ private enum TrafficMapFeature: Identifiable {
     case camera(TrafficCamera, CLLocationCoordinate2D)
     case event(RoadEvent, CLLocationCoordinate2D)
     case vms(VMSSign, CLLocationCoordinate2D)
+    case tim(TIMSign, CLLocationCoordinate2D)
+    case evCharger(EVCharger, CLLocationCoordinate2D)
 
     var id: String {
         switch self {
@@ -370,6 +502,10 @@ private enum TrafficMapFeature: Identifiable {
             return "event-\(event.id)"
         case .vms(let sign, _):
             return "vms-\(sign.id)"
+        case .tim(let sign, _):
+            return "tim-\(sign.id)"
+        case .evCharger(let charger, _):
+            return "evcharger-\(charger.id)"
         }
     }
 
@@ -377,7 +513,9 @@ private enum TrafficMapFeature: Identifiable {
         switch self {
         case .camera(_, let coordinate),
              .event(_, let coordinate),
-             .vms(_, let coordinate):
+             .vms(_, let coordinate),
+             .tim(_, let coordinate),
+             .evCharger(_, let coordinate):
             return coordinate
         }
     }
@@ -390,6 +528,10 @@ private enum TrafficMapFeature: Identifiable {
             return event.displayTitle
         case .vms(let sign, _):
             return sign.displayName
+        case .tim(let sign, _):
+            return sign.displayName
+        case .evCharger(let charger, _):
+            return charger.displayName
         }
     }
 
@@ -401,6 +543,10 @@ private enum TrafficMapFeature: Identifiable {
             return event.locationArea ?? event.locations ?? event.regionName
         case .vms(let sign, _):
             return joinNonEmpty([sign.journey?.name ?? sign.way?.name, sign.direction], separator: " - ") ?? sign.regionName
+        case .tim(let sign, _):
+            return sign.summary ?? sign.regionName
+        case .evCharger(let charger, _):
+            return charger.operatorName ?? charger.address
         }
     }
 
@@ -415,6 +561,10 @@ private enum TrafficMapFeature: Identifiable {
             return event.impact ?? event.eventType ?? "Road Event"
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? "VMS Sign" : "No message"
+        case .tim(let sign, _):
+            return sign.headline ?? "Travel time sign"
+        case .evCharger(let charger, _):
+            return charger.powerSummary ?? "EV Charger"
         }
     }
 
@@ -426,6 +576,10 @@ private enum TrafficMapFeature: Identifiable {
             return "exclamationmark.triangle.fill"
         case .vms:
             return "signpost.right.fill"
+        case .tim:
+            return "clock.fill"
+        case .evCharger:
+            return "bolt.fill"
         }
     }
 
@@ -449,6 +603,10 @@ private enum TrafficMapFeature: Identifiable {
             return .gray
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? .blue : .gray
+        case .tim:
+            return .cyan
+        case .evCharger(let charger, _):
+            return charger.isDC ? .purple : .teal
         }
     }
 }
@@ -457,6 +615,18 @@ private struct FlowLegOverlay: Identifiable {
     let id: String
     let coordinates: [CLLocationCoordinate2D]
     let flowKind: FlowKind
+}
+
+private struct FlowRouteOverlay: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let flowKind: FlowKind
+}
+
+private struct CongestionOverlay: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let level: CongestionLevel
 }
 
 private enum TrafficMapItem: Identifiable {
@@ -524,6 +694,8 @@ private func clusterMapFeatures(
 private enum TrafficMapDetail: Identifiable {
     case event(RoadEvent)
     case vms(VMSSign)
+    case tim(TIMSign)
+    case evCharger(EVCharger)
 
     var id: String {
         switch self {
@@ -531,6 +703,10 @@ private enum TrafficMapDetail: Identifiable {
             return "event-\(event.id)"
         case .vms(let sign):
             return "vms-\(sign.id)"
+        case .tim(let sign):
+            return "tim-\(sign.id)"
+        case .evCharger(let charger):
+            return "evcharger-\(charger.id)"
         }
     }
 }
@@ -573,6 +749,9 @@ private struct TrafficMapMarker: View {
 private struct TrafficMapClusterMarker: View {
     let count: Int
     let layer: TrafficMapLayer
+    // Zoom-derived multiplier (see TrafficMapTabView.zoomScale) so bubbles grow
+    // when zoomed in and shrink at national scale.
+    var sizeScale: CGFloat = 1
     let onSelect: () -> Void
 
     var body: some View {
@@ -597,16 +776,20 @@ private struct TrafficMapClusterMarker: View {
     }
 
     private var diameter: CGFloat {
+        let base: CGFloat
         switch count {
         case ..<10:
-            return 32
+            base = 32
         case ..<50:
-            return 38
+            base = 38
         case ..<200:
-            return 44
+            base = 44
         default:
-            return 50
+            base = 50
         }
+        // Clamp so the bubble never gets so small the count is unreadable nor so
+        // large it dominates the map.
+        return min(max(base * sizeScale, 26), 64)
     }
 }
 
@@ -621,6 +804,12 @@ private extension TrafficMapLayer {
             return .indigo
         case .flow:
             return .blue
+        case .timSigns:
+            return .cyan
+        case .evChargers:
+            return .green
+        case .congestion:
+            return .orange
         }
     }
 }
@@ -660,6 +849,14 @@ private struct MapLegend: View {
             return [("Message", .blue), ("No message", .gray)]
         case .flow:
             return FlowKind.allCases.map { ($0.label, $0.color) }
+        case .timSigns:
+            return [("Travel time", .cyan)]
+        case .evChargers:
+            return [("DC fast", .purple), ("AC", .teal)]
+        case .congestion:
+            return CongestionLevel.allCases
+                .filter { $0 != .unknown }
+                .map { ($0.label, $0.color) }
         }
     }
 }
@@ -686,6 +883,10 @@ private struct TrafficMapDetailView: View {
                     RoadEventCard(event: event)
                 case .vms(let sign):
                     VMSCard(sign: sign)
+                case .tim(let sign):
+                    TIMCard(sign: sign)
+                case .evCharger(let charger):
+                    EVChargerCard(charger: charger)
                 }
             }
         }
@@ -702,6 +903,10 @@ private struct TrafficMapDetailView: View {
             return event.displayTitle
         case .vms(let sign):
             return sign.displayName
+        case .tim(let sign):
+            return sign.displayName
+        case .evCharger(let charger):
+            return charger.displayName
         }
     }
 }
