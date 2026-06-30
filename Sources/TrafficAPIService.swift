@@ -42,6 +42,11 @@ struct TrafficAPIService {
         return payload.response.journey
     }
 
+    func fetchRegions() async throws -> [Region] {
+        let payload: RegionsPayload = try await request("/regions/all/10")
+        return payload.response.region
+    }
+
     // These entry points are `nonisolated` so that, when called from the
     // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
     // decode of large payloads run on the cooperative thread pool rather than
@@ -60,6 +65,10 @@ struct TrafficAPIService {
 
     nonisolated func fetchJourneysResult() async -> Result<[TrafficJourney], Error> {
         await result { try await fetchJourneys() }
+    }
+
+    nonisolated func fetchRegionsResult() async -> Result<[Region], Error> {
+        await result { try await fetchRegions() }
     }
 
     nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {

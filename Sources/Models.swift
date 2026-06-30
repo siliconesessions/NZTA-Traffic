@@ -838,6 +838,24 @@ func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
     return (itemRegion ?? "").caseInsensitiveCompare(selected) == .orderedSame
 }
 
+/// Merges the canonical NZTA region names with any region names derived from
+/// the loaded feature data, de-duplicating case-insensitively (canonical
+/// casing wins because it is listed first) so the region Picker stays stable
+/// before data loads and consistently named afterwards. Sorted case-
+/// insensitively to match the picker's previous ordering.
+func mergedRegionNames(canonical: [String], derived: [String]) -> [String] {
+    var seen = Set<String>()
+    var merged: [String] = []
+    for name in canonical + derived {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else {
+            continue
+        }
+        merged.append(trimmed)
+    }
+    return merged.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+}
+
 func searchableHaystack(_ fields: [String?]) -> String {
     fields.compactMap(cleanText).joined(separator: " ").lowercased()
 }
@@ -1348,6 +1366,26 @@ struct JourneysResponse: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case journey
+    }
+}
+
+// /regions/all/10 → the 14 canonical NZTA regions. Only id/name are decoded
+// (via the shared `Region` type); the per-region WKT POLYGON `geometry` is
+// ignored — the region filter just needs stable, consistently-cased names.
+struct RegionsPayload: Decodable {
+    let response: RegionsResponse
+}
+
+struct RegionsResponse: Decodable {
+    let region: [Region]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        region = container.decodeFlexibleArray(Region.self, forKey: .region)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case region
     }
 }
 

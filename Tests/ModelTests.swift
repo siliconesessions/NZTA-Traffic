@@ -10,6 +10,34 @@ func runModelTests(_ t: TestRunner) {
     testTrafficDate(t)
     testCameraMatching(t)
     testEventFields(t)
+    testRegions(t)
+}
+
+// Canonical /regions/all payload decoding + the merge/dedupe that feeds the
+// region Picker.
+private func testRegions(_ t: TestRunner) {
+    t.group("regions")
+
+    let json = #"{"response":{"region":[{"id":1,"name":"Northland","geometry":"POLYGON ((1 2))"},{"id":2,"name":"Bay Of Plenty","geometry":"POLYGON ((3 4))"}]}}"#
+    guard let payload = decodeModel(RegionsPayload.self, json, t) else { return }
+    t.equal(payload.response.region.count, 2, "regions payload decodes both entries")
+    t.equal(payload.response.region.first?.name, "Northland", "region name decodes (geometry ignored)")
+
+    // Single (non-array) region still decodes via decodeFlexibleArray.
+    let single = #"{"response":{"region":{"id":"7","name":"Taranaki"}}}"#
+    t.equal(decodeModel(RegionsPayload.self, single, t)?.response.region.count, 1, "single region object decodes as one-element array")
+
+    // Merge: canonical casing wins over a differently-cased derived duplicate,
+    // novel derived names are added, blanks dropped, result sorted.
+    let merged = mergedRegionNames(
+        canonical: ["Bay Of Plenty", "Auckland"],
+        derived: ["auckland", "  ", "Waikato", "AUCKLAND"]
+    )
+    t.equal(merged, ["Auckland", "Bay Of Plenty", "Waikato"], "merged regions deduped case-insensitively, canonical cased, sorted")
+
+    // No canonical data yet: picker still works off derived names alone.
+    t.equal(mergedRegionNames(canonical: [], derived: ["Otago", "otago"]), ["Otago"], "derived-only merge dedupes")
+    t.equal(mergedRegionNames(canonical: ["Southland"], derived: []), ["Southland"], "canonical-only merge is stable before data loads")
 }
 
 // B2 — Double->Int conversion must never trap on out-of-range / non-finite.

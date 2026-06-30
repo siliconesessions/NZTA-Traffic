@@ -20,6 +20,10 @@ final class TrafficStore {
     private(set) var events: [RoadEvent] = []
     private(set) var vmsSigns: [VMSSign] = []
     private(set) var journeys: [TrafficJourney] = []
+    // The 14 canonical region names from /regions/all — fetched once and merged
+    // into `allRegions` so the region Picker is stable and consistently cased
+    // even before (or independently of) the feature data finishing loading.
+    private(set) var canonicalRegions: [String] = []
     private(set) var allRegions: [String] = []
     private(set) var loadingSections: Set<DataSection> = []
     private(set) var errors: [DataSection: String] = [:]
@@ -80,7 +84,8 @@ final class TrafficStore {
         async let eventsTask: () = loadEvents()
         async let signsTask: () = loadVMS()
         async let journeysTask: () = loadJourneys()
-        _ = await (camerasTask, eventsTask, signsTask, journeysTask)
+        async let regionsTask: () = loadRegions()
+        _ = await (camerasTask, eventsTask, signsTask, journeysTask, regionsTask)
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
@@ -112,6 +117,26 @@ final class TrafficStore {
         let result = await service.fetchJourneysResult()
         apply(result, to: .journeys, keyPath: \.journeys)
         loadingSections.remove(.journeys)
+    }
+
+    // The canonical region list is static reference data, so fetch it only once
+    // (the first time it is needed). It is intentionally not a `DataSection`: a
+    // failure leaves the picker to fall back to data-derived names rather than
+    // surfacing an error banner. Updating `allRegions` here lets the picker
+    // populate as soon as regions arrive, ahead of the heavier feature loads.
+    private func loadRegions() async {
+        guard canonicalRegions.isEmpty else {
+            return
+        }
+        guard case .success(let regions) = await service.fetchRegionsResult() else {
+            return
+        }
+        let names = regions.compactMap { cleanText($0.name) }.filter { !$0.isEmpty }
+        guard !names.isEmpty else {
+            return
+        }
+        canonicalRegions = names
+        allRegions = computeAllRegions()
     }
 
     func filteredCameras(region: String, highway: String, search: String) -> [TrafficCamera] {
@@ -237,11 +262,11 @@ final class TrafficStore {
     }
 
     private func computeAllRegions() -> [String] {
-        let names = cameras.compactMap(\.regionName)
+        let derived = cameras.compactMap(\.regionName)
             + events.compactMap(\.regionName)
             + vmsSigns.compactMap(\.regionName)
             + journeys.compactMap(\.regionName)
-        return Array(Set(names)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        return mergedRegionNames(canonical: canonicalRegions, derived: derived)
     }
 
     private func errorMessage(_ error: Error) -> String {
