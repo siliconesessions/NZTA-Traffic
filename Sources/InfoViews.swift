@@ -57,9 +57,9 @@ struct AboutView: View {
 
                 AboutSection(title: "Data Sources") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Traffic Cameras: trafficnz.info/service/traffic/rest/4/cameras/all")
-                        BulletText("Road Events: trafficnz.info/service/traffic/rest/4/events/all/10")
-                        BulletText("VMS Signs: trafficnz.info/service/traffic/rest/4/signs/vms/all")
+                        BulletText("Traffic Cameras: trafficnz.info/service/traffic/rest/5/cameras/all")
+                        BulletText("Road Events: trafficnz.info/service/traffic/rest/5/events/all/10")
+                        BulletText("VMS Signs: trafficnz.info/service/traffic/rest/5/signs/vms/all")
                     }
                 }
 
@@ -161,7 +161,7 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Data and Privacy") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Traffic data is requested directly from the NZTA Traffic and Travel REST API v4.")
+                        BulletText("Traffic data is requested directly from the NZTA Traffic and Travel REST API v5.")
                         BulletText("The map uses Apple MapKit.")
                         BulletText("The app does not include analytics, accounts, tracking, or an app-specific backend.")
                         BulletText("Last Updated means the app completed a refresh. It does not mean every source item changed at that time.")

@@ -95,7 +95,7 @@ struct NZTATrafficCommands: Commands {
 
         Traffic and travel information is provided by Waka Kotahi NZ Transport Agency and participating regional councils. NZTA Traffic is an independent viewer for that public data.
 
-        The app fetches live data directly from the NZTA Traffic and Travel REST API v4 and uses Apple MapKit for map display. It does not include analytics, accounts, tracking, or an app-specific backend.
+        The app fetches live data directly from the NZTA Traffic and Travel REST API v5 and uses Apple MapKit for map display. It does not include analytics, accounts, tracking, or an app-specific backend.
         """
 
         var options: [NSApplication.AboutPanelOptionKey: Any] = [
