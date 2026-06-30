@@ -1389,6 +1389,217 @@ struct RegionsResponse: Decodable {
     }
 }
 
+// EV Roam public charging stations, served as an ArcGIS GeoJSON
+// FeatureCollection (external host — not the NZTA traffic API). Static
+// reference data, so no image cache token applies. The upstream is loose-typed
+// like the NZTA feeds: booleans arrive as "True"/"False" strings and the
+// per-connector detail is packed into one `connectorsList` string, so values go
+// through the lossy decoders and `parseEVConnectors` rather than raw `decode`.
+struct EVCharger: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String?
+    let operatorName: String?
+    let address: String?
+    let currentType: String?
+    let connectorCount: Int?
+    let is24Hours: Bool?
+    let hasChargingCost: Bool?
+    let latitude: Double?
+    let longitude: Double?
+    let mapLatitude: Double?
+    let mapLongitude: Double?
+    let maxPowerKW: Double?
+    let connectorTypes: [String]
+    let searchHaystack: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let featureId = container.decodeLossyString(forKey: .id)
+
+        // GeoJSON geometry: coordinates are [longitude, latitude].
+        var geometryLongitude: Double?
+        var geometryLatitude: Double?
+        if let geometry = try? container.nestedContainer(keyedBy: GeometryKeys.self, forKey: .geometry),
+           var coordinates = try? geometry.nestedUnkeyedContainer(forKey: .coordinates) {
+            geometryLongitude = try? coordinates.decode(Double.self)
+            geometryLatitude = try? coordinates.decode(Double.self)
+        }
+
+        let properties = try? container.nestedContainer(keyedBy: PropertyKeys.self, forKey: .properties)
+        let nameValue = cleanText(properties?.decodeLossyString(forKey: .name))
+        let operatorValue = cleanText(properties?.decodeLossyString(forKey: .operatorName))
+        let addressValue = cleanText(properties?.decodeLossyString(forKey: .address))
+        let currentTypeValue = cleanText(properties?.decodeLossyString(forKey: .currentType))
+        let connectorsListValue = cleanText(properties?.decodeLossyString(forKey: .connectorsList))
+        let propLatitude = properties?.decodeLossyDouble(forKey: .latitude)
+        let propLongitude = properties?.decodeLossyDouble(forKey: .longitude)
+        let objectIdValue = properties?.decodeLossyString(forKey: .objectId)
+        let globalIdValue = properties?.decodeLossyString(forKey: .globalId)
+
+        let longitudeValue = geometryLongitude ?? propLongitude
+        let latitudeValue = geometryLatitude ?? propLatitude
+
+        id = deterministicID(
+            decodedId: featureId ?? objectIdValue ?? globalIdValue,
+            fallback: [
+                nameValue,
+                latitudeValue.map { String($0) },
+                longitudeValue.map { String($0) }
+            ],
+            typeTag: "evcharger"
+        )
+        name = nameValue
+        operatorName = operatorValue
+        address = addressValue
+        currentType = currentTypeValue
+        connectorCount = properties?.decodeLossyInt(forKey: .numberOfConnectors)
+        is24Hours = properties?.decodeLossyBool(forKey: .is24Hours)
+        hasChargingCost = properties?.decodeLossyBool(forKey: .hasChargingCost)
+        latitude = latitudeValue
+        longitude = longitudeValue
+        let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
+        mapLatitude = validatedMap?.latitude
+        mapLongitude = validatedMap?.longitude
+
+        let parsed = parseEVConnectors(connectorsListValue)
+        maxPowerKW = parsed.maxPowerKW
+        connectorTypes = parsed.connectorTypes
+
+        searchHaystack = searchableHaystack([
+            nameValue,
+            operatorValue,
+            addressValue,
+            currentTypeValue
+        ] + parsed.connectorTypes)
+    }
+
+    var displayName: String {
+        name ?? "EV Charger"
+    }
+
+    // "Mixed" sites carry both AC and DC; treat anything mentioning DC as
+    // offering fast charging for the marker tint/legend.
+    var isDC: Bool {
+        (currentType ?? "").range(of: "DC", options: .caseInsensitive) != nil
+    }
+
+    var mapCoordinate: CLLocationCoordinate2D? {
+        guard let mapLatitude, let mapLongitude else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
+    }
+
+    // Compact "DC · 75 kW" style summary for marker subtitles and the legend.
+    var powerSummary: String? {
+        let kw = maxPowerKW.flatMap { value -> String? in
+            guard value > 0 else {
+                return nil
+            }
+            return value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+        }
+        switch (cleanText(currentType), kw) {
+        case let (type?, power?):
+            return "\(type) · \(power) kW"
+        case let (type?, nil):
+            return type
+        case let (nil, power?):
+            return "\(power) kW"
+        default:
+            return nil
+        }
+    }
+
+    var connectorSummary: String? {
+        connectorTypes.isEmpty ? nil : connectorTypes.joined(separator: ", ")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case geometry
+        case properties
+    }
+
+    private enum GeometryKeys: String, CodingKey {
+        case coordinates
+    }
+
+    private enum PropertyKeys: String, CodingKey {
+        case objectId = "OBJECTID"
+        case globalId = "GlobalID"
+        case name
+        case operatorName = "operator"
+        case address
+        case currentType
+        case numberOfConnectors
+        case connectorsList
+        case is24Hours
+        case hasChargingCost
+        case latitude
+        case longitude
+    }
+}
+
+struct EVChargersPayload: Decodable {
+    let features: [EVCharger]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        features = container.decodeFlexibleArray(EVCharger.self, forKey: .features)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case features
+    }
+}
+
+// The EV Roam feed packs every connector for a site into one string, e.g.
+// "{DC, 75 kW, CHAdeMO, Status: Operative, Count:1},{DC, 50 kW, Type 2 CCS, …}".
+// Pull out the highest advertised power (kW) and the distinct connector types
+// (order-preserving, case-insensitively de-duplicated).
+func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: [String]) {
+    guard let raw = cleanText(raw) else {
+        return (nil, [])
+    }
+
+    var maxPowerKW: Double?
+    var connectorTypes: [String] = []
+    var seenTypes = Set<String>()
+
+    let groups = raw
+        .replacingOccurrences(of: "{", with: "")
+        .components(separatedBy: "}")
+
+    for group in groups {
+        let fields = group
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !fields.isEmpty else {
+            continue
+        }
+
+        // Layout: currentType, "<n> kW", connectorType, "Status: …", "Count:…".
+        if fields.count >= 3 {
+            let connectorType = fields[2]
+            if !connectorType.isEmpty, seenTypes.insert(connectorType.lowercased()).inserted {
+                connectorTypes.append(connectorType)
+            }
+        }
+
+        for field in fields where field.range(of: "kw", options: .caseInsensitive) != nil {
+            let number = field
+                .replacingOccurrences(of: "kW", with: "", options: .caseInsensitive)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Double(number), value.isFinite {
+                maxPowerKW = max(maxPowerKW ?? 0, value)
+            }
+        }
+    }
+
+    return (maxPowerKW, connectorTypes)
+}
+
 extension KeyedDecodingContainer {
     func decodeFlexibleArray<T: Decodable>(_ type: T.Type, forKey key: Key) -> [T] {
         if let array = try? decodeIfPresent([T].self, forKey: key) {

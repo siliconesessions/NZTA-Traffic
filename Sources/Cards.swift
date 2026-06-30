@@ -518,6 +518,60 @@ struct SmallMeta: View {
     }
 }
 
+struct EVChargerCard: View {
+    let charger: EVCharger
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Label(charger.displayName, systemImage: "bolt.fill")
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                if let power = charger.powerSummary {
+                    Badge(text: power, tint: charger.isDC ? .purple : .teal)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+                if let op = charger.operatorName {
+                    SmallMeta(text: op, systemImage: "building.2")
+                }
+                if let address = charger.address {
+                    SmallMeta(text: address, systemImage: "mappin.and.ellipse")
+                }
+                if let connectors = charger.connectorSummary {
+                    SmallMeta(text: connectors, systemImage: "powerplug")
+                }
+                if let count = charger.connectorCount {
+                    SmallMeta(text: "\(count) connector\(count == 1 ? "" : "s")", systemImage: "number")
+                }
+                if let is24Hours = charger.is24Hours {
+                    SmallMeta(text: is24Hours ? "Open 24 hours" : "Limited hours", systemImage: "clock")
+                }
+                if let hasCost = charger.hasChargingCost {
+                    SmallMeta(text: hasCost ? "Charging cost applies" : "Free charging", systemImage: "dollarsign.circle")
+                }
+            }
+            .padding(16)
+        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radii.card)
+                .stroke(Color.cardStroke, lineWidth: 1)
+        )
+    }
+}
+
 struct VMSCard: View {
     let sign: VMSSign
 

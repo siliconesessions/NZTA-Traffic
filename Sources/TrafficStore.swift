@@ -20,6 +20,12 @@ final class TrafficStore {
     private(set) var events: [RoadEvent] = []
     private(set) var vmsSigns: [VMSSign] = []
     private(set) var journeys: [TrafficJourney] = []
+    // EV Roam public charging stations. Static reference data fetched once (like
+    // the canonical regions) rather than on every refresh, so it has its own
+    // loading/error state instead of being a per-refresh DataSection.
+    private(set) var evChargers: [EVCharger] = []
+    private(set) var isLoadingEVChargers = false
+    private(set) var evChargersError: String?
     // The 14 canonical region names from /regions/all — fetched once and merged
     // into `allRegions` so the region Picker is stable and consistently cased
     // even before (or independently of) the feature data finishing loading.
@@ -85,7 +91,8 @@ final class TrafficStore {
         async let signsTask: () = loadVMS()
         async let journeysTask: () = loadJourneys()
         async let regionsTask: () = loadRegions()
-        _ = await (camerasTask, eventsTask, signsTask, journeysTask, regionsTask)
+        async let evChargersTask: () = loadEVChargers()
+        _ = await (camerasTask, eventsTask, signsTask, journeysTask, regionsTask, evChargersTask)
 
         allRegions = computeAllRegions()
         lastUpdated = Date()
@@ -117,6 +124,25 @@ final class TrafficStore {
         let result = await service.fetchJourneysResult()
         apply(result, to: .journeys, keyPath: \.journeys)
         loadingSections.remove(.journeys)
+    }
+
+    // EV charger locations are static, so fetch them only once (and retry on a
+    // later refresh only if the first attempt failed and left the list empty).
+    // A failure surfaces via `evChargersError` on the map's EV layer rather than
+    // wiping any previously loaded markers.
+    private func loadEVChargers() async {
+        guard evChargers.isEmpty else {
+            return
+        }
+        isLoadingEVChargers = true
+        defer { isLoadingEVChargers = false }
+        switch await service.fetchEVChargersResult() {
+        case .success(let chargers):
+            evChargers = chargers
+            evChargersError = nil
+        case .failure(let error):
+            evChargersError = errorMessage(error)
+        }
     }
 
     // The canonical region list is static reference data, so fetch it only once

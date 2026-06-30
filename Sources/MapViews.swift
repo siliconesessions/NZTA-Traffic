@@ -11,6 +11,7 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case events = "Road Events"
     case vms = "VMS Signs"
     case flow = "Traffic Flow"
+    case evChargers = "EV Chargers"
 
     var id: String {
         rawValue
@@ -26,6 +27,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "Loading VMS signs..."
         case .flow:
             return "Loading travel times..."
+        case .evChargers:
+            return "Loading EV chargers..."
         }
     }
 
@@ -39,6 +42,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No VMS signs found matching your filters"
         case .flow:
             return "No journeys found matching your filters"
+        case .evChargers:
+            return "No EV chargers available"
         }
     }
 
@@ -52,6 +57,8 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
             return "No filtered VMS signs have usable map coordinates"
         case .flow:
             return "No filtered journey legs have usable geometry"
+        case .evChargers:
+            return "No EV chargers have usable map coordinates"
         }
     }
 }
@@ -61,14 +68,17 @@ struct TrafficMapTabView: View {
     let events: [RoadEvent]
     let vmsSigns: [VMSSign]
     let journeys: [TrafficJourney]
+    let evChargers: [EVCharger]
     let camerasLoading: Bool
     let eventsLoading: Bool
     let vmsLoading: Bool
     let journeysLoading: Bool
+    let evChargersLoading: Bool
     let cameraErrorMessage: String?
     let eventErrorMessage: String?
     let vmsErrorMessage: String?
     let journeyErrorMessage: String?
+    let evChargersErrorMessage: String?
     @Binding var position: MapCameraPosition
     @Binding var visibleSpan: MKCoordinateSpan
     @Binding var selectedLayer: TrafficMapLayer
@@ -99,6 +109,13 @@ struct TrafficMapTabView: View {
                     return nil
                 }
                 return .vms(sign, coordinate)
+            }
+        case .evChargers:
+            return evChargers.compactMap { charger in
+                guard let coordinate = charger.mapCoordinate else {
+                    return nil
+                }
+                return .evCharger(charger, coordinate)
             }
         case .flow:
             return []
@@ -138,12 +155,14 @@ struct TrafficMapTabView: View {
             return vmsSigns.count
         case .flow:
             return journeys.count
+        case .evChargers:
+            return evChargers.count
         }
     }
 
     private var hasMapContent: Bool {
         switch selectedLayer {
-        case .cameras, .events, .vms:
+        case .cameras, .events, .vms, .evChargers:
             return !features.isEmpty
         case .flow:
             return !flowLegs.isEmpty
@@ -160,6 +179,8 @@ struct TrafficMapTabView: View {
             return vmsLoading
         case .flow:
             return journeysLoading
+        case .evChargers:
+            return evChargersLoading
         }
     }
 
@@ -173,6 +194,8 @@ struct TrafficMapTabView: View {
             return vmsErrorMessage
         case .flow:
             return journeyErrorMessage
+        case .evChargers:
+            return evChargersErrorMessage
         }
     }
 
@@ -317,6 +340,8 @@ struct TrafficMapTabView: View {
             selectedDetail = .event(event)
         case .vms(let sign, _):
             selectedDetail = .vms(sign)
+        case .evCharger(let charger, _):
+            selectedDetail = .evCharger(charger)
         }
     }
 
@@ -361,6 +386,7 @@ private enum TrafficMapFeature: Identifiable {
     case camera(TrafficCamera, CLLocationCoordinate2D)
     case event(RoadEvent, CLLocationCoordinate2D)
     case vms(VMSSign, CLLocationCoordinate2D)
+    case evCharger(EVCharger, CLLocationCoordinate2D)
 
     var id: String {
         switch self {
@@ -370,6 +396,8 @@ private enum TrafficMapFeature: Identifiable {
             return "event-\(event.id)"
         case .vms(let sign, _):
             return "vms-\(sign.id)"
+        case .evCharger(let charger, _):
+            return "evcharger-\(charger.id)"
         }
     }
 
@@ -377,7 +405,8 @@ private enum TrafficMapFeature: Identifiable {
         switch self {
         case .camera(_, let coordinate),
              .event(_, let coordinate),
-             .vms(_, let coordinate):
+             .vms(_, let coordinate),
+             .evCharger(_, let coordinate):
             return coordinate
         }
     }
@@ -390,6 +419,8 @@ private enum TrafficMapFeature: Identifiable {
             return event.displayTitle
         case .vms(let sign, _):
             return sign.displayName
+        case .evCharger(let charger, _):
+            return charger.displayName
         }
     }
 
@@ -401,6 +432,8 @@ private enum TrafficMapFeature: Identifiable {
             return event.locationArea ?? event.locations ?? event.regionName
         case .vms(let sign, _):
             return joinNonEmpty([sign.journey?.name ?? sign.way?.name, sign.direction], separator: " - ") ?? sign.regionName
+        case .evCharger(let charger, _):
+            return charger.operatorName ?? charger.address
         }
     }
 
@@ -415,6 +448,8 @@ private enum TrafficMapFeature: Identifiable {
             return event.impact ?? event.eventType ?? "Road Event"
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? "VMS Sign" : "No message"
+        case .evCharger(let charger, _):
+            return charger.powerSummary ?? "EV Charger"
         }
     }
 
@@ -426,6 +461,8 @@ private enum TrafficMapFeature: Identifiable {
             return "exclamationmark.triangle.fill"
         case .vms:
             return "signpost.right.fill"
+        case .evCharger:
+            return "bolt.fill"
         }
     }
 
@@ -449,6 +486,8 @@ private enum TrafficMapFeature: Identifiable {
             return .gray
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? .blue : .gray
+        case .evCharger(let charger, _):
+            return charger.isDC ? .purple : .teal
         }
     }
 }
@@ -524,6 +563,7 @@ private func clusterMapFeatures(
 private enum TrafficMapDetail: Identifiable {
     case event(RoadEvent)
     case vms(VMSSign)
+    case evCharger(EVCharger)
 
     var id: String {
         switch self {
@@ -531,6 +571,8 @@ private enum TrafficMapDetail: Identifiable {
             return "event-\(event.id)"
         case .vms(let sign):
             return "vms-\(sign.id)"
+        case .evCharger(let charger):
+            return "evcharger-\(charger.id)"
         }
     }
 }
@@ -621,6 +663,8 @@ private extension TrafficMapLayer {
             return .indigo
         case .flow:
             return .blue
+        case .evChargers:
+            return .green
         }
     }
 }
@@ -660,6 +704,8 @@ private struct MapLegend: View {
             return [("Message", .blue), ("No message", .gray)]
         case .flow:
             return FlowKind.allCases.map { ($0.label, $0.color) }
+        case .evChargers:
+            return [("DC fast", .purple), ("AC", .teal)]
         }
     }
 }
@@ -686,6 +732,8 @@ private struct TrafficMapDetailView: View {
                     RoadEventCard(event: event)
                 case .vms(let sign):
                     VMSCard(sign: sign)
+                case .evCharger(let charger):
+                    EVChargerCard(charger: charger)
                 }
             }
         }
@@ -702,6 +750,8 @@ private struct TrafficMapDetailView: View {
             return event.displayTitle
         case .vms(let sign):
             return sign.displayName
+        case .evCharger(let charger):
+            return charger.displayName
         }
     }
 }

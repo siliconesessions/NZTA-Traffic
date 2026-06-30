@@ -4,6 +4,11 @@ struct TrafficAPIService {
     // rest/5 is a drop-in superset of rest/4 (cameras/VMS/journeys identical
     // wrappers); road events additionally carry `direction`/`travelDirection`.
     private let baseURL = "https://trafficnz.info/service/traffic/rest/5"
+    // EV Roam public charging stations (external NZTA ArcGIS host, GeoJSON).
+    // Static reference data on a different host than the traffic API, so it is
+    // fetched as an absolute URL with no cache-busting token. resultRecordCount
+    // covers the full ~636-feature dataset in a single page.
+    private let evChargersURL = "https://services.arcgis.com/CXBb7LAjgIIdcsPt/arcgis/rest/services/EV_Roam_charging_stations/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=geojson&resultRecordCount=2000"
     private let session: URLSession
     private let decoder: JSONDecoder
 
@@ -47,6 +52,11 @@ struct TrafficAPIService {
         return payload.response.region
     }
 
+    func fetchEVChargers() async throws -> [EVCharger] {
+        let payload: EVChargersPayload = try await requestAbsolute(evChargersURL)
+        return payload.features
+    }
+
     // These entry points are `nonisolated` so that, when called from the
     // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
     // decode of large payloads run on the cooperative thread pool rather than
@@ -71,9 +81,17 @@ struct TrafficAPIService {
         await result { try await fetchRegions() }
     }
 
+    nonisolated func fetchEVChargersResult() async -> Result<[EVCharger], Error> {
+        await result { try await fetchEVChargers() }
+    }
+
     nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
-        guard let url = URL(string: baseURL + path) else {
-            throw TrafficAPIError.invalidURL(baseURL + path)
+        try await requestAbsolute(baseURL + path)
+    }
+
+    nonisolated private func requestAbsolute<T: Decodable>(_ urlString: String) async throws -> T {
+        guard let url = URL(string: urlString) else {
+            throw TrafficAPIError.invalidURL(urlString)
         }
 
         var urlRequest = URLRequest(url: url)

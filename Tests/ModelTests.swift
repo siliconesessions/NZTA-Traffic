@@ -11,6 +11,53 @@ func runModelTests(_ t: TestRunner) {
     testCameraMatching(t)
     testEventFields(t)
     testRegions(t)
+    testEVChargers(t)
+}
+
+// EV Roam GeoJSON FeatureCollection decoding: geometry [lon,lat] coordinate,
+// loose-typed "True"/"False" booleans, and the packed connectorsList string
+// (max power + distinct connector types).
+private func testEVChargers(_ t: TestRunner) {
+    t.group("EV chargers")
+
+    let json = #"""
+    {"type":"FeatureCollection","features":[
+      {"type":"Feature","id":1,"geometry":{"type":"Point","coordinates":[174.7633,-36.8485]},
+       "properties":{"OBJECTID":1,"name":"Queen St Hub","operator":"BP","address":"1 Queen St",
+        "currentType":"DC","numberOfConnectors":2,
+        "connectorsList":"{DC, 50 kW, CHAdeMO, Status: Operative, Count:1},{DC, 75 kW, Type 2 CCS, Status: Operative, Count:1}",
+        "is24Hours":"True","hasChargingCost":"False"}}
+    ]}
+    """#
+    guard let payload = decodeModel(EVChargersPayload.self, json, t) else { return }
+    t.equal(payload.features.count, 1, "feature collection decodes one charger")
+    guard let charger = payload.features.first else { return }
+    t.equal(charger.name, "Queen St Hub", "name decodes from properties")
+    t.equal(charger.operatorName, "BP", "operator decodes (mapped key)")
+    t.equal(charger.currentType, "DC", "currentType decodes")
+    t.equal(charger.connectorCount, 2, "numberOfConnectors decodes")
+    t.equal(charger.is24Hours, true, "is24Hours True string -> bool")
+    t.equal(charger.hasChargingCost, false, "hasChargingCost False string -> bool")
+    t.check(charger.isDC, "DC currentType reads as DC")
+    t.nearlyEqual(charger.maxPowerKW, 75, "maxPowerKW is the highest advertised power")
+    t.check(charger.connectorTypes.contains("CHAdeMO"), "CHAdeMO connector parsed")
+    t.check(charger.connectorTypes.contains("Type 2 CCS"), "Type 2 CCS connector parsed")
+    t.check(charger.mapCoordinate != nil, "geometry coordinate yields a map coordinate")
+    t.nearlyEqual(charger.latitude, -36.8485, "latitude from geometry (2nd coordinate)")
+    t.nearlyEqual(charger.longitude, 174.7633, "longitude from geometry (1st coordinate)")
+    t.equal(charger.powerSummary, "DC · 75 kW", "powerSummary combines type and max power")
+
+    // Connector parsing in isolation: distinct types de-duped, max kW chosen.
+    let parsed = parseEVConnectors("{AC, 22 kW, Type 2 Socketed, Count:2},{AC, 7 kW, Type 2 Socketed, Count:1}")
+    t.nearlyEqual(parsed.maxPowerKW, 22, "parseEVConnectors picks the max kW")
+    t.equal(parsed.connectorTypes.count, 1, "duplicate connector types are de-duplicated")
+
+    // An AC-only site with a missing power string still decodes safely.
+    let acJson = #"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[175.0,-37.0]},"properties":{"name":"AC Stop","currentType":"AC","connectorsList":""}}]}"#
+    let acCharger = decodeModel(EVChargersPayload.self, acJson, t)?.features.first
+    t.check(acCharger?.isDC == false, "AC currentType is not DC")
+    t.check(acCharger?.maxPowerKW == nil, "empty connectorsList -> nil maxPowerKW")
+    t.equal(acCharger?.powerSummary, "AC", "powerSummary falls back to currentType when no power")
 }
 
 // Canonical /regions/all payload decoding + the merge/dedupe that feeds the
