@@ -635,14 +635,13 @@ struct CamerasPayload: Decodable {
 
 struct CameraResponse: Decodable {
     let camera: [TrafficCamera]
+    // Unreadable elements skipped by the lenient decode (see decodeSectionList).
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        camera = container.decodeFlexibleArray(TrafficCamera.self, forKey: .camera)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case camera
+        let list = try decodeSectionList(TrafficCamera.self, from: decoder, keys: ["camera"])
+        camera = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -652,18 +651,13 @@ struct RoadEventsPayload: Decodable {
 
 struct RoadEventResponse: Decodable {
     let roadevent: [RoadEvent]
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let lowerCaseEvents = container.decodeFlexibleArray(RoadEvent.self, forKey: .roadevent)
-        roadevent = lowerCaseEvents.isEmpty
-            ? container.decodeFlexibleArray(RoadEvent.self, forKey: .roadEvent)
-            : lowerCaseEvents
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case roadevent
-        case roadEvent
+        // The feed has spelled the list both ways over the years.
+        let list = try decodeSectionList(RoadEvent.self, from: decoder, keys: ["roadevent", "roadEvent"])
+        roadevent = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -673,14 +667,12 @@ struct VMSPayload: Decodable {
 
 struct VMSResponse: Decodable {
     let vms: [VMSSign]
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        vms = container.decodeFlexibleArray(VMSSign.self, forKey: .vms)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case vms
+        let list = try decodeSectionList(VMSSign.self, from: decoder, keys: ["vms"])
+        vms = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -712,52 +704,199 @@ func validatedCoordinate(latitude: Double?, longitude: Double?) -> CLLocationCoo
     return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
 }
 
-// Matches "longitude latitude" coordinate pairs inside WKT geometry strings.
-// Compiled once at module load and reused — recompiling per call was a hot path.
-private let wktCoordinateRegex: NSRegularExpression? = {
-    try? NSRegularExpression(pattern: #"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#)
-}()
+// MARK: - WKT geometry
 
+// One connected run of coordinates from a WKT geometry: a LINESTRING, one part
+// of a MULTILINESTRING, or a POINT. Parts are kept apart so the gap between two
+// of them is never drawn as a straight chord (journey MULTILINESTRINGs jump up
+// to 97 km between parts). Parallel latitude/longitude arrays keep the type
+// Hashable and Sendable, which CLLocationCoordinate2D is not.
+struct GeoPolyline: Hashable, Sendable {
+    let latitudes: [Double]
+    let longitudes: [Double]
+
+    var count: Int {
+        min(latitudes.count, longitudes.count)
+    }
+
+    // A lone point can be pinned but not drawn as a line.
+    var isDrawable: Bool {
+        count >= 2
+    }
+
+    var coordinates: [CLLocationCoordinate2D] {
+        var result: [CLLocationCoordinate2D] = []
+        result.reserveCapacity(count)
+        for index in 0..<count {
+            result.append(CLLocationCoordinate2D(latitude: latitudes[index], longitude: longitudes[index]))
+        }
+        return result
+    }
+}
+
+// Splits a WKT geometry ("POINT (x y)", "LINESTRING (x y, …)",
+// "MULTILINESTRING ((x y, …), (x y, …))") into its coordinate runs, one per
+// innermost parenthesised group. WKT orders each pair "longitude latitude";
+// a Z/M value after the pair is ignored. Pairs that fail validatedCoordinate
+// (non-finite, out of range, the 0,0 placeholder) or contain a malformed
+// number are skipped. A single forward scan over the UTF-8 bytes, so the cost
+// is linear in the input — the backtracking regex it replaced took minutes on
+// a long run of digits.
+func parseWKTParts(_ wkt: String?) -> [GeoPolyline] {
+    guard let wkt = cleanText(wkt) else {
+        return []
+    }
+
+    var parts: [GeoPolyline] = []
+    var latitudes: [Double] = []
+    var longitudes: [Double] = []
+    // The current coordinate tuple: its first two numbers, how many numbers it
+    // has held, and whether any of them failed to parse.
+    var first = 0.0
+    var second = 0.0
+    var numberCount = 0
+    var tupleIsMalformed = false
+
+    func endTuple() {
+        if numberCount >= 2, !tupleIsMalformed,
+           let coordinate = validatedCoordinate(latitude: second, longitude: first) {
+            latitudes.append(coordinate.latitude)
+            longitudes.append(coordinate.longitude)
+        }
+        numberCount = 0
+        tupleIsMalformed = false
+    }
+
+    func endPart() {
+        endTuple()
+        if !latitudes.isEmpty {
+            parts.append(GeoPolyline(latitudes: latitudes, longitudes: longitudes))
+            latitudes = []
+            longitudes = []
+        }
+    }
+
+    let bytes = wkt.utf8
+    var index = bytes.startIndex
+    while index < bytes.endIndex {
+        let byte = bytes[index]
+        if byte == UInt8(ascii: "(") || byte == UInt8(ascii: ")") {
+            endPart()
+            index = bytes.index(after: index)
+        } else if byte == UInt8(ascii: ",") {
+            endTuple()
+            index = bytes.index(after: index)
+        } else if isWKTNumberStart(byte) {
+            let start = index
+            repeat {
+                index = bytes.index(after: index)
+            } while index < bytes.endIndex && isWKTNumberByte(bytes[index])
+            if let value = Double(Substring(bytes[start..<index])), value.isFinite {
+                if numberCount == 0 {
+                    first = value
+                } else if numberCount == 1 {
+                    second = value
+                }
+            } else {
+                tupleIsMalformed = true
+            }
+            numberCount += 1
+        } else {
+            // Whitespace and the geometry keywords ("MULTILINESTRING", "Z").
+            index = bytes.index(after: index)
+        }
+    }
+    endPart()
+    return parts
+}
+
+private func isWKTNumberStart(_ byte: UInt8) -> Bool {
+    (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+        || byte == UInt8(ascii: "-")
+        || byte == UInt8(ascii: "+")
+        || byte == UInt8(ascii: ".")
+}
+
+private func isWKTNumberByte(_ byte: UInt8) -> Bool {
+    isWKTNumberStart(byte) || byte == UInt8(ascii: "e") || byte == UInt8(ascii: "E")
+}
+
+// Where to pin a WKT geometry on the map. A POINT is its own coordinate; a line
+// is pinned ON the line, at the point closest to the centre of its bounding
+// box. (Road events carry no lat/lon in rest/5, so every event pin comes from
+// here; the bounding-box centre itself sat up to 9 km off a winding road such
+// as SH6 Paringa–Haast.)
 func coordinateFromWKTGeometry(_ geometry: String?) -> CLLocationCoordinate2D? {
-    guard let geometry = cleanText(geometry) else {
-        return nil
-    }
+    pinCoordinate(on: parseWKTParts(geometry))
+}
 
-    guard let regex = wktCoordinateRegex else {
-        return nil
-    }
-
-    let source = geometry as NSString
-    let matches = regex.matches(in: geometry, range: NSRange(location: 0, length: source.length))
-
+// The point on `parts` nearest their bounding-box centre: each segment is
+// projected onto with a local equirectangular approximation (longitude scaled
+// by cos(latitude)), which is ample at road-event scale. Single-point parts
+// count as points. nil when there are no coordinates.
+func pinCoordinate(on parts: [GeoPolyline]) -> CLLocationCoordinate2D? {
     var minLatitude = Double.greatestFiniteMagnitude
     var maxLatitude = -Double.greatestFiniteMagnitude
     var minLongitude = Double.greatestFiniteMagnitude
     var maxLongitude = -Double.greatestFiniteMagnitude
-    var validCoordinateCount = 0
-
-    for match in matches where match.numberOfRanges >= 3 {
-        guard let longitude = Double(source.substring(with: match.range(at: 1))),
-              let latitude = Double(source.substring(with: match.range(at: 2))),
-              validatedCoordinate(latitude: latitude, longitude: longitude) != nil else {
-            continue
+    var coordinateCount = 0
+    for part in parts {
+        for index in 0..<part.count {
+            minLatitude = min(minLatitude, part.latitudes[index])
+            maxLatitude = max(maxLatitude, part.latitudes[index])
+            minLongitude = min(minLongitude, part.longitudes[index])
+            maxLongitude = max(maxLongitude, part.longitudes[index])
+            coordinateCount += 1
         }
-
-        minLatitude = min(minLatitude, latitude)
-        maxLatitude = max(maxLatitude, latitude)
-        minLongitude = min(minLongitude, longitude)
-        maxLongitude = max(maxLongitude, longitude)
-        validCoordinateCount += 1
     }
-
-    guard validCoordinateCount > 0 else {
+    guard coordinateCount > 0 else {
         return nil
     }
 
-    return validatedCoordinate(
-        latitude: (minLatitude + maxLatitude) / 2,
-        longitude: (minLongitude + maxLongitude) / 2
-    )
+    let centreLatitude = (minLatitude + maxLatitude) / 2
+    let centreLongitude = (minLongitude + maxLongitude) / 2
+    let xScale = cos(centreLatitude * .pi / 180)
+
+    var best: (latitude: Double, longitude: Double, distance: Double)?
+    func consider(latitude: Double, longitude: Double) {
+        let dx = (longitude - centreLongitude) * xScale
+        let dy = latitude - centreLatitude
+        let distance = dx * dx + dy * dy
+        if best == nil || distance < best!.distance {
+            best = (latitude, longitude, distance)
+        }
+    }
+
+    for part in parts {
+        guard part.count >= 2 else {
+            if part.count == 1 {
+                consider(latitude: part.latitudes[0], longitude: part.longitudes[0])
+            }
+            continue
+        }
+        for index in 1..<part.count {
+            let startLatitude = part.latitudes[index - 1]
+            let startLongitude = part.longitudes[index - 1]
+            let segmentX = (part.longitudes[index] - startLongitude) * xScale
+            let segmentY = part.latitudes[index] - startLatitude
+            let lengthSquared = segmentX * segmentX + segmentY * segmentY
+            var fraction = 0.0
+            if lengthSquared > 0 {
+                let offsetX = (centreLongitude - startLongitude) * xScale
+                let offsetY = centreLatitude - startLatitude
+                fraction = min(1, max(0, (offsetX * segmentX + offsetY * segmentY) / lengthSquared))
+            }
+            consider(
+                latitude: startLatitude + fraction * (part.latitudes[index] - startLatitude),
+                longitude: startLongitude + fraction * (part.longitudes[index] - startLongitude)
+            )
+        }
+    }
+
+    guard let best else {
+        return nil
+    }
+    return validatedCoordinate(latitude: best.latitude, longitude: best.longitude)
 }
 
 // Hosts an image/page URL from the feed may point at: trafficnz.info and
@@ -1709,46 +1848,33 @@ final class CongestionXMLParser: NSObject, XMLParserDelegate {
     }
 }
 
-func parseWKTLineStringCoords(_ wkt: String?) -> (latitudes: [Double], longitudes: [Double]) {
-    guard let wkt = cleanText(wkt), !wkt.isEmpty else {
-        return ([], [])
-    }
-    guard let regex = wktCoordinateRegex else {
-        return ([], [])
-    }
-    let source = wkt as NSString
-    let matches = regex.matches(in: wkt, range: NSRange(location: 0, length: source.length))
-    var latitudes: [Double] = []
-    var longitudes: [Double] = []
-    latitudes.reserveCapacity(matches.count)
-    longitudes.reserveCapacity(matches.count)
-    for match in matches where match.numberOfRanges >= 3 {
-        guard let longitude = Double(source.substring(with: match.range(at: 1))),
-              let latitude = Double(source.substring(with: match.range(at: 2))),
-              latitude.isFinite, longitude.isFinite,
-              (-90.0...90.0).contains(latitude),
-              (-180.0...180.0).contains(longitude),
-              !(latitude == 0 && longitude == 0) else {
-            continue
-        }
-        latitudes.append(latitude)
-        longitudes.append(longitude)
-    }
-    return (latitudes, longitudes)
-}
-
+// Parses the journey feeds' "HH:MM:SS" durations. Every field must be a
+// non-negative whole number and minutes/seconds must be under 60. The sum is
+// done in Double: with Int arithmetic an absurd hours field such as
+// "3000000000000000" overflowed and trapped during decode.
 func parseTimeIntervalString(_ raw: String?) -> TimeInterval? {
     guard let raw = cleanText(raw) else {
         return nil
     }
-    let parts = raw.split(separator: ":")
+    let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
     guard parts.count == 3,
-          let hours = Int(parts[0]),
-          let minutes = Int(parts[1]),
-          let seconds = Int(parts[2]) else {
+          let hours = Int(parts[0]), hours >= 0,
+          let minutes = Int(parts[1]), (0..<60).contains(minutes),
+          let seconds = Int(parts[2]), (0..<60).contains(seconds) else {
         return nil
     }
-    return TimeInterval(hours * 3600 + minutes * 60 + seconds)
+    return Double(hours) * 3600 + Double(minutes) * 60 + Double(seconds)
+}
+
+// A value rounded to a whole number for display ("82" km/h), or nil when it
+// isn't finite or doesn't fit in an Int. `Int(_:)` traps on those, and a
+// loose upstream number (a 1e19 speed, or a NaN average from lengths near
+// 1e308) must never crash a render.
+func formatWholeNumber(_ value: Double) -> String? {
+    guard value.isFinite, let whole = Int(exactly: value.rounded()) else {
+        return nil
+    }
+    return String(whole)
 }
 
 // Travel-time durations in the compact style NZTA's own TIM boards use —
@@ -1799,12 +1925,14 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
     let id: String
     let rawId: String?
     let name: String?
+    // The API's journey length covers BOTH directions (the I and D legs), so it
+    // is not a trip length; each entry in `directions` carries its own.
     let totalLength: Double?
     let regionInfo: Region?
     let wayInfo: Way?
     let legs: [TrafficJourneyLeg]
-    let routePolylineLatitudes: [Double]
-    let routePolylineLongitudes: [Double]
+    // Per-direction totals (increasing first), computed once at decode.
+    let directions: [JourneyDirectionSummary]
     let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
@@ -1816,13 +1944,11 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
         let totalLengthValue = container.decodeLossyDouble(forKey: .totalLength)
         let regionValue = decodeFirstRegion(container: container, key: .regions)
         let wayValue = decodeFirstWay(container: container, key: .ways)
-        let legsValue = container.decodeFlexibleArray(TrafficJourneyLeg.self, forKey: .legs)
-
-        // Journey-level `geometry` is the full route as a WKT MULTILINESTRING.
-        // parseWKTLineStringCoords flattens it to one ordered coordinate list.
-        let routeCoords = parseWKTLineStringCoords(cleanText(container.decodeLossyString(forKey: .geometry)))
-        routePolylineLatitudes = routeCoords.latitudes
-        routePolylineLongitudes = routeCoords.longitudes
+        let legsValue = uniquingLegIDs(container.decodeFlexibleArray(TrafficJourneyLeg.self, forKey: .legs))
+        // The journey-level `geometry` MULTILINESTRING is deliberately not
+        // decoded: its parts are exactly the legs' LINESTRINGs, which the Flow
+        // map draws leg by leg. Joined into one line it drew straight chords
+        // (up to 97 km) between the ends of consecutive parts.
 
         rawId = decodedId
         id = deterministicID(
@@ -1835,6 +1961,7 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
         regionInfo = regionValue
         wayInfo = wayValue
         legs = legsValue
+        directions = summarizeJourneyDirections(legsValue)
 
         var legNames: [String?] = []
         legNames.reserveCapacity(legsValue.count)
@@ -1869,20 +1996,6 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
         legs.contains(where: \.hasLiveData)
     }
 
-    /// Full journey route, built from the journey-level WKT geometry, for
-    /// drawing the whole path as a single overlay on the Flow map layer.
-    var routePolyline: [CLLocationCoordinate2D] {
-        guard routePolylineLatitudes.count == routePolylineLongitudes.count, !routePolylineLatitudes.isEmpty else {
-            return []
-        }
-        var result: [CLLocationCoordinate2D] = []
-        result.reserveCapacity(routePolylineLatitudes.count)
-        for index in 0..<routePolylineLatitudes.count {
-            result.append(CLLocationCoordinate2D(latitude: routePolylineLatitudes[index], longitude: routePolylineLongitudes[index]))
-        }
-        return result
-    }
-
     /// The leg carrying the heaviest congestion (lowest flow) among legs that
     /// have live data — the journey's bottleneck. nil when nothing is live.
     var slowestLeg: TrafficJourneyLeg? {
@@ -1893,28 +2006,16 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
             }
     }
 
-    var totalCurrentTime: TimeInterval? {
-        let times = legs.compactMap(\.currentTimeSeconds).filter { $0 > 0 }
-        guard !times.isEmpty else {
-            return nil
-        }
-        return times.reduce(0, +)
+    /// The larger of the directions' delays: the Travel Times sort key. nil
+    /// when neither direction has comparable live times.
+    var worstDelay: TimeInterval? {
+        directions.compactMap(\.delay).max()
     }
 
-    var totalFreeFlowTime: TimeInterval? {
-        let times = legs.compactMap(\.freeFlowTime).filter { $0 > 0 }
-        guard !times.isEmpty else {
-            return nil
-        }
-        return times.reduce(0, +)
-    }
-
-    var congestionDelay: TimeInterval? {
-        guard let current = totalCurrentTime,
-              let free = totalFreeFlowTime else {
-            return nil
-        }
-        return max(0, current - free)
+    /// Live legs whose upstream times were implausible and left out of the
+    /// totals (Export Diagnostics reports the feed-wide count).
+    var dataIssueLegCount: Int {
+        directions.reduce(0) { $0 + $1.dataIssueLegCount }
     }
 
     var overallFlowKind: FlowKind {
@@ -1935,23 +2036,6 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
         return computeFlowKind(flow: weightedSum / totalWeight, coverage: 1.0)
     }
 
-    var averageSpeed: Double? {
-        var weightedSum = 0.0
-        var totalWeight = 0.0
-        for leg in legs {
-            guard let speed = leg.speed, speed > 0,
-                  let length = leg.totalLength, length > 0 else {
-                continue
-            }
-            weightedSum += speed * length
-            totalWeight += length
-        }
-        guard totalWeight > 0 else {
-            return nil
-        }
-        return weightedSum / totalWeight
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id
         case name
@@ -1959,12 +2043,355 @@ struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
         case regions
         case ways
         case legs
-        case geometry
     }
 }
 
+// Leg ids already carry direction and way (see TrafficJourneyLeg), but the Flow
+// map keys its overlays on them, so any duplicate that is still left within one
+// journey gets an occurrence suffix instead of a colliding ForEach identity.
+private func uniquingLegIDs(_ legs: [TrafficJourneyLeg]) -> [TrafficJourneyLeg] {
+    var used = Set<String>()
+    return legs.map { leg in
+        var candidate = leg.id
+        var occurrence = 1
+        while !used.insert(candidate).inserted {
+            occurrence += 1
+            candidate = "\(leg.id)#\(occurrence)"
+        }
+        guard candidate != leg.id else {
+            return leg
+        }
+        var renamed = leg
+        renamed.id = candidate
+        return renamed
+    }
+}
+
+// NZTA's reference direction for a journey leg: "I" (increasing) runs the way
+// the highway's route positions count up, "D" (decreasing) runs back.
+enum JourneyDirection: String, CaseIterable, Hashable {
+    case increasing = "I"
+    case decreasing = "D"
+    case unspecified = "?"
+
+    init(code: String?) {
+        switch code?.trimmingCharacters(in: .whitespaces).uppercased() {
+        case "I":
+            self = .increasing
+        case "D":
+            self = .decreasing
+        default:
+            self = .unspecified
+        }
+    }
+
+    // NZTA's own names, used when the legs' "A to B" names can't label a
+    // direction by its end points.
+    var fallbackLabel: String {
+        switch self {
+        case .increasing:
+            return "Increasing direction"
+        case .decreasing:
+            return "Decreasing direction"
+        case .unspecified:
+            return "Other legs"
+        }
+    }
+}
+
+// One direction of a journey. The feed interleaves both directions' legs (I, D,
+// I, D…) and its totalLength covers both, so travel time, delay and length are
+// only meaningful per direction. Current and free-flow times are summed over
+// the SAME legs — those reporting both times with no data issue — so the delay
+// compares like with like; the other legs show up as partial coverage.
+struct JourneyDirectionSummary: Identifiable {
+    let direction: JourneyDirection
+    // Where the direction starts and ends, read from its end legs' "A to B"
+    // names; nil when a name doesn't follow that pattern.
+    let origin: String?
+    let destination: String?
+    // The direction's legs in travel order.
+    let legs: [TrafficJourneyLeg]
+    // km: every leg in this direction, live or not.
+    let length: Double
+    // Legs whose current and free-flow times are both in the totals.
+    let timedLegCount: Int
+    // Live legs left out because their upstream times are implausible.
+    let dataIssueLegCount: Int
+    let currentTime: TimeInterval?
+    let freeFlowTime: TimeInterval?
+    // km/h, length-weighted over the legs reporting a speed.
+    let averageSpeed: Double?
+
+    var id: String {
+        direction.rawValue
+    }
+
+    var legCount: Int {
+        legs.count
+    }
+
+    var delay: TimeInterval? {
+        guard let currentTime, let freeFlowTime else {
+            return nil
+        }
+        return max(0, currentTime - freeFlowTime)
+    }
+
+    // Some legs are missing from the time totals.
+    var isPartial: Bool {
+        timedLegCount < legCount
+    }
+
+    // "Northland Boundary → Waikato Boundary", or NZTA's direction name when
+    // the end points can't be read (or coincide, as on a loop).
+    var label: String {
+        if let origin, let destination, origin.caseInsensitiveCompare(destination) != .orderedSame {
+            return "\(origin) → \(destination)"
+        }
+        return direction.fallbackLabel
+    }
+
+    // The per-direction line on a journey card, e.g. "Now 42m · free flow 28m
+    // · delay +14m · avg 61 km/h · 85.6 km · live on 9 of 14 legs".
+    var detailText: String {
+        var parts: [String] = []
+        if let currentTime, let freeFlowTime {
+            parts.append("Now \(formatTimeInterval(currentTime))")
+            parts.append("free flow \(formatTimeInterval(freeFlowTime))")
+            // Under half a minute rounds to nothing worth showing.
+            if let delay, delay >= 30 {
+                parts.append("delay +\(formatTimeInterval(delay))")
+            }
+        } else {
+            parts.append(dataIssueLegCount > 0 ? "No reliable live times" : "No live times")
+        }
+        if let speed = averageSpeed.flatMap(formatWholeNumber) {
+            parts.append("avg \(speed) km/h")
+        }
+        if length > 0, length.isFinite {
+            parts.append(String(format: "%.1f km", length))
+        }
+        if timedLegCount > 0, isPartial {
+            parts.append("live on \(timedLegCount) of \(legCount) legs")
+        }
+        if dataIssueLegCount > 0 {
+            parts.append(dataIssueLegCount == 1
+                ? "1 leg left out (data issue)"
+                : "\(dataIssueLegCount) legs left out (data issue)")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+// Groups a journey's legs by direction (increasing, then decreasing, then any
+// without a direction), orders each group in travel order — increasing legs by
+// ascending sequence number, decreasing legs descending — and totals it.
+func summarizeJourneyDirections(_ legs: [TrafficJourneyLeg]) -> [JourneyDirectionSummary] {
+    var grouped: [JourneyDirection: [(offset: Int, leg: TrafficJourneyLeg)]] = [:]
+    for (offset, leg) in legs.enumerated() {
+        grouped[leg.journeyDirection, default: []].append((offset, leg))
+    }
+    let increasing = legsInTravelOrder(grouped[.increasing] ?? [], descending: false)
+    let decreasing = legsInTravelOrder(grouped[.decreasing] ?? [], descending: true)
+    let unspecified = legsInTravelOrder(grouped[.unspecified] ?? [], descending: false)
+
+    // Decreasing legs often reuse the increasing leg's name ("Redoubt Rd to
+    // Papakura" both ways), so when both directions exist the decreasing end
+    // points are the increasing ones reversed rather than read from its names.
+    let increasingEnds = journeyEndpoints(increasing)
+    let decreasingEnds: (origin: String?, destination: String?) = increasing.isEmpty
+        ? journeyEndpoints(decreasing)
+        : (increasingEnds.destination, increasingEnds.origin)
+
+    var summaries: [JourneyDirectionSummary] = []
+    if !increasing.isEmpty {
+        summaries.append(summarizeDirection(.increasing, legs: increasing, ends: increasingEnds))
+    }
+    if !decreasing.isEmpty {
+        summaries.append(summarizeDirection(.decreasing, legs: decreasing, ends: decreasingEnds))
+    }
+    if !unspecified.isEmpty {
+        summaries.append(summarizeDirection(.unspecified, legs: unspecified, ends: journeyEndpoints(unspecified)))
+    }
+    return summaries
+}
+
+private func legsInTravelOrder(
+    _ legs: [(offset: Int, leg: TrafficJourneyLeg)],
+    descending: Bool
+) -> [TrafficJourneyLeg] {
+    legs.sorted { lhs, rhs in
+        switch (lhs.leg.sequenceNumber, rhs.leg.sequenceNumber) {
+        case let (left?, right?) where left != right:
+            return descending ? left > right : left < right
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            return lhs.offset < rhs.offset
+        }
+    }
+    .map(\.leg)
+}
+
+// Start of the first leg and end of the last, from their "A to B" names.
+private func journeyEndpoints(_ legs: [TrafficJourneyLeg]) -> (origin: String?, destination: String?) {
+    (journeyLegEndpoints(legs.first?.name)?.from, journeyLegEndpoints(legs.last?.name)?.to)
+}
+
+// Splits a leg name such as "Hibiscus Coast HW to Silverdale" at its first
+// " to ". nil when the name doesn't follow that pattern.
+func journeyLegEndpoints(_ name: String?) -> (from: String, to: String)? {
+    guard let name, let separator = name.range(of: " to ", options: .caseInsensitive) else {
+        return nil
+    }
+    guard let from = cleanText(String(name[..<separator.lowerBound])),
+          let to = cleanText(String(name[separator.upperBound...])) else {
+        return nil
+    }
+    return (from, to)
+}
+
+private func summarizeDirection(
+    _ direction: JourneyDirection,
+    legs: [TrafficJourneyLeg],
+    ends: (origin: String?, destination: String?)
+) -> JourneyDirectionSummary {
+    var length = 0.0
+    var currentTotal = 0.0
+    var freeFlowTotal = 0.0
+    var timedLegCount = 0
+    var dataIssueLegCount = 0
+    var speedWeightedSum = 0.0
+    var speedWeight = 0.0
+
+    for leg in legs {
+        if let legLength = leg.totalLength, legLength > 0 {
+            length += legLength
+            if let speed = leg.speed, speed > 0 {
+                speedWeightedSum += speed * legLength
+                speedWeight += legLength
+            }
+        }
+        if leg.dataIssue != nil {
+            dataIssueLegCount += 1
+        } else if let current = leg.currentTimeSeconds, let free = leg.freeFlowTime, free > 0 {
+            currentTotal += current
+            freeFlowTotal += free
+            timedLegCount += 1
+        }
+    }
+
+    // Sums of loose upstream numbers can overflow to infinity; a non-finite
+    // total is reported as missing rather than drawn.
+    let hasTimes = timedLegCount > 0 && currentTotal.isFinite && freeFlowTotal.isFinite
+    let averageSpeed = speedWeight > 0 ? speedWeightedSum / speedWeight : nil
+    return JourneyDirectionSummary(
+        direction: direction,
+        origin: ends.origin,
+        destination: ends.destination,
+        legs: legs,
+        length: length,
+        timedLegCount: hasTimes ? timedLegCount : 0,
+        dataIssueLegCount: dataIssueLegCount,
+        currentTime: hasTimes ? currentTotal : nil,
+        freeFlowTime: hasTimes ? freeFlowTotal : nil,
+        averageSpeed: averageSpeed.flatMap { $0.isFinite ? $0 : nil }
+    )
+}
+
+// Why a live leg's upstream times can't be used. NZTA sometimes reports a leg
+// time that contradicts the leg's own length and measured speed: a duplicated
+// link list makes "Redoubt Rd to Papakura" (10 km at 77 km/h) take 53 minutes,
+// and a single-link record makes "Oteha to SH18 Interchange" (9 km) take 11
+// seconds. The free-flow time is inflated the same way, so these legs drove the
+// "most delayed" ranking (up to about 18× the real delay). They are left out of
+// the journey totals and flagged on their row instead.
+enum JourneyLegDataIssue: String, Hashable {
+    case impossibleSpeed
+    case timeContradictsSpeed
+    case freeFlowContradictsLimit
+    case freeFlowExceedsCurrent
+
+    var explanation: String {
+        switch self {
+        case .impossibleSpeed:
+            return "NZTA's times for this leg imply an impossible speed."
+        case .timeContradictsSpeed:
+            return "NZTA's travel time for this leg doesn't match its length and measured speed."
+        case .freeFlowContradictsLimit:
+            return "NZTA's free-flow time for this leg doesn't match its length and speed limit."
+        case .freeFlowExceedsCurrent:
+            return "NZTA's free-flow time for this leg is far longer than its current travel time."
+        }
+    }
+}
+
+// A leg's time should imply roughly the speed NZTA measured on it, and its
+// free-flow time roughly its speed limit: within 2× either way. (In the
+// 2026-09 feed real legs sit within 0.6–1.4×; the bad ones are 2.4–35× off.)
+// Nothing on a New Zealand state highway averages over 200 km/h.
+private let legTimeTolerance = 2.0
+private let maxPlausibleLegSpeed = 200.0
+
+// Sanity-checks one leg's upstream times against its length, measured speed
+// and speed limit. nil when the times are plausible or there is nothing to
+// check (no time, no length).
+func journeyLegDataIssue(
+    length: Double?,
+    speed: Double?,
+    speedLimit: Double?,
+    currentTime: TimeInterval?,
+    freeFlowTime: TimeInterval?
+) -> JourneyLegDataIssue? {
+    func impliedSpeed(_ seconds: TimeInterval?) -> Double? {
+        guard let length, length > 0, let seconds, seconds > 0 else {
+            return nil
+        }
+        let kilometresPerHour = length / (seconds / 3600)
+        return kilometresPerHour.isFinite ? kilometresPerHour : nil
+    }
+    func contradicts(_ implied: Double, _ reference: Double?) -> Bool {
+        guard let reference, reference > 0 else {
+            return false
+        }
+        let ratio = implied / reference
+        return !(ratio >= 1 / legTimeTolerance && ratio <= legTimeTolerance)
+    }
+
+    if let implied = impliedSpeed(currentTime) {
+        if implied > maxPlausibleLegSpeed {
+            return .impossibleSpeed
+        }
+        if contradicts(implied, speed) {
+            return .timeContradictsSpeed
+        }
+    }
+    if let implied = impliedSpeed(freeFlowTime) {
+        if implied > maxPlausibleLegSpeed {
+            return .impossibleSpeed
+        }
+        if contradicts(implied, speedLimit) {
+            return .freeFlowContradictsLimit
+        }
+    }
+    // Free flow is the uncongested time, so it can't be much longer than the
+    // current one (that would mean traffic moving at over twice free-flow speed).
+    if let currentTime, currentTime > 0, let freeFlowTime, freeFlowTime > legTimeTolerance * currentTime {
+        return .freeFlowExceedsCurrent
+    }
+    return nil
+}
+
 struct TrafficJourneyLeg: Decodable, Identifiable {
-    let id: String
+    // Unique within its journey. Direction and way are part of it because NZTA
+    // often gives the I and D legs of a stretch the same name and sequence
+    // number (41 collisions in the 2026-09 feed), which gave the Flow map
+    // duplicate ForEach identities. Settable only so TrafficJourney can
+    // suffix any duplicate still left.
+    fileprivate(set) var id: String
     let name: String?
     let totalLength: Double?
     let speed: Double?
@@ -1976,12 +2403,16 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
     let sequenceNumber: Int?
     let effectiveSpeedLimit: Double?
     let way: Way?
-    let polylineLatitudes: [Double]
-    let polylineLongitudes: [Double]
+    // The leg's WKT geometry as separate runs (a LINESTRING is one part), so
+    // a multi-part leg never gets a chord drawn between its parts.
+    let polylineParts: [GeoPolyline]
     let flowKind: FlowKind
     // Parsed once at decode time rather than re-running parseTimeIntervalString
     // every access — leg time is read repeatedly when aggregating journeys.
     let currentTimeSeconds: TimeInterval?
+    // Set when the upstream times are implausible; the leg is then left out of
+    // its journey's totals (see journeyLegDataIssue).
+    let dataIssue: JourneyLegDataIssue?
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -1998,9 +2429,7 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
         let totalLengthValue = container.decodeLossyDouble(forKey: .totalLength)
         let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
 
-        let coords = parseWKTLineStringCoords(geometryValue)
-        polylineLatitudes = coords.latitudes
-        polylineLongitudes = coords.longitudes
+        polylineParts = parseWKTParts(geometryValue)
 
         name = nameValue
         totalLength = totalLengthValue
@@ -2015,15 +2444,30 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
         way = wayValue
         flowKind = computeFlowKind(flow: flowValue, coverage: coverageValue)
 
+        let currentTimeValue: TimeInterval?
         if let parsedTime = parseTimeIntervalString(timeValue), parsedTime > 0 {
-            currentTimeSeconds = parsedTime
+            currentTimeValue = parsedTime
         } else {
-            currentTimeSeconds = nil
+            currentTimeValue = nil
         }
+        currentTimeSeconds = currentTimeValue
+        dataIssue = journeyLegDataIssue(
+            length: totalLengthValue,
+            speed: speedValue,
+            speedLimit: speedLimitValue,
+            currentTime: currentTimeValue,
+            freeFlowTime: freeFlowValue
+        )
 
+        let directionTag = directionValue?.uppercased() ?? "?"
+        let wayTag = wayValue?.id ?? "?"
         let sequenceTag = sequenceValue.map { String($0) } ?? "?"
         let nameTag = nameValue ?? wayValue?.name ?? "leg"
-        id = "leg|\(nameTag)|\(sequenceTag)"
+        id = "leg|\(directionTag)|\(wayTag)|\(nameTag)|\(sequenceTag)"
+    }
+
+    var journeyDirection: JourneyDirection {
+        JourneyDirection(code: direction)
     }
 
     var hasLiveData: Bool {
@@ -2039,16 +2483,9 @@ struct TrafficJourneyLeg: Decodable, Identifiable {
         return false
     }
 
-    var polyline: [CLLocationCoordinate2D] {
-        guard polylineLatitudes.count == polylineLongitudes.count, !polylineLatitudes.isEmpty else {
-            return []
-        }
-        var result: [CLLocationCoordinate2D] = []
-        result.reserveCapacity(polylineLatitudes.count)
-        for index in 0..<polylineLatitudes.count {
-            result.append(CLLocationCoordinate2D(latitude: polylineLatitudes[index], longitude: polylineLongitudes[index]))
-        }
-        return result
+    // Has at least one part the Flow map can draw.
+    var hasMapGeometry: Bool {
+        polylineParts.contains(where: \.isDrawable)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -2073,14 +2510,12 @@ struct JourneysPayload: Decodable {
 
 struct JourneysResponse: Decodable {
     let journey: [TrafficJourney]
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        journey = container.decodeFlexibleArray(TrafficJourney.self, forKey: .journey)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case journey
+        let list = try decodeSectionList(TrafficJourney.self, from: decoder, keys: ["journey"])
+        journey = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -2273,14 +2708,12 @@ struct TIMSignsPayload: Decodable {
 
 struct TIMSignsResponse: Decodable {
     let tim: [TIMSign]
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        tim = container.decodeFlexibleArray(TIMSign.self, forKey: .tim)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case tim
+        let list = try decodeSectionList(TIMSign.self, from: decoder, keys: ["tim"])
+        tim = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -2295,12 +2728,7 @@ struct RegionsResponse: Decodable {
     let region: [Region]
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        region = container.decodeFlexibleArray(Region.self, forKey: .region)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case region
+        region = try decodeSectionList(Region.self, from: decoder, keys: ["region"]).elements
     }
 }
 
@@ -2420,7 +2848,9 @@ struct EVCharger: Decodable, Identifiable, Hashable {
             guard value > 0 else {
                 return nil
             }
-            return value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+            // formatWholeNumber, not Int(_:): an absurd advertised power
+            // ("1e19 kW") must not trap; it just isn't shown.
+            return value.rounded() == value ? formatWholeNumber(value) : String(format: "%.1f", value)
         }
         switch (cleanText(currentType), kw) {
         case let (type?, power?):
@@ -2466,14 +2896,14 @@ struct EVCharger: Decodable, Identifiable, Hashable {
 
 struct EVChargersPayload: Decodable {
     let features: [EVCharger]
+    let droppedCount: Int
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        features = container.decodeFlexibleArray(EVCharger.self, forKey: .features)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case features
+        // ArcGIS reports failures as {"error":{…}} with HTTP 200; with no
+        // `features` key that now throws instead of reading as zero chargers.
+        let list = try decodeSectionList(EVCharger.self, from: decoder, keys: ["features"])
+        features = list.elements
+        droppedCount = list.droppedCount
     }
 }
 
@@ -2529,6 +2959,103 @@ func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: 
     return (maxPowerKW, connectorTypes, hasDCConnector)
 }
 
+// MARK: - Lenient arrays
+
+// One element of a feed array, decoded on its own: an element that fails (a
+// null, a stray string, a malformed record) becomes nil instead of failing,
+// and so emptying, the whole array.
+struct LossyElement<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
+}
+
+// A feed's top-level list plus how many of its elements were unreadable and
+// skipped (reported by Export Diagnostics).
+struct SectionList<Element> {
+    let elements: [Element]
+    let droppedCount: Int
+}
+
+// A coding key for whatever keys a JSON object actually has. (A CodingKeys
+// enum's `allKeys` only lists the keys it already knows.)
+struct AnyCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init(_ stringValue: String) {
+        self.stringValue = stringValue
+        intValue = nil
+    }
+
+    init?(stringValue: String) {
+        self.init(stringValue)
+    }
+
+    init?(intValue: Int) {
+        stringValue = String(intValue)
+        self.intValue = intValue
+    }
+}
+
+// Decodes the list a feed response carries under the first of `keys` present,
+// element by element. It accepts the feeds' Jettison-style shapes: a lone
+// object for a one-element list, and an empty object or a null for an empty
+// one. It THROWS when the response is structurally wrong, so the store keeps
+// its last good data and offline cache instead of "succeeding" with nothing:
+// - the object has keys but none of `keys` (a renamed list, or an error body
+//   such as ArcGIS's {"error":{…}} on HTTP 200);
+// - the value is neither a list nor an object (a string or number);
+// - the list isn't empty but not one of its elements decodes.
+func decodeSectionList<T: Decodable>(
+    _ type: T.Type,
+    from decoder: Decoder,
+    keys: [String]
+) throws -> SectionList<T> {
+    let container = try decoder.container(keyedBy: AnyCodingKey.self)
+    guard let key = keys.lazy.map(AnyCodingKey.init).first(where: { container.contains($0) }) else {
+        let found = container.allKeys.map(\.stringValue).sorted()
+        guard found.isEmpty else {
+            throw DecodingError.keyNotFound(
+                AnyCodingKey(keys.first ?? "?"),
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "Expected \(keys.map { "\"\($0)\"" }.joined(separator: " or ")) "
+                        + "but the response has \(found.map { "\"\($0)\"" }.joined(separator: ", "))"
+                )
+            )
+        }
+        return SectionList(elements: [], droppedCount: 0)
+    }
+    if (try? container.decodeNil(forKey: key)) == true {
+        return SectionList(elements: [], droppedCount: 0)
+    }
+    if let array = try? container.decode([LossyElement<T>].self, forKey: key) {
+        let elements = array.compactMap(\.value)
+        if elements.isEmpty && !array.isEmpty {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath + [key],
+                    debugDescription: "None of the \(array.count) \"\(key.stringValue)\" entries could be read"
+                )
+            )
+        }
+        return SectionList(elements: elements, droppedCount: array.count - elements.count)
+    }
+    if let single = try? container.decode(LossyElement<T>.self, forKey: key), let value = single.value {
+        return SectionList(elements: [value], droppedCount: 0)
+    }
+    throw DecodingError.typeMismatch(
+        [T].self,
+        DecodingError.Context(
+            codingPath: container.codingPath + [key],
+            debugDescription: "\"\(key.stringValue)\" is neither a list nor a readable entry"
+        )
+    )
+}
+
 // One element of a loosely typed JSON array: a string or number becomes text;
 // anything else (object, array, null, bool) decodes to nil instead of failing
 // the whole array.
@@ -2553,9 +3080,13 @@ private struct LossyTextElement: Decodable {
 }
 
 extension KeyedDecodingContainer {
+    // A nested list that may arrive as a list, a lone object or not at all
+    // (legs, TIM pages and lines). Elements decode one by one, so a bad entry
+    // is skipped rather than emptying the list. Top-level feed lists go
+    // through decodeSectionList, which also rejects broken shapes.
     func decodeFlexibleArray<T: Decodable>(_ type: T.Type, forKey key: Key) -> [T] {
-        if let array = try? decodeIfPresent([T].self, forKey: key) {
-            return array
+        if let array = try? decodeIfPresent([LossyElement<T>].self, forKey: key) {
+            return array.compactMap(\.value)
         }
 
         if let value = try? decodeIfPresent(T.self, forKey: key) {
@@ -2573,8 +3104,11 @@ extension KeyedDecodingContainer {
             return String(value)
         }
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
-            if value.rounded() == value {
-                return String(Int(value))
+            // Whole numbers read without a ".0" ("42"), but only when they fit
+            // in an Int: `Int(_:)` traps on 1e20, so larger values keep their
+            // Double spelling ("1e+20").
+            if let whole = Int(exactly: value) {
+                return String(whole)
             }
             return String(value)
         }
@@ -2620,8 +3154,9 @@ extension KeyedDecodingContainer {
     }
 
     func decodeLossyDouble(forKey key: Key) -> Double? {
-        // Reject NaN/Infinity so every downstream consumer can trust the value
-        // is finite (e.g. coordinate validation, Int conversion, formatting).
+        // Reject NaN/Infinity so downstream consumers can trust the value is
+        // finite. Finite is not the same as small: 1e19 still overflows Int,
+        // so Int conversions go through Int(exactly:) / formatWholeNumber.
         if let value = try? decodeIfPresent(Double.self, forKey: key) {
             return value.isFinite ? value : nil
         }
@@ -2654,6 +3189,24 @@ extension KeyedDecodingContainer {
     }
 }
 
+// What the store does with a freshly fetched, successfully decoded section.
+// An empty list arriving where the app already holds data is treated as
+// suspect (a feed hiccup, not every camera vanishing at once): the last good
+// data stays on screen and in the offline cache, and the section reports an
+// error. An empty list is never written to the offline cache either, so it
+// can't replace a useful offline copy.
+enum SectionRefreshDecision: Equatable {
+    case replace(persist: Bool)
+    case keepPrevious
+}
+
+func sectionRefreshDecision(fetchedCount: Int, currentCount: Int) -> SectionRefreshDecision {
+    guard fetchedCount == 0 else {
+        return .replace(persist: true)
+    }
+    return currentCount > 0 ? .keepPrevious : .replace(persist: false)
+}
+
 // Plain-text diagnostics snapshot for Help → Export Diagnostics. Pure /
 // Foundation-only so it can be unit-tested; the store gathers the live inputs
 // (section counts, recent per-section errors, preferences, app version) and the
@@ -2665,6 +3218,8 @@ struct DiagnosticsReport {
         let name: String
         let count: Int
         let error: String?
+        // Unreadable feed entries the lenient decode skipped last time.
+        var droppedCount = 0
     }
 
     let appVersion: String
@@ -2709,11 +3264,15 @@ struct DiagnosticsReport {
         lines.append("Data Sections")
         lines.append("-------------")
         for section in sections {
-            if let error = section.error, !error.isEmpty {
-                lines.append("\(section.name): \(section.count) — ERROR: \(error)")
-            } else {
-                lines.append("\(section.name): \(section.count)")
+            var line = "\(section.name): \(section.count)"
+            if section.droppedCount > 0 {
+                let noun = section.droppedCount == 1 ? "entry" : "entries"
+                line += " (\(section.droppedCount) unreadable \(noun) skipped)"
             }
+            if let error = section.error, !error.isEmpty {
+                line += " — ERROR: \(error)"
+            }
+            lines.append(line)
         }
         lines.append("")
         lines.append("Preferences")

@@ -188,10 +188,10 @@ private func testCongestion(_ t: TestRunner) {
     t.check(CongestionXMLParser.parse(Data("not xml <<".utf8)) == nil, "malformed XML -> nil")
 }
 
-// Journey-level route geometry (WKT MULTILINESTRING -> single overlay polyline)
-// and the "slowest leg" bottleneck (lowest flow among legs with live data).
+// Leg geometry (WKT LINESTRING -> drawable part) and the "slowest leg"
+// bottleneck (lowest flow among legs with live data).
 private func testJourneyEnrichment(_ t: TestRunner) {
-    t.group("journey route + slowest leg")
+    t.group("journey leg geometry + slowest leg")
     let json = #"""
     {
       "id": "j1",
@@ -206,12 +206,12 @@ private func testJourneyEnrichment(_ t: TestRunner) {
     """#
     guard let journey = decodeModel(TrafficJourney.self, json, t) else { return }
 
-    t.equal(journey.routePolylineLatitudes.count, 3, "route geometry yields 3 points")
-    t.equal(journey.routePolyline.count, 3, "routePolyline builds 3 coordinates")
-    if journey.routePolyline.count == 3 {
-        t.nearlyEqual(journey.routePolyline[0].latitude, -41.0, "route first latitude")
-        t.nearlyEqual(journey.routePolyline[2].longitude, 175.0, "route last longitude")
-    }
+    t.equal(journey.legs.first?.polylineParts.count, 1, "leg LINESTRING yields one part")
+    t.equal(journey.legs.first?.polylineParts.first?.coordinates.count, 2, "leg part builds 2 coordinates")
+    t.nearlyEqual(journey.legs.first?.polylineParts.first?.coordinates.first?.latitude, -41.0, "leg first latitude")
+    t.nearlyEqual(journey.legs[1].polylineParts.first?.coordinates.last?.longitude, 175.0, "leg last longitude")
+    t.check(journey.legs.first?.hasMapGeometry == true, "a leg with a LINESTRING has map geometry")
+    t.check(journey.legs.last?.hasMapGeometry == false, "a leg without geometry has none")
 
     let slowest = journey.slowestLeg
     t.equal(slowest?.name, "B to C", "slowest leg is the lowest-flow live leg")
@@ -226,7 +226,6 @@ private func testJourneyEnrichment(_ t: TestRunner) {
     """#
     guard let dead = decodeModel(TrafficJourney.self, deadJson, t) else { return }
     t.check(dead.slowestLeg == nil, "no live legs -> nil slowestLeg")
-    t.equal(dead.routePolyline.count, 2, "route still parses without live legs")
 }
 
 // TIM travel-time board decoding. The upstream shape is loose: `page` is a
@@ -411,12 +410,14 @@ private func testWKTParsing(_ t: TestRunner) {
     t.check(coordinateFromWKTGeometry(nil) == nil, "nil geometry -> nil")
     t.check(coordinateFromWKTGeometry("not wkt") == nil, "garbage geometry -> nil")
 
-    let line = parseWKTLineStringCoords("LINESTRING (174.0 -41.0, 175.0 -42.0)")
-    t.equal(line.latitudes.count, 2, "linestring yields 2 points")
-    t.equal(line.longitudes.count, 2, "linestring longitudes count")
-    if line.latitudes.count == 2 {
-        t.nearlyEqual(line.latitudes[0], -41.0, "first latitude")
-        t.nearlyEqual(line.longitudes[1], 175.0, "second longitude")
+    let parts = parseWKTParts("LINESTRING (174.0 -41.0, 175.0 -42.0)")
+    t.equal(parts.count, 1, "linestring yields one part")
+    let line = parts.first
+    t.equal(line?.latitudes.count, 2, "linestring yields 2 points")
+    t.equal(line?.longitudes.count, 2, "linestring longitudes count")
+    if line?.count == 2 {
+        t.nearlyEqual(line?.latitudes[0], -41.0, "first latitude")
+        t.nearlyEqual(line?.longitudes[1], 175.0, "second longitude")
     }
 }
 

@@ -34,6 +34,7 @@ xcrun swiftc \
     Tests/TestHarness.swift \
     Tests/ModelTests.swift \
     Tests/EventFilterTests.swift \
+    Tests/JourneyGeometryTests.swift \
     Tests/IdentityTests.swift \
     Tests/main.swift
 

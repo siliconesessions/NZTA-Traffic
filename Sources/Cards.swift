@@ -20,34 +20,27 @@ struct JourneyCard: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-
-            if let summary = summaryLine {
-                Text(summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
-            } else {
-                Spacer().frame(height: 10)
-            }
+            .padding(.bottom, 10)
 
             slowestLegCallout
 
-            if !journey.legs.isEmpty {
-                Divider()
-                ForEach(Array(journey.legs.enumerated()), id: \.offset) { index, leg in
-                    JourneyLegRow(leg: leg)
-                    if index < journey.legs.count - 1 {
-                        Divider()
-                    }
-                }
-            } else {
+            if journey.directions.isEmpty {
                 Text("No leg data available")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
+            } else {
+                // One section per direction: its totals, then its legs in
+                // travel order. (The feed interleaves the two directions.)
+                ForEach(journey.directions) { direction in
+                    Divider()
+                    JourneyDirectionHeader(summary: direction)
+                    ForEach(direction.legs) { leg in
+                        Divider()
+                        JourneyLegRow(leg: leg)
+                    }
+                }
             }
         }
         .background(.background)
@@ -81,8 +74,8 @@ struct JourneyCard: View {
                 Text(leg.name ?? "Leg")
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
-                if let speed = leg.speed, speed > 0 {
-                    Text("\(Int(speed.rounded())) km/h")
+                if let speed = leg.speed, speed > 0, let speedText = formatWholeNumber(speed) {
+                    Text("\(speedText) km/h")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -93,25 +86,46 @@ struct JourneyCard: View {
             .padding(.bottom, 10)
         }
     }
+}
 
-    private var summaryLine: String? {
-        var parts: [String] = []
-        if let current = journey.totalCurrentTime {
-            parts.append("Now \(formatTimeInterval(current))")
+extension JourneyDirection {
+    var systemImage: String {
+        switch self {
+        case .increasing:
+            return "arrow.up.right"
+        case .decreasing:
+            return "arrow.down.left"
+        case .unspecified:
+            return "arrow.left.and.right"
         }
-        if let free = journey.totalFreeFlowTime {
-            parts.append("Free flow \(formatTimeInterval(free))")
+    }
+}
+
+// A journey direction's heading row: "Northland Boundary → Waikato Boundary"
+// over its own now / free-flow / delay / length and live coverage.
+struct JourneyDirectionHeader: View {
+    let summary: JourneyDirectionSummary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: summary.direction.systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.label)
+                    .font(.subheadline.weight(.semibold))
+                Text(summary.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
-        if let delay = journey.congestionDelay, delay > 0 {
-            parts.append("Delay +\(formatTimeInterval(delay))")
-        }
-        if let avgSpeed = journey.averageSpeed {
-            parts.append("Avg \(Int(avgSpeed.rounded())) km/h")
-        }
-        if let length = journey.totalLength, length > 0 {
-            parts.append(String(format: "%.1f km total", length))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.03))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -126,14 +140,9 @@ struct JourneyLegRow: View {
                 .accessibilityLabel("Traffic flow: \(leg.flowKind.label)")
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Image(systemName: directionIcon)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(leg.name ?? "Leg")
-                        .font(.subheadline)
-                        .lineLimit(1)
-                }
+                Text(leg.name ?? "Leg")
+                    .font(.subheadline)
+                    .lineLimit(1)
                 if let detail = detailLine {
                     Text(detail)
                         .font(.caption2)
@@ -145,16 +154,18 @@ struct JourneyLegRow: View {
             Spacer()
 
             HStack(spacing: 14) {
-                if let speed = leg.speed, speed > 0 {
+                if let speed = leg.speed, speed > 0, let speedText = formatWholeNumber(speed) {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(Int(speed.rounded()))")
+                        Text(speedText)
                             .font(.callout.monospacedDigit())
                         Text("km/h")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                if let timeText = currentTimeText {
+                if let issue = leg.dataIssue {
+                    dataIssueLabel(issue)
+                } else if let timeText = currentTimeText {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text(timeText)
                             .font(.callout.monospacedDigit().weight(.medium))
@@ -172,39 +183,47 @@ struct JourneyLegRow: View {
         .padding(.vertical, 8)
     }
 
-    private var directionIcon: String {
-        switch leg.direction?.uppercased() {
-        case "I":
-            return "arrow.up.right"
-        case "D":
-            return "arrow.down.left"
-        default:
-            return "arrow.left.and.right"
+    // Stands in for the leg's time when NZTA's figures are implausible: the
+    // leg is left out of the direction totals, and the tooltip says why and
+    // what was reported.
+    private func dataIssueLabel(_ issue: JourneyLegDataIssue) -> some View {
+        var reported: [String] = []
+        if let seconds = leg.currentTimeSeconds {
+            reported.append(formatTimeInterval(seconds))
         }
+        if let freeText = freeFlowText {
+            reported.append("free flow \(freeText)")
+        }
+        let reportedText = reported.isEmpty ? "" : " NZTA reported \(reported.joined(separator: ", "))."
+        let explanation = "\(issue.explanation)\(reportedText) It's left out of the journey totals."
+        // Same two-line shape as the time it replaces, so columns stay aligned.
+        return VStack(alignment: .trailing, spacing: 1) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+            Text("data issue")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 56, alignment: .trailing)
+        .help(explanation)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Data issue. \(explanation)")
     }
 
     private var detailLine: String? {
         var parts: [String] = []
         // Surface the flow state as text so it isn't conveyed by the dot's
-        // colour alone (skipped for legs with no live flow data).
+        // colour alone (skipped for legs with no live flow data). Direction is
+        // left to the section heading the row sits under.
         if leg.flowKind != .noData {
             parts.append(leg.flowKind.label)
-        }
-        if let direction = leg.direction, !direction.isEmpty {
-            switch direction.uppercased() {
-            case "I":
-                parts.append("Increasing")
-            case "D":
-                parts.append("Decreasing")
-            default:
-                parts.append(direction)
-            }
         }
         if let length = leg.totalLength, length > 0 {
             parts.append(String(format: "%.1f km", length))
         }
-        if let limit = leg.effectiveSpeedLimit, limit > 0 {
-            parts.append("limit \(Int(limit.rounded())) km/h")
+        if let limit = leg.effectiveSpeedLimit, limit > 0, let limitText = formatWholeNumber(limit) {
+            parts.append("limit \(limitText) km/h")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

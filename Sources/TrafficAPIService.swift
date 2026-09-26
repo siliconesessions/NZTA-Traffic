@@ -1,5 +1,29 @@
 import Foundation
 
+// A cacheable section's decoded entries, the raw response bytes the offline
+// cache persists, and how many unreadable entries the lenient decode skipped.
+typealias CacheableFetch<Element> = (value: [Element], data: Data, dropped: Int)
+// The same for a live-only section.
+typealias LenientFetch<Element> = (value: [Element], dropped: Int)
+
+// A DecodingError's own explanation ("Expected "camera" but the response has
+// "cameras"") says far more than its generic localizedDescription ("The data
+// couldn't be read because it is missing.").
+private func decodingFailureDescription(_ error: Error) -> String {
+    guard let decodingError = error as? DecodingError else {
+        return error.localizedDescription
+    }
+    switch decodingError {
+    case .dataCorrupted(let context),
+         .keyNotFound(_, let context),
+         .typeMismatch(_, let context),
+         .valueNotFound(_, let context):
+        return context.debugDescription
+    @unknown default:
+        return error.localizedDescription
+    }
+}
+
 struct TrafficAPIService {
     // rest/5 is a drop-in superset of rest/4 (cameras/VMS/journeys identical
     // wrappers); road events additionally carry `direction`/`travelDirection`.
@@ -40,27 +64,33 @@ struct TrafficAPIService {
     // The four offline-cacheable JSON sections surface their raw response bytes
     // alongside the decoded value so the store can persist the exact JSON to disk
     // (see TrafficStore.OfflineCache). The same bytes are later re-decoded via the
-    // `decodeCached…` helpers through these identical payload wrappers. Every
-    // async entry point in this type is `@concurrent` so decoding never runs on
-    // the caller's (main) actor — see the note above `fetchCamerasResult()`.
-    @concurrent nonisolated func fetchCameras() async throws -> (value: [TrafficCamera], data: Data) {
+    // `decodeCached…` helpers through these identical payload wrappers. `dropped`
+    // counts unreadable entries the lenient decode skipped (Export Diagnostics);
+    // a structurally broken response throws instead (see decodeSectionList).
+    // Every async entry point in this type is `@concurrent` so decoding never
+    // runs on the caller's (main) actor — see the note above `fetchCamerasResult()`.
+    @concurrent nonisolated func fetchCameras() async throws -> CacheableFetch<TrafficCamera> {
         let data = try await requestData(baseURL + "/cameras/all", accept: "application/json")
-        return (try decodePayload(CamerasPayload.self, from: data).response.camera, data)
+        let response = try decodePayload(CamerasPayload.self, from: data).response
+        return (response.camera, data, response.droppedCount)
     }
 
-    @concurrent nonisolated func fetchRoadEvents() async throws -> (value: [RoadEvent], data: Data) {
+    @concurrent nonisolated func fetchRoadEvents() async throws -> CacheableFetch<RoadEvent> {
         let data = try await requestData(baseURL + "/events/all/10", accept: "application/json")
-        return (try decodePayload(RoadEventsPayload.self, from: data).response.roadevent, data)
+        let response = try decodePayload(RoadEventsPayload.self, from: data).response
+        return (response.roadevent, data, response.droppedCount)
     }
 
-    @concurrent nonisolated func fetchVMSSigns() async throws -> (value: [VMSSign], data: Data) {
+    @concurrent nonisolated func fetchVMSSigns() async throws -> CacheableFetch<VMSSign> {
         let data = try await requestData(baseURL + "/signs/vms/all", accept: "application/json")
-        return (try decodePayload(VMSPayload.self, from: data).response.vms, data)
+        let response = try decodePayload(VMSPayload.self, from: data).response
+        return (response.vms, data, response.droppedCount)
     }
 
-    @concurrent nonisolated func fetchJourneys() async throws -> (value: [TrafficJourney], data: Data) {
+    @concurrent nonisolated func fetchJourneys() async throws -> CacheableFetch<TrafficJourney> {
         let data = try await requestData(baseURL + "/journeys/all/10", accept: "application/json")
-        return (try decodePayload(JourneysPayload.self, from: data).response.journey, data)
+        let response = try decodePayload(JourneysPayload.self, from: data).response
+        return (response.journey, data, response.droppedCount)
     }
 
     // Re-decode persisted section bytes for offline replay, off the main actor
@@ -83,9 +113,9 @@ struct TrafficAPIService {
         try? decoder.decode(JourneysPayload.self, from: data).response.journey
     }
 
-    @concurrent nonisolated func fetchTIMSigns() async throws -> [TIMSign] {
+    @concurrent nonisolated func fetchTIMSigns() async throws -> LenientFetch<TIMSign> {
         let payload: TIMSignsPayload = try await request("/signs/tim/all")
-        return payload.response.tim
+        return (payload.response.tim, payload.response.droppedCount)
     }
 
     @concurrent nonisolated func fetchRegions() async throws -> [Region] {
@@ -93,9 +123,9 @@ struct TrafficAPIService {
         return payload.response.region
     }
 
-    @concurrent nonisolated func fetchEVChargers() async throws -> [EVCharger] {
+    @concurrent nonisolated func fetchEVChargers() async throws -> LenientFetch<EVCharger> {
         let payload: EVChargersPayload = try await requestAbsolute(evChargersURL)
-        return payload.features
+        return (payload.features, payload.droppedCount)
     }
 
     @concurrent nonisolated func fetchCongestion() async throws -> [CongestionSegment] {
@@ -113,23 +143,23 @@ struct TrafficAPIService {
     // than blocking the main thread. Plain `nonisolated async` is not enough:
     // under NonisolatedNonsendingByDefault (part of Xcode's "Approachable
     // Concurrency") it would run on the caller's actor — i.e. the main actor.
-    @concurrent nonisolated func fetchCamerasResult() async -> Result<(value: [TrafficCamera], data: Data), Error> {
+    @concurrent nonisolated func fetchCamerasResult() async -> Result<CacheableFetch<TrafficCamera>, Error> {
         await result { try await fetchCameras() }
     }
 
-    @concurrent nonisolated func fetchRoadEventsResult() async -> Result<(value: [RoadEvent], data: Data), Error> {
+    @concurrent nonisolated func fetchRoadEventsResult() async -> Result<CacheableFetch<RoadEvent>, Error> {
         await result { try await fetchRoadEvents() }
     }
 
-    @concurrent nonisolated func fetchVMSSignsResult() async -> Result<(value: [VMSSign], data: Data), Error> {
+    @concurrent nonisolated func fetchVMSSignsResult() async -> Result<CacheableFetch<VMSSign>, Error> {
         await result { try await fetchVMSSigns() }
     }
 
-    @concurrent nonisolated func fetchJourneysResult() async -> Result<(value: [TrafficJourney], data: Data), Error> {
+    @concurrent nonisolated func fetchJourneysResult() async -> Result<CacheableFetch<TrafficJourney>, Error> {
         await result { try await fetchJourneys() }
     }
 
-    @concurrent nonisolated func fetchTIMSignsResult() async -> Result<[TIMSign], Error> {
+    @concurrent nonisolated func fetchTIMSignsResult() async -> Result<LenientFetch<TIMSign>, Error> {
         await result { try await fetchTIMSigns() }
     }
 
@@ -137,7 +167,7 @@ struct TrafficAPIService {
         await result { try await fetchRegions() }
     }
 
-    @concurrent nonisolated func fetchEVChargersResult() async -> Result<[EVCharger], Error> {
+    @concurrent nonisolated func fetchEVChargersResult() async -> Result<LenientFetch<EVCharger>, Error> {
         await result { try await fetchEVChargers() }
     }
 
@@ -248,7 +278,7 @@ struct TrafficAPIService {
             return try decoder.decode(T.self, from: data)
         } catch {
             let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
-            throw TrafficAPIError.decoding(error.localizedDescription, prefix)
+            throw TrafficAPIError.decoding(decodingFailureDescription(error), prefix)
         }
     }
 
@@ -260,7 +290,7 @@ struct TrafficAPIService {
             return try decoder.decode(type, from: data)
         } catch {
             let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
-            throw TrafficAPIError.decoding(error.localizedDescription, prefix)
+            throw TrafficAPIError.decoding(decodingFailureDescription(error), prefix)
         }
     }
 

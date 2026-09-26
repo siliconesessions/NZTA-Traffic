@@ -60,6 +60,10 @@ final class TrafficStore {
     // Sections currently served from the on-disk cache because their live fetch
     // failed (or has not completed yet). Drives `isServingCachedData`.
     @ObservationIgnored private var servedSections: Set<DataSection> = []
+    // Unreadable entries the lenient decode skipped in each section's latest
+    // fetch — only reported by Export Diagnostics, so not observed.
+    @ObservationIgnored private var droppedCounts: [DataSection: Int] = [:]
+    @ObservationIgnored private var droppedEVChargerCount = 0
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private let monitorQueue = DispatchQueue(label: "nzta.reachability.monitor")
 
@@ -208,17 +212,22 @@ final class TrafficStore {
     /// (it reads observed state); the command writes the rendered text to disk.
     func diagnosticsReport() -> DiagnosticsReport {
         let sections: [DiagnosticsReport.SectionStat] = [
-            .init(name: "Cameras", count: cameras.count, error: errors[.cameras]),
+            .init(name: "Cameras", count: cameras.count, error: errors[.cameras], droppedCount: droppedCounts[.cameras] ?? 0),
             .init(name: "Cameras Online", count: cameras.filter(\.isOnline).count, error: nil),
-            .init(name: "Road Events", count: events.count, error: errors[.events]),
+            .init(name: "Road Events", count: events.count, error: errors[.events], droppedCount: droppedCounts[.events] ?? 0),
             .init(name: "Upcoming Events", count: events.filter(\.isUpcoming).count, error: nil),
             .init(name: "Resolved Events", count: events.filter(\.isResolved).count, error: nil),
             .init(name: "Active Closures", count: criticalAlertCount, error: nil),
-            .init(name: "VMS Signs", count: vmsSigns.count, error: errors[.vms]),
-            .init(name: "Travel Times", count: journeys.count, error: errors[.journeys]),
-            .init(name: "TIM Signs", count: timSigns.count, error: errors[.timSigns]),
+            .init(name: "VMS Signs", count: vmsSigns.count, error: errors[.vms], droppedCount: droppedCounts[.vms] ?? 0),
+            .init(name: "Travel Times", count: journeys.count, error: errors[.journeys], droppedCount: droppedCounts[.journeys] ?? 0),
+            .init(
+                name: "Journey Legs With Data Issues",
+                count: journeys.reduce(0) { $0 + $1.dataIssueLegCount },
+                error: nil
+            ),
+            .init(name: "TIM Signs", count: timSigns.count, error: errors[.timSigns], droppedCount: droppedCounts[.timSigns] ?? 0),
             .init(name: "Congestion Segments", count: congestion.count, error: errors[.congestion]),
-            .init(name: "EV Chargers", count: evChargers.count, error: evChargersError)
+            .init(name: "EV Chargers", count: evChargers.count, error: evChargersError, droppedCount: droppedEVChargerCount)
         ]
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
@@ -266,9 +275,11 @@ final class TrafficStore {
         keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>,
         decode: (Data) async -> [T]?
     ) async -> Bool {
+        // An empty cached list is nothing to show (and is never written now).
         guard self[keyPath: keyPath].isEmpty,
               let data = await cache.read(section: section),
-              let value = await decode(data) else {
+              let value = await decode(data),
+              !value.isEmpty else {
             return false
         }
         self[keyPath: keyPath] = value
@@ -312,22 +323,33 @@ final class TrafficStore {
     }
 
     // Shared load path for the four offline-cacheable sections. On success it
-    // updates the in-memory slice and persists the raw bytes; on failure it
+    // updates the in-memory slice and persists the raw bytes — unless the list
+    // came back empty while data is already loaded, which keeps the last good
+    // data and cache and reports it (sectionRefreshDecision). On failure (which
+    // includes a structurally broken response, see decodeSectionList) it
     // surfaces the error and falls back to the cached copy (if any), marking the
     // section cache-served so the offline banner appears. Disk IO runs on the
     // OfflineCache actor (off the main actor).
     private func loadCached<T>(
         section: DataSection,
         keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>,
-        fetch: () async -> Result<(value: [T], data: Data), Error>,
+        fetch: () async -> Result<CacheableFetch<T>, Error>,
         decodeCache: (Data) async -> [T]?
     ) async {
         switch await fetch() {
         case .success(let fetched):
-            self[keyPath: keyPath] = fetched.value
-            invalidateFilterCaches()
-            servedSections.remove(section)
-            await cache.write(fetched.data, section: section)
+            droppedCounts[section] = fetched.dropped
+            switch sectionRefreshDecision(fetchedCount: fetched.value.count, currentCount: self[keyPath: keyPath].count) {
+            case .replace(let persist):
+                self[keyPath: keyPath] = fetched.value
+                invalidateFilterCaches()
+                servedSections.remove(section)
+                if persist {
+                    await cache.write(fetched.data, section: section)
+                }
+            case .keepPrevious:
+                errors[section] = Self.emptyFeedMessage
+            }
         case .failure(let error):
             errors[section] = errorMessage(error)
             if let data = await cache.read(section: section),
@@ -356,7 +378,8 @@ final class TrafficStore {
     }
 
     private func loadCongestion() async {
-        let result = await service.fetchCongestionResult()
+        // The XML parser has no per-entry leniency to report.
+        let result = await service.fetchCongestionResult().map { (value: $0, dropped: 0) }
         apply(result, to: .congestion, keyPath: \.congestion)
         loadingSections.remove(.congestion)
     }
@@ -372,8 +395,9 @@ final class TrafficStore {
         isLoadingEVChargers = true
         defer { isLoadingEVChargers = false }
         switch await service.fetchEVChargersResult() {
-        case .success(let chargers):
-            evChargers = chargers
+        case .success(let fetched):
+            evChargers = fetched.value
+            droppedEVChargerCount = fetched.dropped
             evChargersError = nil
         case .failure(let error):
             evChargersError = errorMessage(error)
@@ -455,11 +479,12 @@ final class TrafficStore {
             return cached
         }
         let highwayQuery = HighwayQuery(highway)
+        // Most delayed first, by the worse of each journey's two directions.
         let result = journeys
             .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { lhs, rhs in
-                let lhsDelay = lhs.congestionDelay ?? -1
-                let rhsDelay = rhs.congestionDelay ?? -1
+                let lhsDelay = lhs.worstDelay ?? -1
+                let rhsDelay = rhs.worstDelay ?? -1
                 if lhsDelay != rhsDelay {
                     return lhsDelay > rhsDelay
                 }
@@ -517,14 +542,22 @@ final class TrafficStore {
     }
 
     private func apply<T>(
-        _ result: Result<[T], Error>,
+        _ result: Result<LenientFetch<T>, Error>,
         to section: DataSection,
         keyPath: ReferenceWritableKeyPath<TrafficStore, [T]>
     ) {
         switch result {
-        case .success(let value):
-            self[keyPath: keyPath] = value
-            invalidateFilterCaches()
+        case .success(let fetched):
+            droppedCounts[section] = fetched.dropped
+            // Same empty-list guard as the cacheable sections (there's no cache
+            // to protect here, just the data on screen).
+            switch sectionRefreshDecision(fetchedCount: fetched.value.count, currentCount: self[keyPath: keyPath].count) {
+            case .replace:
+                self[keyPath: keyPath] = fetched.value
+                invalidateFilterCaches()
+            case .keepPrevious:
+                errors[section] = Self.emptyFeedMessage
+            }
         case .failure(let error):
             // Keep the previously loaded data on a transient failure instead of
             // wiping it — the error banner surfaces the problem while the user
@@ -566,6 +599,11 @@ final class TrafficStore {
         }
         return mergedRegionNames(canonical: canonicalRegions, derived: derived)
     }
+
+    // Shown (and exported in diagnostics) when a feed that had data returns
+    // an empty list; see sectionRefreshDecision.
+    private static let emptyFeedMessage =
+        "NZTA sent an empty list, so the last data received is still shown."
 
     private func errorMessage(_ error: Error) -> String {
         if let localizedError = error as? LocalizedError,

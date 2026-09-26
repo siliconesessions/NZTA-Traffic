@@ -676,7 +676,7 @@ struct ContentView: View {
             return MapCounts(mapped: mapped, total: items.count)
         case .flow:
             let allLegs = scopedJourneys().flatMap(\.legs)
-            let mapped = allLegs.filter { !$0.polylineLatitudes.isEmpty }.count
+            let mapped = allLegs.filter(\.hasMapGeometry).count
             return MapCounts(mapped: mapped, total: allLegs.count)
         case .timSigns:
             let items = scopedTIMSigns()

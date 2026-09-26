@@ -168,6 +168,10 @@ struct TrafficMapTabView: View {
         }
     }
 
+    // One overlay per drawable part of each leg. Leg ids are unique within a
+    // journey (direction and way are part of them), so the key is a stable,
+    // unique ForEach identity. Parts are never joined: joining them drew
+    // straight chords between their ends.
     private var flowLegs: [FlowLegOverlay] {
         guard selectedLayer == .flow else {
             return []
@@ -175,37 +179,18 @@ struct TrafficMapTabView: View {
         var overlays: [FlowLegOverlay] = []
         for journey in journeys {
             for leg in journey.legs {
-                guard !leg.polylineLatitudes.isEmpty else {
-                    continue
-                }
-                let key = "\(journey.id)|\(leg.id)"
-                overlays.append(
-                    FlowLegOverlay(
-                        id: key,
-                        coordinates: leg.polyline,
-                        flowKind: leg.flowKind
+                for (partIndex, part) in leg.polylineParts.enumerated() where part.isDrawable {
+                    overlays.append(
+                        FlowLegOverlay(
+                            id: "\(journey.id)|\(leg.id)|\(partIndex)",
+                            coordinates: part.coordinates,
+                            flowKind: leg.flowKind
+                        )
                     )
-                )
+                }
             }
         }
         return overlays
-    }
-
-    private var journeyRoutes: [FlowRouteOverlay] {
-        guard selectedLayer == .flow else {
-            return []
-        }
-        return journeys.compactMap { journey in
-            let coordinates = journey.routePolyline
-            guard coordinates.count >= 2 else {
-                return nil
-            }
-            return FlowRouteOverlay(
-                id: "route|\(journey.id)",
-                coordinates: coordinates,
-                flowKind: journey.overallFlowKind
-            )
-        }
     }
 
     private var totalCount: Int {
@@ -232,7 +217,7 @@ struct TrafficMapTabView: View {
         case .cameras, .events, .vms, .timSigns, .evChargers:
             return !features.isEmpty
         case .flow:
-            return !flowLegs.isEmpty || !journeyRoutes.isEmpty
+            return !flowLegs.isEmpty
         case .congestion:
             return !congestionOverlays.isEmpty
         }
@@ -353,12 +338,10 @@ struct TrafficMapTabView: View {
             ZStack(alignment: .topLeading) {
                 Map(position: $position) {
                     if selectedLayer == .flow {
-                        // Full journey route as a single casing underneath, with
-                        // the live per-leg segments drawn on top for detail.
-                        ForEach(journeyRoutes) { route in
-                            MapPolyline(coordinates: route.coordinates)
-                                .stroke(route.flowKind.color.opacity(0.4), style: StrokeStyle(lineWidth: 9 * zoomScale, lineCap: .round, lineJoin: .round))
-                        }
+                        // Each leg drawn on its own, coloured by its flow. (The
+                        // journey-level route casing is gone: its geometry is
+                        // exactly the legs', and drawn as one line it joined
+                        // the parts with straight chords.)
                         ForEach(flowLegs) { leg in
                             MapPolyline(coordinates: leg.coordinates)
                                 .stroke(leg.flowKind.color, style: StrokeStyle(lineWidth: 5 * zoomScale, lineCap: .round, lineJoin: .round))
@@ -607,12 +590,6 @@ private enum TrafficMapFeature: Identifiable {
 }
 
 private struct FlowLegOverlay: Identifiable {
-    let id: String
-    let coordinates: [CLLocationCoordinate2D]
-    let flowKind: FlowKind
-}
-
-private struct FlowRouteOverlay: Identifiable {
     let id: String
     let coordinates: [CLLocationCoordinate2D]
     let flowKind: FlowKind
