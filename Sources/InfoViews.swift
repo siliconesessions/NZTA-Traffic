@@ -8,7 +8,7 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Welcome to NZTA Traffic")
+            Text("Welcome to NZ Traffic")
                 .font(.largeTitle.weight(.semibold))
             Text("Live New Zealand traffic — cameras, road events, VMS signs, travel times, and a map.")
                 .foregroundStyle(.secondary)
@@ -43,7 +43,7 @@ struct AboutView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 AboutSection(title: "About This App") {
-                    Text("NZTA Traffic is a native macOS app for monitoring live traffic cameras, road events, and Variable Message Signs across New Zealand. It is designed as a quiet desktop view of operational traffic information, with shared filters and a map view for spatial context.")
+                    Text("NZ Traffic is a native macOS app for monitoring live traffic cameras, road events, and Variable Message Signs across New Zealand. It is designed as a quiet desktop view of operational traffic information, with shared filters and a map view for spatial context.")
                 }
 
                 AboutSection(title: "What It Shows") {
@@ -72,11 +72,11 @@ struct AboutView: View {
                 }
 
                 AboutSection(title: "Attribution") {
-                    Text("Traffic and travel information is provided by Waka Kotahi NZ Transport Agency and participating regional councils. This app is an independent viewer for that public data.")
+                    Text("Traffic and travel information is provided by NZ Transport Agency Waka Kotahi (NZTA) and participating regional councils, under CC BY 4.0. NZ Traffic is an independent viewer for that public data and is not affiliated with or endorsed by NZTA.")
                 }
 
                 AboutSection(title: "Help") {
-                    Text("Open Help > NZTA Traffic Help from the macOS menu bar for detailed guidance on filters, tabs, map layers, refresh behavior, and troubleshooting.")
+                    Text("Open Help > NZ Traffic Help from the macOS menu bar for detailed guidance on filters, tabs, map layers, refresh behavior, and troubleshooting.")
                 }
             }
             .font(.body)
@@ -92,7 +92,7 @@ struct AppHelpView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("NZTA Traffic Help")
+                    Text("NZ Traffic Help")
                         .font(.largeTitle.weight(.semibold))
                     Text("A guide to using the macOS traffic viewer for cameras, road events, VMS signs, and map layers.")
                         .font(.title3)
@@ -100,7 +100,7 @@ struct AppHelpView: View {
                 }
 
                 AboutSection(title: "Purpose") {
-                    Text("NZTA Traffic is an information viewer for live traffic data. It is not a navigation system or official travel instruction source. Always follow current road signs, authority instructions, and the conditions in front of you.")
+                    Text("NZ Traffic is an information viewer for live traffic data. It is not a navigation system or official travel instruction source. Always follow current road signs, authority instructions, and the conditions in front of you.")
                 }
 
                 AboutSection(title: "Shared Controls") {

@@ -566,7 +566,9 @@ actor OfflineCache {
     // nil disables the cache: every operation is a no-op (used by previews).
     private let directory: URL?
 
-    /// Application Support/NZTATraffic/OfflineCache — the app's real cache.
+    /// Application Support/NZTraffic/OfflineCache — the app's real cache.
+    /// (Builds before the rename used …/NZTATraffic; LegacyMigration moves
+    /// that folder here at launch, before this is first created.)
     static var defaultDirectory: URL {
         let fileManager = FileManager.default
         let base = (try? fileManager.url(
@@ -576,7 +578,7 @@ actor OfflineCache {
             create: true
         )) ?? fileManager.temporaryDirectory
         return base
-            .appendingPathComponent("NZTATraffic", isDirectory: true)
+            .appendingPathComponent(AppIdentity.supportFolderName, isDirectory: true)
             .appendingPathComponent("OfflineCache", isDirectory: true)
     }
 

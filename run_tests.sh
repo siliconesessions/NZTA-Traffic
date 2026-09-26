@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds and runs the standalone unit tests for the pure logic in
-# Sources/Models.swift. No SwiftPM / XCTest — just swiftc, matching the
-# project's build approach. Exits non-zero if any test fails.
+# Sources/Models.swift and Sources/AppIdentity.swift. No SwiftPM / XCTest —
+# just swiftc, matching the project's build approach. Exits non-zero if any
+# test fails.
 set -euo pipefail
 
 # Anchor every path on the script's own directory so it works from anywhere.
@@ -14,7 +15,7 @@ ARCH="${TEST_ARCH:-$(uname -m)}"
 TARGET="${ARCH}-apple-macos${MACOSX_DEPLOYMENT_TARGET:-27.0}"
 SDK="$(xcrun --show-sdk-path --sdk macosx)"
 BUILD_DIR="build"
-OUT="$BUILD_DIR/nzta-tests"
+OUT="$BUILD_DIR/nz-traffic-tests"
 MODULE_CACHE="$BUILD_DIR/test-module-cache"
 
 mkdir -p "$BUILD_DIR" "$MODULE_CACHE"
@@ -29,8 +30,10 @@ xcrun swiftc \
     -module-cache-path "$MODULE_CACHE" \
     -o "$OUT" \
     Sources/Models.swift \
+    Sources/AppIdentity.swift \
     Tests/TestHarness.swift \
     Tests/ModelTests.swift \
+    Tests/IdentityTests.swift \
     Tests/main.swift
 
 "./$OUT"

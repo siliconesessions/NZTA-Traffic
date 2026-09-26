@@ -2,15 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="NZTA Traffic"
-EXECUTABLE_NAME="NZTATraffic"
+APP_NAME="NZ Traffic"
+EXECUTABLE_NAME="NZTraffic"
 APP_BUNDLE="$SCRIPT_DIR/build/$APP_NAME.app"
 DSYM_BUNDLE="$APP_BUNDLE.dSYM"
 INFO_PLIST="$SCRIPT_DIR/Resources/Info.plist"
 DIST_DIR="$SCRIPT_DIR/dist"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$INFO_PLIST" 2>/dev/null || echo "1.0")"
-VOLUME_NAME="NZTA Traffic $VERSION"
-STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nzta-traffic-dmg.XXXXXX")"
+VOLUME_NAME="NZ Traffic $VERSION"
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nz-traffic-dmg.XXXXXX")"
 
 cleanup() {
     rm -rf "$STAGING_DIR"
@@ -34,7 +34,7 @@ if [[ "$ARCHS" == *"arm64"* && "$ARCHS" == *"x86_64"* ]]; then
 else
     ARCH_LABEL="${ARCHS// /-}"
 fi
-DMG_BASENAME="NZTA-Traffic-$VERSION-macOS-$ARCH_LABEL"
+DMG_BASENAME="NZ-Traffic-$VERSION-macOS-$ARCH_LABEL"
 DMG_NAME="$DMG_BASENAME.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 

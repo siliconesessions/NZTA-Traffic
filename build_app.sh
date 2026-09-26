@@ -7,8 +7,8 @@ set -euo pipefail
 # ad-hoc signature with the hardened runtime. (Neither path is notarized.)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="NZTA Traffic"
-EXECUTABLE_NAME="NZTATraffic"
+APP_NAME="NZ Traffic"
+EXECUTABLE_NAME="NZTraffic"
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 DSYM_BUNDLE="$APP_BUNDLE.dSYM"
@@ -16,14 +16,14 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 INFO_PLIST="$SCRIPT_DIR/Resources/Info.plist"
-ICON_FILE="$SCRIPT_DIR/Resources/NZTATraffic.icns"
+ICON_FILE="$SCRIPT_DIR/Resources/NZTraffic.icns"
 # Apple silicon only by default (macOS 27 is arm64-only). ARCHS still accepts a
 # space-separated list, e.g. ARCHS="arm64 x86_64" for a lipo'd binary.
 ARCHS="${ARCHS:-arm64}"
 MIN_MACOS="${MACOSX_DEPLOYMENT_TARGET:-27.0}"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
-MODULE_CACHE="${TMPDIR:-/tmp}/nzta-traffic-mac-module-cache"
-CLANG_MODULE_CACHE="${TMPDIR:-/tmp}/nzta-traffic-mac-clang-cache"
+MODULE_CACHE="${TMPDIR:-/tmp}/nz-traffic-module-cache"
+CLANG_MODULE_CACHE="${TMPDIR:-/tmp}/nz-traffic-clang-cache"
 ARCH_BUILD_DIR="$BUILD_DIR/arch"
 
 rm -rf "$APP_BUNDLE" "$DSYM_BUNDLE" "$ARCH_BUILD_DIR" "$MODULE_CACHE" "$CLANG_MODULE_CACHE"
@@ -99,7 +99,7 @@ rm -rf "$ARCH_BUILD_DIR"
 cp "$INFO_PLIST" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" "$CONTENTS_DIR/Info.plist"
 if [[ -f "$ICON_FILE" ]]; then
-    cp "$ICON_FILE" "$RESOURCES_DIR/NZTATraffic.icns"
+    cp "$ICON_FILE" "$RESOURCES_DIR/NZTraffic.icns"
 fi
 chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
 

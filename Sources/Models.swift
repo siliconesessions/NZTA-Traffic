@@ -2229,8 +2229,9 @@ struct DiagnosticsReport {
     func formattedText() -> String {
         let isoFormatter = ISO8601DateFormatter()
         var lines: [String] = []
-        lines.append("NZTA Traffic — Diagnostics Report")
-        lines.append("=================================")
+        let title = "\(AppIdentity.productName) — Diagnostics Report"
+        lines.append(title)
+        lines.append(String(repeating: "=", count: title.count))
         lines.append("Generated:    \(isoFormatter.string(from: generatedAt))")
         lines.append("App Version:  \(appVersion) (build \(appBuild))")
         lines.append("Network:      \(isOnline ? "online" : "offline")")

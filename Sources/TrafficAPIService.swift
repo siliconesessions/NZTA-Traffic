@@ -15,8 +15,14 @@ struct TrafficAPIService {
     private let congestionURL = "https://trafficnz.info/service/traffic-conditions/rest/2"
     private let session: URLSession
     private let decoder: JSONDecoder
+    // Sent on every API request so the operator can attribute load to an app
+    // version and find the project (see AppIdentity.userAgent). Set per request
+    // rather than on the session so an injected (preview/test) session gets it
+    // too.
+    private let userAgent: String
 
-    init(session: URLSession? = nil) {
+    init(session: URLSession? = nil, userAgent: String = AppIdentity.userAgent()) {
+        self.userAgent = userAgent
         if let session {
             self.session = session
         } else {
@@ -151,7 +157,7 @@ struct TrafficAPIService {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        urlRequest.setValue("NZTA Traffic macOS", forHTTPHeaderField: "User-Agent")
+        urlRequest.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         // Retry transient failures (transport errors, 5xx) with exponential
         // backoff: 1s, 2s before the final attempt. Non-transient errors
@@ -178,7 +184,7 @@ struct TrafficAPIService {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
-        urlRequest.setValue("NZTA Traffic macOS", forHTTPHeaderField: "User-Agent")
+        urlRequest.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         let maxAttempts = 3
         for attempt in 1...maxAttempts {

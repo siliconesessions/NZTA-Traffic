@@ -7,14 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		1A2B3C4D5E6F700000000006 /* NZTATraffic.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */; };
+		1A2B3C4D5E6F700000000006 /* NZTraffic.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000021 /* NZTraffic.icns */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1A2B3C4D5E6F700000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = NZTATraffic.icns; sourceTree = "<group>"; };
+		1A2B3C4D5E6F700000000021 /* NZTraffic.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = NZTraffic.icns; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000022 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
-		1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NZTA Traffic.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A2B3C4D5E6F700000000030 /* NZ Traffic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NZ Traffic.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A2B3C4D5E6F700000000031 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000032 /* build_app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_app.sh; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000033 /* package_dmg.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = package_dmg.sh; sourceTree = "<group>"; };
@@ -65,7 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				1A2B3C4D5E6F700000000020 /* Info.plist */,
-				1A2B3C4D5E6F700000000021 /* NZTATraffic.icns */,
+				1A2B3C4D5E6F700000000021 /* NZTraffic.icns */,
 				1A2B3C4D5E6F700000000022 /* AppIcon.png */,
 			);
 			path = Resources;
@@ -74,7 +74,7 @@
 		1A2B3C4D5E6F700000000070 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */,
+				1A2B3C4D5E6F700000000030 /* NZ Traffic.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,9 +82,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		1A2B3C4D5E6F700000000080 /* NZTA Traffic */ = {
+		1A2B3C4D5E6F700000000080 /* NZ Traffic */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZTA Traffic" */;
+			buildConfigurationList = 1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZ Traffic" */;
 			buildPhases = (
 				1A2B3C4D5E6F700000000090 /* Sources */,
 				1A2B3C4D5E6F700000000040 /* Frameworks */,
@@ -97,9 +97,9 @@
 			fileSystemSynchronizedGroups = (
 				1A2B3C4D5E6F700000000060 /* Sources */,
 			);
-			name = "NZTA Traffic";
-			productName = "NZTA Traffic";
-			productReference = 1A2B3C4D5E6F700000000030 /* NZTA Traffic.app */;
+			name = "NZ Traffic";
+			productName = "NZ Traffic";
+			productReference = 1A2B3C4D5E6F700000000030 /* NZ Traffic.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -117,7 +117,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTATraffic" */;
+			buildConfigurationList = 1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTraffic" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -131,7 +131,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				1A2B3C4D5E6F700000000080 /* NZTA Traffic */,
+				1A2B3C4D5E6F700000000080 /* NZ Traffic */,
 			);
 		};
 /* End PBXProject section */
@@ -141,7 +141,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1A2B3C4D5E6F700000000006 /* NZTATraffic.icns in Resources */,
+				1A2B3C4D5E6F700000000006 /* NZTraffic.icns in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -298,15 +298,15 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = NZTATraffic;
+				EXECUTABLE_NAME = NZTraffic;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.local.NZTATrafficMac;
-				PRODUCT_NAME = "NZTA Traffic";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.siliconesessions.nztraffic;
+				PRODUCT_NAME = "NZ Traffic";
 				SUPPORTED_PLATFORMS = macosx;
 			};
 			name = Debug;
@@ -320,15 +320,15 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = NZTATraffic;
+				EXECUTABLE_NAME = NZTraffic;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.local.NZTATrafficMac;
-				PRODUCT_NAME = "NZTA Traffic";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.siliconesessions.nztraffic;
+				PRODUCT_NAME = "NZ Traffic";
 				SUPPORTED_PLATFORMS = macosx;
 			};
 			name = Release;
@@ -336,7 +336,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZTA Traffic" */ = {
+		1A2B3C4D5E6F7000000000A0 /* Build configuration list for PBXNativeTarget "NZ Traffic" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1A2B3C4D5E6F7000000000B2 /* Debug */,
@@ -345,7 +345,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTATraffic" */ = {
+		1A2B3C4D5E6F7000000000A1 /* Build configuration list for PBXProject "NZTraffic" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1A2B3C4D5E6F7000000000B0 /* Debug */,

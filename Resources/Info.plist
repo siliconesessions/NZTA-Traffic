@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>NZTA Traffic</string>
+    <string>NZ Traffic</string>
     <key>CFBundleExecutable</key>
-    <string>NZTATraffic</string>
+    <string>NZTraffic</string>
     <key>CFBundleIconFile</key>
-    <string>NZTATraffic</string>
+    <string>NZTraffic</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.NZTATrafficMac</string>
+    <string>io.github.siliconesessions.nztraffic</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>NZTA Traffic</string>
+    <string>NZ Traffic</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Traffic and travel information is provided by Waka Kotahi NZ Transport Agency and participating regional councils.</string>
+    <string>© 2026 siliconesessions. Traffic data: NZ Transport Agency Waka Kotahi (CC BY 4.0).</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSSupportsSuddenTermination</key>
