@@ -25,4 +25,10 @@ extension Color {
     static let vmsCardBackground = Color(red: 0.09, green: 0.13, blue: 0.18)
     static let vmsCardBorder = Color(red: 0.28, green: 0.34, blue: 0.42)
     static let vmsCardMessage = Color(red: 1.0, green: 0.74, blue: 0.18)
+
+    // Road-event lifecycle tints. Impact colours (red closures, orange delays,
+    // yellow caution) are kept for events in force now, so red always means
+    // "closed now"; upcoming (Scheduled) and resolved events use these.
+    static let eventUpcoming = Color.purple
+    static let eventResolved = Color.gray
 }

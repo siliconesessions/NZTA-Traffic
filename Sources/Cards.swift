@@ -390,7 +390,7 @@ struct RoadEventCard: View {
     var body: some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(impactColor)
+                .fill(event.displayTint)
                 .frame(width: 5)
 
             VStack(alignment: .leading, spacing: 11) {
@@ -406,8 +406,8 @@ struct RoadEventCard: View {
                             text: event.isPlanned ? "Planned" : "Incident",
                             tint: event.isPlanned ? .blue : .indigo
                         )
-                        if let impact = event.impact {
-                            Badge(text: impact, tint: impactColor)
+                        if let impactBadgeText {
+                            Badge(text: impactBadgeText, tint: event.displayTint)
                         }
                     }
                 }
@@ -443,6 +443,12 @@ struct RoadEventCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                if let restrictions = event.restrictions {
+                    Label("Restrictions: \(restrictions)", systemImage: "exclamationmark.octagon")
+                        .font(.callout.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Divider()
 
                 EventMetaGrid(event: event)
@@ -457,17 +463,10 @@ struct RoadEventCard: View {
         }
     }
 
-    private var impactColor: Color {
-        if event.isClosure {
-            return .red
-        }
-        if event.hasDelays {
-            return .orange
-        }
-        if event.impact?.range(of: "caution", options: .caseInsensitive) != nil {
-            return .yellow
-        }
-        return .gray
+    // "Road Closed", or "Upcoming · Road Closed" / "Resolved · Road Closed"
+    // for events not in force now, tinted by lifecycle (see displayTint).
+    private var impactBadgeText: String? {
+        joinNonEmpty([event.lifecycleLabel, event.impact], separator: " · ")
     }
 
     // Pick a directional glyph from the carriageway text; default to a
@@ -515,30 +514,38 @@ struct EventMetaGrid: View {
             if let source = event.informationSource {
                 SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
             }
-            if let status = event.status {
-                SmallMeta(text: status, systemImage: "checkmark.circle")
+            // Upcoming/Resolved already lead the impact badge; only a
+            // current event's status (Active, or an unrecognised raw value)
+            // is shown here.
+            if event.isActive, let status = event.statusKind.label {
+                SmallMeta(
+                    text: status,
+                    systemImage: event.statusKind == .active ? "dot.radiowaves.left.and.right" : "questionmark.circle"
+                )
             }
         }
     }
 
-    // Prefer a relative reading ("Started 2 days ago"); fall back to the
-    // absolute NZ date when the timestamp can't be parsed into a relative one.
+    // Tense follows the date: "Started 2 days ago", or for a scheduled event
+    // "Starts in 1 day · Sun 27 Sep, 8:00 pm". Falls back to the absolute NZ
+    // reading when the timestamp can't be parsed.
     private var startedText: String? {
-        if let relative = formatRelativeTrafficDate(event.startDate) {
-            return "Started \(relative)"
+        if let phrase = eventDatePhrase(event.startDate, past: "Started", future: "Starts") {
+            return phrase
         }
-        return formatTrafficDate(event.startDate).map { "Started: \($0)" }
+        return formatTrafficDate(event.startDate).map { "Start: \($0)" }
     }
 
     private var updatedText: String? {
         formatRelativeTrafficDate(event.eventModified).map { "Updated \($0)" }
     }
 
-    // The API rarely sends `endDate`; when absent fall back to the planned
-    // resolution estimate so the card still carries a "when" cue.
+    // "Ends in 3 days" / "Ended 2 hours ago". Most events carry `endDate`; the
+    // few that don't fall back to the planned resolution estimate so the card
+    // still has a "when" cue.
     private var endsText: String? {
-        if let relative = formatRelativeTrafficDate(event.endDate) {
-            return "Ends \(relative)"
+        if let phrase = eventDatePhrase(event.endDate, past: "Ended", future: "Ends") {
+            return phrase
         }
         return formatTrafficDate(event.expectedResolution).map { "Expected: \($0)" }
     }

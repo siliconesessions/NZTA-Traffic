@@ -45,7 +45,10 @@ Six Swift files under `Sources/`, organized by layer not feature:
 
 ### Data flow
 
-`ContentView` owns the single `TrafficStore` and the three filter strings (region / highway / search), then asks the store for filtered/sorted slices per tab via `filteredCameras`/`filteredEvents`/`filteredVMSSigns`. Filtering and sorting live in the store, not in the views — when extending filters, add the predicate to the model's `matches(region:highway:search:)` method and to the relevant store accessor.
+`ContentView` owns the single `TrafficStore` and the three filter strings (region / highway / search), then asks the store for filtered/sorted slices per tab via `filteredCameras`/`filteredEvents`/`filteredVMSSigns`. Filtering and sorting live in the store, not in the views — when extending filters, add the predicate to the shared `matches(region:highway:search:)` (the `TrafficFilterable` protocol extension in `Models.swift`) and to the relevant store accessor, and add any new input to the store's `FilterKey` so the memoized results stay correct.
+
+- **Highway filter** matches whole highways, not substrings: `canonicalHighwayKey` maps "SH1" / "SH 1" / "State Highway 1" / "01N" / "SH1N" / "1" to the key "1" (spurs such as "1B" / "20A" stay distinct), and each model precomputes `highwayKeys` at decode time from its structured highway/journey/way fields plus "SH n" mentions in its own name/location text (not comments, detours or TIM destinations). A query that isn't a highway falls back to a whole-word match on `highwayHaystack`. Free-text search stays a substring match.
+- **Road event status** is parsed into `EventStatus` (active / scheduled / resolved / unknown-raw; unknown counts as active). Only `isActiveClosure` feeds the Dock badge, the menu bar "Active closures" and the red map pins; Scheduled events show as "Upcoming"; Resolved events are hidden everywhere unless `@AppStorage("nzta.showResolvedEvents")` is on.
 
 The map tab (`TrafficMapTabView`) consumes the same filtered slices and renders them through a `TrafficMapLayer` enum (cameras / events / vms) using MapKit. Coordinate parsing lives on each model as `mapCoordinate` — features without coordinates are silently dropped from the map and counted as `unmappedCount`.
 

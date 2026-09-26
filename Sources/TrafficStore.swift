@@ -71,6 +71,9 @@ final class TrafficStore {
         let region: String
         let highway: String
         let search: String
+        // Only the events slice varies on "Show resolved"; the other
+        // sections leave it false.
+        var showResolved = false
     }
     @ObservationIgnored private var cameraCache: [FilterKey: [TrafficCamera]] = [:]
     @ObservationIgnored private var eventCache: [FilterKey: [RoadEvent]] = [:]
@@ -122,9 +125,17 @@ final class TrafficStore {
         return max(0, min(1, (total - remaining) / total))
     }
 
-    /// Count of high-priority events (road closures) — surfaced as a Dock badge.
+    /// Road closures in force now (status Active, or no recognised status) —
+    /// the Dock badge and the menu bar "Active closures" line. Upcoming
+    /// (Scheduled) and Resolved closures are not counted.
     var criticalAlertCount: Int {
-        events.filter(\.isClosure).count
+        events.filter(\.isActiveClosure).count
+    }
+
+    /// Number of road events the user sees: Resolved events are left out
+    /// unless "Show resolved" is on (header pill, menu bar).
+    func visibleEventCount(showResolved: Bool) -> Int {
+        showResolved ? events.count : events.filter { !$0.isResolved }.count
     }
 
     /// Loads all sections concurrently.
@@ -200,6 +211,8 @@ final class TrafficStore {
             .init(name: "Cameras", count: cameras.count, error: errors[.cameras]),
             .init(name: "Cameras Online", count: cameras.filter(\.isOnline).count, error: nil),
             .init(name: "Road Events", count: events.count, error: errors[.events]),
+            .init(name: "Upcoming Events", count: events.filter(\.isUpcoming).count, error: nil),
+            .init(name: "Resolved Events", count: events.filter(\.isResolved).count, error: nil),
             .init(name: "Active Closures", count: criticalAlertCount, error: nil),
             .init(name: "VMS Signs", count: vmsSigns.count, error: errors[.vms]),
             .init(name: "Travel Times", count: journeys.count, error: errors[.journeys]),
@@ -392,8 +405,9 @@ final class TrafficStore {
         if let cached = cameraCache[key] {
             return cached
         }
+        let highwayQuery = HighwayQuery(highway)
         let result = cameras
-            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { lhs, rhs in
                 if let lhsSort = lhs.sortOrder, let rhsSort = rhs.sortOrder, lhsSort != rhsSort {
                     return lhsSort < rhsSort
@@ -404,19 +418,20 @@ final class TrafficStore {
         return result
     }
 
-    func filteredEvents(region: String, highway: String, search: String) -> [RoadEvent] {
-        let key = FilterKey(region: region, highway: highway, search: search)
+    // Resolved events are dropped unless `showResolved`; the rest sort
+    // current → upcoming → resolved, then by severity (roadEventSortsBefore).
+    func filteredEvents(region: String, highway: String, search: String, showResolved: Bool) -> [RoadEvent] {
+        let key = FilterKey(region: region, highway: highway, search: search, showResolved: showResolved)
         if let cached = eventCache[key] {
             return cached
         }
+        let highwayQuery = HighwayQuery(highway)
         let result = events
-            .filter { $0.matches(region: region, highway: highway, search: search) }
-            .sorted { lhs, rhs in
-                if lhs.severityRank != rhs.severityRank {
-                    return lhs.severityRank < rhs.severityRank
-                }
-                return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
+            .filter { event in
+                event.isVisible(showResolved: showResolved)
+                    && event.matches(region: region, highway: highwayQuery, search: search)
             }
+            .sorted(by: roadEventSortsBefore)
         eventCache[key] = result
         return result
     }
@@ -426,8 +441,9 @@ final class TrafficStore {
         if let cached = vmsCache[key] {
             return cached
         }
+        let highwayQuery = HighwayQuery(highway)
         let result = vmsSigns
-            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         vmsCache[key] = result
         return result
@@ -438,8 +454,9 @@ final class TrafficStore {
         if let cached = journeyCache[key] {
             return cached
         }
+        let highwayQuery = HighwayQuery(highway)
         let result = journeys
-            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { lhs, rhs in
                 let lhsDelay = lhs.congestionDelay ?? -1
                 let rhsDelay = rhs.congestionDelay ?? -1
@@ -457,8 +474,9 @@ final class TrafficStore {
         if let cached = timCache[key] {
             return cached
         }
+        let highwayQuery = HighwayQuery(highway)
         let result = timSigns
-            .filter { $0.matches(region: region, highway: highway, search: search) }
+            .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         timCache[key] = result
         return result
@@ -479,9 +497,10 @@ final class TrafficStore {
         impacts: Set<EventImpactKind>,
         showPlanned: Bool,
         showUnplanned: Bool,
+        showResolved: Bool,
         island: EventIslandFilter
     ) -> [RoadEvent] {
-        filteredEvents(region: region, highway: highway, search: search)
+        filteredEvents(region: region, highway: highway, search: search, showResolved: showResolved)
             .filter { impacts.contains($0.impactKind) }
             .filter { $0.isPlanned ? showPlanned : showUnplanned }
             .filter { island.matches($0.eventIsland) }

@@ -83,12 +83,18 @@ struct RoadEventsTabView: View {
     var onRetry: (() -> Void)?
     @FocusState private var focusedID: String?
 
-    private var closures: Int {
-        events.filter(\.isClosure).count
+    // Closures and delays in force now; upcoming and resolved events are
+    // counted separately (resolved ones only appear when "Show resolved" is on).
+    private var activeClosures: Int {
+        events.filter(\.isActiveClosure).count
     }
 
-    private var delays: Int {
-        events.filter(\.hasDelays).count
+    private var activeDelays: Int {
+        events.filter { $0.isActive && $0.hasDelays }.count
+    }
+
+    private var upcoming: Int {
+        events.filter(\.isUpcoming).count
     }
 
     private var eventIDs: [String] {
@@ -115,8 +121,9 @@ struct RoadEventsTabView: View {
                     } else {
                         StatsRow(stats: [
                             StatItem(title: "Total Events", value: "\(events.count)", tint: .gray),
-                            StatItem(title: "Road Closures", value: "\(closures)", tint: .red),
-                            StatItem(title: "Delays", value: "\(delays)", tint: .orange)
+                            StatItem(title: "Active Closures", value: "\(activeClosures)", tint: .red),
+                            StatItem(title: "Active Delays", value: "\(activeDelays)", tint: .orange),
+                            StatItem(title: "Upcoming", value: "\(upcoming)", tint: .eventUpcoming)
                         ])
 
                         LazyVStack(alignment: .leading, spacing: 12) {

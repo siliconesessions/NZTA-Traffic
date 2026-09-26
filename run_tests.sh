@@ -33,6 +33,7 @@ xcrun swiftc \
     Sources/AppIdentity.swift \
     Tests/TestHarness.swift \
     Tests/ModelTests.swift \
+    Tests/EventFilterTests.swift \
     Tests/IdentityTests.swift \
     Tests/main.swift
 

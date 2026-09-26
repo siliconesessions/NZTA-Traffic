@@ -63,7 +63,7 @@ struct Way: Decodable, Hashable {
     }
 }
 
-struct TrafficCamera: Decodable, Identifiable, Hashable {
+struct TrafficCamera: Decodable, Identifiable, Hashable, TrafficFilterable {
     let id: String
     let rawId: String?
     let name: String?
@@ -89,6 +89,7 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     let mapLatitude: Double?
     let mapLongitude: Double?
     let statusKind: CameraStatusKind
+    let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -142,6 +143,12 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
         mapLatitude = validatedMap?.latitude
         mapLongitude = validatedMap?.longitude
         statusKind = computeCameraStatusKind(offline: offlineValue, underMaintenance: underMaintenanceValue)
+        // Camera names/descriptions carry junction mentions ("SH16/20
+        // Interchange", "SH1/SH18 Interchange"), so those count too.
+        highwayKeys = highwayKeySet(
+            structured: [highwayValue, journeyValue?.name, wayValue?.name],
+            text: [nameValue, descriptionValue]
+        )
         highwayHaystack = searchableHaystack([
             highwayValue,
             journeyValue?.name,
@@ -190,12 +197,6 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
         trafficNZURL(from: thumbUrl ?? imageUrl, cacheToken: cacheToken)
     }
 
-    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
-        matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesNeedle(selectedHighway, in: highwayHaystack)
-            && matchesNeedle(search, in: searchHaystack)
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id
         case name
@@ -218,7 +219,7 @@ struct TrafficCamera: Decodable, Identifiable, Hashable {
     }
 }
 
-struct RoadEvent: Decodable, Identifiable, Hashable {
+struct RoadEvent: Decodable, Identifiable, Hashable, TrafficFilterable {
     let id: String
     let rawId: String?
     let alternativeRoute: String?
@@ -238,6 +239,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let locationArea: String?
     let locations: String?
     let planned: Bool?
+    let restrictions: String?
     let status: String?
     let supplier: String?
     let startDate: String?
@@ -256,6 +258,8 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     let mapLongitude: Double?
     let severityRank: Int
     let impactKind: EventImpactKind
+    let statusKind: EventStatus
+    let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -271,7 +275,11 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
         let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
         let locationAreaValue = cleanText(container.decodeLossyString(forKey: .locationArea))
-        let locationsValue = cleanText(container.decodeLossyString(forKey: .locations))
+        // `locations` is usually a string but occasionally a list of segment
+        // descriptions (e.g. a multi-bridge flooding event); keep both.
+        let locationsValue = cleanText(container.decodeLossyStringOrArray(forKey: .locations))
+        let restrictionsValue = cleanText(container.decodeLossyString(forKey: .restrictions))
+        let statusValue = cleanText(container.decodeLossyString(forKey: .status))
         let startDateValue = cleanText(container.decodeLossyString(forKey: .startDate))
         let eventCreatedValue = cleanText(container.decodeLossyString(forKey: .eventCreated))
         let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
@@ -309,7 +317,9 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         locationArea = locationAreaValue
         locations = locationsValue
         planned = container.decodeLossyBool(forKey: .planned)
-        status = cleanText(container.decodeLossyString(forKey: .status))
+        restrictions = restrictionsValue
+        status = statusValue
+        statusKind = EventStatus(raw: statusValue)
         supplier = cleanText(container.decodeLossyString(forKey: .supplier))
         startDate = startDateValue
         direction = cleanText(container.decodeLossyString(forKey: .direction))
@@ -335,6 +345,13 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         mapLongitude = validatedMap?.longitude
         severityRank = computeSeverityRank(impact: impactValue)
         impactKind = computeImpactKind(impact: impactValue)
+        // The event's own location text names the highway(s) it sits on
+        // ("SH 1 Invercargill to Awarua", "SH1/SH90 intersection"). Comments
+        // and alternative routes are left out: they mention detour highways.
+        highwayKeys = highwayKeySet(
+            structured: [journeyValue?.name, wayValue?.name],
+            text: [locationAreaValue, locationsValue]
+        )
         highwayHaystack = searchableHaystack([
             journeyValue?.name,
             wayValue?.name,
@@ -348,6 +365,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
             eventDescriptionValue,
             eventCommentsValue,
             alternativeRouteValue,
+            restrictionsValue,
             eventTypeValue,
             regionValue?.name
         ])
@@ -365,6 +383,35 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         impact?.range(of: "closed", options: .caseInsensitive) != nil
     }
 
+    /// In force now: status Active, or a missing/unrecognised status (see
+    /// `EventStatus`). Scheduled and Resolved events are not current.
+    var isActive: Bool {
+        statusKind.isCurrent
+    }
+
+    /// Scheduled for the future — shown as "Upcoming".
+    var isUpcoming: Bool {
+        statusKind == .scheduled
+    }
+
+    /// Already over. NZTA keeps these in the feed for about a day; they are
+    /// hidden unless the user turns on "Show resolved".
+    var isResolved: Bool {
+        statusKind == .resolved
+    }
+
+    /// A road closure in force now. This is what the Dock badge, the menu bar
+    /// "Active closures" line and the Road Events stat count — upcoming and
+    /// resolved closures are not live.
+    var isActiveClosure: Bool {
+        isClosure && isActive
+    }
+
+    /// Whether the event is listed at all, given the "Show resolved" setting.
+    func isVisible(showResolved: Bool) -> Bool {
+        showResolved || !isResolved
+    }
+
     var hasDelays: Bool {
         impact?.range(of: "delay", options: .caseInsensitive) != nil
     }
@@ -376,12 +423,24 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
     }
 
+    // Placeholder values the feed uses when there is no detour ("Not
+    // Applicable", "Not applicable.", "N/A", "N/a", …), compared after
+    // trimming whitespace/punctuation, collapsing spaces and lowercasing.
+    private static let noAlternativeRoutePlaceholders: Set<String> = [
+        "", "n/a", "na", "not applicable", "none", "nil"
+    ]
+
     var alternativeRouteText: String? {
         guard let alternativeRoute else {
             return nil
         }
 
-        if alternativeRoute.caseInsensitiveCompare("Not Applicable") == .orderedSame {
+        let normalized = alternativeRoute
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+        if Self.noAlternativeRoutePlaceholders.contains(normalized) {
             return nil
         }
         return alternativeRoute
@@ -414,12 +473,6 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
             .capitalized
     }
 
-    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
-        matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesNeedle(selectedHighway, in: highwayHaystack)
-            && matchesNeedle(search, in: searchHaystack)
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id
         case alternativeRoute
@@ -439,6 +492,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
         case locationArea
         case locations
         case planned
+        case restrictions
         case status
         case supplier
         case startDate
@@ -454,7 +508,7 @@ struct RoadEvent: Decodable, Identifiable, Hashable {
     }
 }
 
-struct VMSSign: Decodable, Identifiable, Hashable {
+struct VMSSign: Decodable, Identifiable, Hashable, TrafficFilterable {
     let id: String
     let rawId: String?
     let currentMessage: String?
@@ -474,6 +528,7 @@ struct VMSSign: Decodable, Identifiable, Hashable {
     let mapLongitude: Double?
     let formattedMessage: String
     let hasDisplayMessage: Bool
+    let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -521,6 +576,12 @@ struct VMSSign: Decodable, Identifiable, Hashable {
         let formatted = formatVMSMessage(currentMessageValue)
         formattedMessage = formatted
         hasDisplayMessage = formatted.caseInsensitiveCompare("No message") != .orderedSame
+        // Sign names lead with their highway ("SH74 Belfast South"), which
+        // matters where the journey is a corridor code such as "CNC".
+        highwayKeys = highwayKeySet(
+            structured: [journeyValue?.name, wayValue?.name],
+            text: [nameValue, descriptionValue]
+        )
         highwayHaystack = searchableHaystack([
             journeyValue?.name,
             wayValue?.name,
@@ -548,12 +609,6 @@ struct VMSSign: Decodable, Identifiable, Hashable {
             return nil
         }
         return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
-    }
-
-    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
-        matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesNeedle(selectedHighway, in: highwayHaystack)
-            && matchesNeedle(search, in: searchHaystack)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -705,21 +760,50 @@ func coordinateFromWKTGeometry(_ geometry: String?) -> CLLocationCoordinate2D? {
     )
 }
 
+// Hosts an image/page URL from the feed may point at: trafficnz.info and
+// NZTA's own domain, including subdomains. The feed sends relative paths
+// today (pinned to trafficnz.info below); an absolute URL on any other host —
+// including lookalikes such as "trafficnz.info.evil.example" — is refused, so
+// a tampered feed can't make the app fetch from, or open in the browser, an
+// arbitrary site.
+func isAllowedTrafficNZHost(_ host: String?) -> Bool {
+    guard let host = host?.lowercased(), !host.isEmpty else {
+        return false
+    }
+    return ["trafficnz.info", "nzta.govt.nz"].contains { domain in
+        host == domain || host.hasSuffix("." + domain)
+    }
+}
+
+// Resolves a camera image/thumbnail path from the feed to an https URL on an
+// allowed host. Relative paths resolve against trafficnz.info, http is
+// upgraded, protocol-relative ("//host/…") URLs get https, and any other
+// scheme ("javascript:", "file:", "data:", …) or host returns nil.
 func trafficNZURL(from path: String?, cacheToken: Int? = nil) -> URL? {
     guard var path = cleanText(path) else {
         return nil
     }
 
-    if path.lowercased().hasPrefix("http://") {
+    let lowercased = path.lowercased()
+    if lowercased.hasPrefix("http://") {
         path = "https://" + path.dropFirst("http://".count)
-    } else if !path.lowercased().hasPrefix("https://") {
+    } else if lowercased.hasPrefix("//") {
+        path = "https:" + path
+    } else if !lowercased.hasPrefix("https://") {
+        if hasURLScheme(path) {
+            return nil
+        }
         if !path.hasPrefix("/") {
             path = "/" + path
         }
         path = "https://trafficnz.info" + path
     }
 
-    guard var components = URLComponents(string: path) else {
+    guard var components = URLComponents(string: path),
+          components.scheme?.lowercased() == "https",
+          isAllowedTrafficNZHost(components.host),
+          components.user == nil,
+          components.password == nil else {
         return nil
     }
 
@@ -731,6 +815,21 @@ func trafficNZURL(from path: String?, cacheToken: Int? = nil) -> URL? {
     }
 
     return components.url
+}
+
+// RFC 3986 scheme prefix ("javascript:", "file:", "data:") — a letter, then
+// letters, digits, "+", "-" or ".", then a colon.
+private func hasURLScheme(_ value: String) -> Bool {
+    guard let colon = value.firstIndex(of: ":") else {
+        return false
+    }
+    let scheme = value[..<colon]
+    guard let first = scheme.first, first.isASCII, first.isLetter else {
+        return false
+    }
+    return scheme.allSatisfy { character in
+        character.isASCII && (character.isLetter || character.isNumber || "+-.".contains(character))
+    }
 }
 
 func formatVMSMessage(_ message: String?) -> String {
@@ -786,6 +885,21 @@ private let nzDisplayDateFormatter: DateFormatter = {
     formatter.locale = Locale(identifier: "en_NZ")
     formatter.timeZone = nzTimeZone
     formatter.dateFormat = "d MMM, h:mm a"
+    // NZ style: "5:30 pm" rather than "5:30 PM".
+    formatter.amSymbol = "am"
+    formatter.pmSymbol = "pm"
+    return formatter
+}()
+
+// Absolute NZ time with the weekday ("Sun 27 Sep, 8:00 pm") for future event
+// dates, where "in 1 day" alone doesn't say when the work actually starts.
+private let nzWeekdayDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_NZ")
+    formatter.timeZone = nzTimeZone
+    formatter.dateFormat = "EEE d MMM, h:mm a"
+    formatter.amSymbol = "am"
+    formatter.pmSymbol = "pm"
     return formatter
 }()
 
@@ -835,6 +949,28 @@ func formatRelativeTrafficDate(_ rawValue: String?, relativeTo reference: Date =
     }
 }
 
+// Tense-aware event date line: "Started 2 hours ago" / "Ended 5 hours ago"
+// for past instants, and "Starts in 1 day · Sun 27 Sep, 8:00 pm" for future
+// ones (Scheduled events), so the verb always agrees with the relative phrase.
+// nil when the value is missing or unparseable, so callers can fall back to
+// the absolute formatTrafficDate reading.
+func eventDatePhrase(
+    _ rawValue: String?,
+    past pastVerb: String,
+    future futureVerb: String,
+    relativeTo reference: Date = Date()
+) -> String? {
+    guard let rawValue = cleanText(rawValue),
+          let date = parseTrafficDate(rawValue),
+          let relative = formatRelativeTrafficDate(rawValue, relativeTo: reference) else {
+        return nil
+    }
+    guard date > reference else {
+        return "\(pastVerb) \(relative)"
+    }
+    return "\(futureVerb) \(relative) · \(nzWeekdayDateFormatter.string(from: date))"
+}
+
 func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
     let selected = selectedRegion.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !selected.isEmpty else {
@@ -874,6 +1010,186 @@ func matchesNeedle(_ needle: String, in haystack: String) -> Bool {
     return haystack.contains(query)
 }
 
+// MARK: - Highway filter
+
+// NZ state highways are written several ways across the feeds and by users:
+// "SH1" (camera.highway, journey.name), "SH 1" (event locationArea), "State
+// Highway 1", "SH1N" (journey names for SH1's North Island section) and the
+// way codes "01N" / "01S" / "020" / "20A". This maps each of them to one key —
+// the highway number without leading zeros plus any spur letter ("1", "20",
+// "20A", "1B") — so the Highway filter compares whole highways instead of
+// substrings: SH1 must not match SH10–SH18 or the SH1B spur. SH1 is the only
+// highway split by island, so a trailing N/S is dropped for highway 1 only;
+// on every other number a letter is a distinct spur route. Returns nil for
+// anything that isn't a highway reference ("ART", "CNC", "", "SH").
+func canonicalHighwayKey(_ raw: String?) -> String? {
+    guard let raw else {
+        return nil
+    }
+    var token = compactHighwayToken(raw)
+    for prefix in ["STATEHIGHWAY", "HIGHWAY", "HWY", "SH"] where token.hasPrefix(prefix) {
+        token.removeFirst(prefix.count)
+        break
+    }
+    let digits = token.prefix { $0.isASCII && $0.isNumber }
+    let suffix = token.dropFirst(digits.count)
+    guard (1...3).contains(digits.count),
+          suffix.count <= 1,
+          suffix.allSatisfy({ $0.isASCII && $0.isLetter }),
+          let number = Int(digits),
+          number > 0 else {
+        return nil
+    }
+    if number == 1, suffix == "N" || suffix == "S" {
+        return "1"
+    }
+    return "\(number)\(suffix)"
+}
+
+// Uppercased with spaces, hyphens and underscores removed: "sh-1" and
+// "State Highway 1" become "SH1" and "STATEHIGHWAY1".
+private func compactHighwayToken(_ raw: String) -> String {
+    raw.uppercased().filter { !$0.isWhitespace && $0 != "-" && $0 != "_" }
+}
+
+// Highway mentions inside free text: "SH 1", "SH1B", "STATE HIGHWAY 34", and
+// slash-joined junction forms ("SH1/SH90", "SH16/20"). Only "SH"/"State
+// Highway" prefixes count, so a board name such as "12 Auckland Airport" or a
+// bare "Route 70" is not read as a highway. Compiled once, like the WKT regex.
+private let highwayMentionRegex: NSRegularExpression? = {
+    try? NSRegularExpression(
+        pattern: #"\b(?:state\s+highway|sh)\s*-?\s*(\d{1,3}[a-z]?)\b((?:\s*/\s*(?:sh\s*)?\d{1,3}[a-z]?\b)*)"#,
+        options: [.caseInsensitive]
+    )
+}()
+
+func highwayMentions(in text: String?) -> Set<String> {
+    guard let text = cleanText(text), let regex = highwayMentionRegex else {
+        return []
+    }
+    let source = text as NSString
+    var keys = Set<String>()
+    for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+        if let key = canonicalHighwayKey(source.substring(with: match.range(at: 1))) {
+            keys.insert(key)
+        }
+        let tail = match.range(at: 2)
+        guard tail.location != NSNotFound, tail.length > 0 else {
+            continue
+        }
+        for part in source.substring(with: tail).split(separator: "/") {
+            if let key = canonicalHighwayKey(String(part)) {
+                keys.insert(key)
+            }
+        }
+    }
+    return keys
+}
+
+// Precomputed at decode time for each filterable feature: the highways it is
+// on, from its structured highway fields (highway / journey / way names) plus
+// any "SH n" mentions in its own name or location text. A structured value
+// that isn't a plain highway reference ("Old SH1") is scanned as text instead.
+func highwayKeySet(structured: [String?], text: [String?]) -> Set<String> {
+    var keys = Set<String>()
+    for field in structured {
+        if let key = canonicalHighwayKey(field) {
+            keys.insert(key)
+        } else {
+            keys.formUnion(highwayMentions(in: field))
+        }
+    }
+    for field in text {
+        keys.formUnion(highwayMentions(in: field))
+    }
+    return keys
+}
+
+// The Highway filter's input, parsed once per filter pass rather than once
+// per item. A query that names a highway ("SH1", "sh 1", "State Highway 1",
+// "01N", "1") matches by key. A bare "SH" / "State Highway" (e.g. mid-typing)
+// matches anything on a state highway. Anything else (e.g. the "CNC" corridor
+// code) falls back to a whole-word match on the item's route text, so "art"
+// finds the "ART" route but not "Arthurs Pass".
+struct HighwayQuery: Hashable, Sendable {
+    let text: String
+    let key: String?
+    let isHighwayPrefixOnly: Bool
+
+    private static let highwayPrefixes: Set<String> = ["SH", "STATE", "STATEHIGHWAY", "HIGHWAY", "HWY"]
+
+    init(_ raw: String) {
+        text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        key = text.isEmpty ? nil : canonicalHighwayKey(text)
+        isHighwayPrefixOnly = Self.highwayPrefixes.contains(compactHighwayToken(text))
+    }
+
+    var isEmpty: Bool {
+        text.isEmpty
+    }
+
+    func matches(keys: Set<String>, haystack: String) -> Bool {
+        guard !text.isEmpty else {
+            return true
+        }
+        if let key {
+            return keys.contains(key)
+        }
+        if isHighwayPrefixOnly {
+            return !keys.isEmpty
+        }
+        return containsWholeWords(text, in: haystack)
+    }
+}
+
+// True when `needle` occurs in `haystack` with a non-alphanumeric character
+// (or the string edge) on both sides. Both are expected lowercased.
+func containsWholeWords(_ needle: String, in haystack: String) -> Bool {
+    guard !needle.isEmpty else {
+        return true
+    }
+    var searchStart = haystack.startIndex
+    while searchStart < haystack.endIndex,
+          let found = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
+        let startsWord = found.lowerBound == haystack.startIndex
+            || !isWordCharacter(haystack[haystack.index(before: found.lowerBound)])
+        let endsWord = found.upperBound == haystack.endIndex
+            || !isWordCharacter(haystack[found.upperBound])
+        if startsWord && endsWord {
+            return true
+        }
+        searchStart = haystack.index(after: found.lowerBound)
+    }
+    return false
+}
+
+private func isWordCharacter(_ character: Character) -> Bool {
+    character.isLetter || character.isNumber
+}
+
+// The shared Region / Highway / Search predicate. Each filterable feature
+// precomputes its region name, highway keys and lowercased haystacks at decode
+// time, so filtering is set lookups and substring checks. The store calls the
+// `HighwayQuery` overload with a query parsed once per pass.
+protocol TrafficFilterable {
+    var regionName: String? { get }
+    var highwayKeys: Set<String> { get }
+    var highwayHaystack: String { get }
+    var searchHaystack: String { get }
+}
+
+extension TrafficFilterable {
+    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
+        matches(region: selectedRegion, highway: HighwayQuery(selectedHighway), search: search)
+    }
+
+    func matches(region selectedRegion: String, highway: HighwayQuery, search: String) -> Bool {
+        matchesRegion(regionName, selectedRegion: selectedRegion)
+            && highway.matches(keys: highwayKeys, haystack: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
+    }
+}
+
 func deterministicID(decodedId: String?, fallback: [String?], typeTag: String) -> String {
     if let decodedId, !decodedId.isEmpty {
         return decodedId
@@ -896,6 +1212,84 @@ func computeSeverityRank(impact: String?) -> Int {
         return 2
     }
     return 50
+}
+
+// Lifecycle of a road event, from the API's `status`: every event in the
+// 2026-09 v4/v5 snapshots is "Active", "Scheduled" (all start in the future)
+// or "Resolved" (all ended within the last ~24 h). Parsed from the string
+// alone — never against Date() at decode time, because the offline cache
+// replays old bytes. Anything else, including a missing status, is kept raw
+// as `.unknown` and treated like Active: if NZTA renames or drops the field,
+// closures keep counting and showing (fail safe) rather than disappearing.
+enum EventStatus: Hashable, Sendable {
+    case active
+    case scheduled
+    case resolved
+    case unknown(String?)
+
+    init(raw: String?) {
+        let value = cleanText(raw)
+        switch value?.lowercased() {
+        case "active":
+            self = .active
+        case "scheduled":
+            self = .scheduled
+        case "resolved":
+            self = .resolved
+        default:
+            self = .unknown(value)
+        }
+    }
+
+    /// In force now (Active, or an unrecognised/missing status).
+    var isCurrent: Bool {
+        switch self {
+        case .active, .unknown:
+            return true
+        case .scheduled, .resolved:
+            return false
+        }
+    }
+
+    /// Road Events order: current, then upcoming, then resolved.
+    var sortRank: Int {
+        switch self {
+        case .active, .unknown:
+            return 0
+        case .scheduled:
+            return 1
+        case .resolved:
+            return 2
+        }
+    }
+
+    /// User-facing label. Scheduled reads "Upcoming"; an unrecognised value
+    /// shows as sent; nil when the feed sent no status at all.
+    var label: String? {
+        switch self {
+        case .active:
+            return "Active"
+        case .scheduled:
+            return "Upcoming"
+        case .resolved:
+            return "Resolved"
+        case .unknown(let raw):
+            return raw
+        }
+    }
+}
+
+// Road Events display order: current events first, then upcoming, then
+// resolved; within each group closures → delays → caution → other, then by
+// title. The store's filteredEvents sorts with this.
+func roadEventSortsBefore(_ lhs: RoadEvent, _ rhs: RoadEvent) -> Bool {
+    if lhs.statusKind.sortRank != rhs.statusKind.sortRank {
+        return lhs.statusKind.sortRank < rhs.statusKind.sortRank
+    }
+    if lhs.severityRank != rhs.severityRank {
+        return lhs.severityRank < rhs.severityRank
+    }
+    return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
 }
 
 enum CameraStatusKind: String, CaseIterable, Identifiable, Hashable {
@@ -1357,15 +1751,28 @@ func parseTimeIntervalString(_ raw: String?) -> TimeInterval? {
     return TimeInterval(hours * 3600 + minutes * 60 + seconds)
 }
 
+// Travel-time durations in the compact style NZTA's own TIM boards use —
+// "18m", "1h 34m", "2h" — rounded to the nearest minute. (The old m:ss form,
+// "Now 17:55" / "Delay +4:22", read like a clock time or like hours.) A
+// positive duration under half a minute reads "<1m" rather than "0m".
+// Hand-formatted rather than via DateComponentsFormatter so the output is
+// locale-independent, needs no shared non-Sendable formatter, and can't trap
+// on a non-finite or huge value from the loose upstream feed.
 func formatTimeInterval(_ interval: TimeInterval) -> String {
-    let total = max(0, Int(interval.rounded()))
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let seconds = total % 60
-    if hours > 0 {
-        return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+    guard interval.isFinite, interval > 0 else {
+        return "0m"
     }
-    return String(format: "%d:%02d", minutes, seconds)
+    // Clamp before converting so an absurd upstream value can't overflow Int.
+    let totalMinutes = Int(min(interval / 60, 1_000_000).rounded())
+    guard totalMinutes > 0 else {
+        return "<1m"
+    }
+    let hours = totalMinutes / 60
+    let minutes = totalMinutes % 60
+    if hours == 0 {
+        return "\(minutes)m"
+    }
+    return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
 }
 
 private func decodeFirstRegion<K>(container: KeyedDecodingContainer<K>, key: K) -> Region? where K: CodingKey {
@@ -1388,7 +1795,7 @@ private func decodeFirstWay<K>(container: KeyedDecodingContainer<K>, key: K) -> 
     return nil
 }
 
-struct TrafficJourney: Decodable, Identifiable {
+struct TrafficJourney: Decodable, Identifiable, TrafficFilterable {
     let id: String
     let rawId: String?
     let name: String?
@@ -1398,6 +1805,7 @@ struct TrafficJourney: Decodable, Identifiable {
     let legs: [TrafficJourneyLeg]
     let routePolylineLatitudes: [Double]
     let routePolylineLongitudes: [Double]
+    let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -1434,6 +1842,10 @@ struct TrafficJourney: Decodable, Identifiable {
             legNames.append(leg.name)
         }
 
+        // A journey is one highway: its name ("SH1", "SH1N") and way code
+        // ("01N"). Leg names are left out of the keys because they mention the
+        // junctions at each end ("SH16 / SH18"), not the road itself.
+        highwayKeys = highwayKeySet(structured: [nameValue, wayValue?.name], text: [])
         highwayHaystack = searchableHaystack([
             nameValue,
             wayValue?.name
@@ -1538,12 +1950,6 @@ struct TrafficJourney: Decodable, Identifiable {
             return nil
         }
         return weightedSum / totalWeight
-    }
-
-    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
-        matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesNeedle(selectedHighway, in: highwayHaystack)
-            && matchesNeedle(search, in: searchHaystack)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1737,7 +2143,7 @@ private struct TIMPage: Decodable {
 // single object OR a list of pages; `way.id` is int-or-string (handled by the
 // shared `Way` lossy decode). We flatten every page's lines and keep only the
 // destination → estimated-time pairs.
-struct TIMSign: Decodable, Identifiable, Hashable {
+struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
     let id: String
     let rawId: String?
     let name: String?
@@ -1746,8 +2152,10 @@ struct TIMSign: Decodable, Identifiable, Hashable {
     let mapLatitude: Double?
     let mapLongitude: Double?
     let region: Region?
+    let journey: Journey?
     let way: Way?
     let lines: [TIMLine]
+    let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
 
@@ -1758,6 +2166,7 @@ struct TIMSign: Decodable, Identifiable, Hashable {
         let latitudeValue = container.decodeLossyDouble(forKey: .latitude)
         let longitudeValue = container.decodeLossyDouble(forKey: .longitude)
         let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
+        let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
         let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
         let pages = container.decodeFlexibleArray(TIMPage.self, forKey: .page)
         let travelLines = pages
@@ -1778,18 +2187,29 @@ struct TIMSign: Decodable, Identifiable, Hashable {
         latitude = latitudeValue
         longitude = longitudeValue
         region = regionValue
+        journey = journeyValue
         way = wayValue
         lines = travelLines
         let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
         mapLatitude = validatedMap?.latitude
         mapLongitude = validatedMap?.longitude
+        // TIM way codes carry no "SH" ("01N", "020"), so `journey.name`
+        // ("SH1") is what ties most boards to a highway. Destinations stay out
+        // of the highway fields: "SH1 GILLIES" is where a board points, not
+        // the road it stands on.
+        highwayKeys = highwayKeySet(
+            structured: [journeyValue?.name, wayValue?.name],
+            text: [nameValue]
+        )
         highwayHaystack = searchableHaystack([
+            journeyValue?.name,
             wayValue?.name,
             nameValue
-        ] + travelLines.map(\.destination))
+        ])
         searchHaystack = searchableHaystack([
             nameValue,
             regionValue?.name,
+            journeyValue?.name,
             wayValue?.name
         ] + travelLines.map(\.destination))
     }
@@ -1835,18 +2255,13 @@ struct TIMSign: Decodable, Identifiable, Hashable {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    func matches(region selectedRegion: String, highway selectedHighway: String, search: String) -> Bool {
-        matchesRegion(regionName, selectedRegion: selectedRegion)
-            && matchesNeedle(selectedHighway, in: highwayHaystack)
-            && matchesNeedle(search, in: searchHaystack)
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id
         case name
         case latitude
         case longitude
         case region
+        case journey
         case way
         case page
     }
@@ -1910,6 +2325,7 @@ struct EVCharger: Decodable, Identifiable, Hashable {
     let mapLongitude: Double?
     let maxPowerKW: Double?
     let connectorTypes: [String]
+    let hasDCConnector: Bool
     let searchHaystack: String
 
     init(from decoder: Decoder) throws {
@@ -1964,6 +2380,7 @@ struct EVCharger: Decodable, Identifiable, Hashable {
         let parsed = parseEVConnectors(connectorsListValue)
         maxPowerKW = parsed.maxPowerKW
         connectorTypes = parsed.connectorTypes
+        hasDCConnector = parsed.hasDCConnector
 
         searchHaystack = searchableHaystack([
             nameValue,
@@ -1977,10 +2394,17 @@ struct EVCharger: Decodable, Identifiable, Hashable {
         name ?? "EV Charger"
     }
 
-    // "Mixed" sites carry both AC and DC; treat anything mentioning DC as
-    // offering fast charging for the marker tint/legend.
+    // Offers DC fast charging (the marker tint/legend and card badge): any
+    // DC connector group, or a site type of DC or "Mixed" — Mixed sites carry
+    // both AC and DC, but the word itself contains no "DC".
     var isDC: Bool {
-        (currentType ?? "").range(of: "DC", options: .caseInsensitive) != nil
+        if hasDCConnector {
+            return true
+        }
+        guard let type = currentType?.lowercased() else {
+            return false
+        }
+        return type.contains("dc") || type == "mixed"
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
@@ -2055,16 +2479,18 @@ struct EVChargersPayload: Decodable {
 
 // The EV Roam feed packs every connector for a site into one string, e.g.
 // "{DC, 75 kW, CHAdeMO, Status: Operative, Count:1},{DC, 50 kW, Type 2 CCS, …}".
-// Pull out the highest advertised power (kW) and the distinct connector types
-// (order-preserving, case-insensitively de-duplicated).
-func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: [String]) {
+// Pull out the highest advertised power (kW), the distinct connector types
+// (order-preserving, case-insensitively de-duplicated), and whether any group
+// is a DC connector (its first field is "DC").
+func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: [String], hasDCConnector: Bool) {
     guard let raw = cleanText(raw) else {
-        return (nil, [])
+        return (nil, [], false)
     }
 
     var maxPowerKW: Double?
     var connectorTypes: [String] = []
     var seenTypes = Set<String>()
+    var hasDCConnector = false
 
     let groups = raw
         .replacingOccurrences(of: "{", with: "")
@@ -2080,6 +2506,9 @@ func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: 
         }
 
         // Layout: currentType, "<n> kW", connectorType, "Status: …", "Count:…".
+        if fields[0].caseInsensitiveCompare("DC") == .orderedSame {
+            hasDCConnector = true
+        }
         if fields.count >= 3 {
             let connectorType = fields[2]
             if !connectorType.isEmpty, seenTypes.insert(connectorType.lowercased()).inserted {
@@ -2097,7 +2526,30 @@ func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: 
         }
     }
 
-    return (maxPowerKW, connectorTypes)
+    return (maxPowerKW, connectorTypes, hasDCConnector)
+}
+
+// One element of a loosely typed JSON array: a string or number becomes text;
+// anything else (object, array, null, bool) decodes to nil instead of failing
+// the whole array.
+private struct LossyTextElement: Decodable {
+    let value: String?
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.singleValueContainer() else {
+            value = nil
+            return
+        }
+        if let text = try? container.decode(String.self) {
+            value = text
+        } else if let number = try? container.decode(Int.self) {
+            value = String(number)
+        } else if let number = try? container.decode(Double.self), number.isFinite {
+            value = String(number)
+        } else {
+            value = nil
+        }
+    }
 }
 
 extension KeyedDecodingContainer {
@@ -2130,6 +2582,19 @@ extension KeyedDecodingContainer {
             return value ? "true" : "false"
         }
         return nil
+    }
+
+    // Like decodeLossyString, but also accepts a JSON array of strings or
+    // numbers, joining the non-empty entries with "; ". (The events feed
+    // occasionally sends `locations` as a list.) Non-text elements are skipped.
+    func decodeLossyStringOrArray(forKey key: Key) -> String? {
+        if let value = decodeLossyString(forKey: key) {
+            return value
+        }
+        guard let elements = try? decodeIfPresent([LossyTextElement].self, forKey: key) else {
+            return nil
+        }
+        return joinNonEmpty(elements.map(\.value), separator: "; ")
     }
 
     func decodeLossyBool(forKey key: Key) -> Bool? {

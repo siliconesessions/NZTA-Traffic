@@ -103,6 +103,7 @@ struct EventImpactFilterRow: View {
     @Binding var showOther: Bool
     @Binding var showPlanned: Bool
     @Binding var showUnplanned: Bool
+    @Binding var showResolved: Bool
     @Binding var island: EventIslandFilter
 
     var body: some View {
@@ -117,6 +118,8 @@ struct EventImpactFilterRow: View {
             Divider().frame(height: 16)
             FilterChip(label: "Planned", tint: .blue, isOn: $showPlanned)
             FilterChip(label: "Incident", tint: .indigo, isOn: $showUnplanned)
+            FilterChip(label: "Resolved", tint: .eventResolved, isOn: $showResolved)
+                .help("Also show events NZTA has marked resolved (hidden by default)")
             Divider().frame(height: 16)
             Picker("Island", selection: $island) {
                 ForEach(EventIslandFilter.allCases) { filter in
@@ -177,6 +180,41 @@ struct FlowFilterRow: View {
             FilterChip(label: "Congested", tint: .red, isOn: $showCongested)
             FilterChip(label: "No Data", tint: .gray, isOn: $showNoData)
         }
+    }
+}
+
+extension EventImpactKind {
+    var color: Color {
+        switch self {
+        case .closure:
+            return .red
+        case .delays:
+            return .orange
+        case .caution:
+            return .yellow
+        case .other:
+            return .gray
+        }
+    }
+}
+
+extension RoadEvent {
+    /// Card stripe, impact badge and map pin colour: the impact colour for
+    /// events in force now, purple for upcoming ones and grey for resolved
+    /// ones — so a red closure is always a live closure.
+    var displayTint: Color {
+        if isResolved {
+            return .eventResolved
+        }
+        if isUpcoming {
+            return .eventUpcoming
+        }
+        return impactKind.color
+    }
+
+    /// "Upcoming" / "Resolved" for events not in force now; nil otherwise.
+    var lifecycleLabel: String? {
+        isActive ? nil : statusKind.label
     }
 }
 
@@ -472,6 +510,7 @@ struct SettingsView: View {
     @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
     @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
+    @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
 
     var body: some View {
         Form {
@@ -488,10 +527,11 @@ struct SettingsView: View {
             }
             Section("Display") {
                 Toggle("Hide VMS signs with no active message", isOn: $hideEmptyVMS)
+                Toggle("Show resolved road events", isOn: $showResolvedEvents)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 260)
+        .frame(width: 440, height: 300)
     }
 }
 

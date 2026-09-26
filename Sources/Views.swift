@@ -43,6 +43,9 @@ struct ContentView: View {
     @AppStorage("nzta.event.showOther") private var showEventOther = true
     @AppStorage("nzta.event.showPlanned") private var showEventPlanned = true
     @AppStorage("nzta.event.showUnplanned") private var showEventUnplanned = true
+    // Resolved events stay in the feed for about a day after they end; they
+    // are hidden everywhere (lists, map, counts) unless this is on.
+    @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
     @AppStorage("nzta.event.island") private var eventIslandFilter: EventIslandFilter = .all
     @AppStorage("nzta.camera.showOnline") private var showCameraOnline = true
     @AppStorage("nzta.camera.showOffline") private var showCameraOffline = true
@@ -221,7 +224,7 @@ struct ContentView: View {
                     DataSectionPill(
                         icon: "exclamationmark.triangle.fill",
                         label: "Events",
-                        count: store.events.count,
+                        count: store.visibleEventCount(showResolved: showResolvedEvents),
                         isLoading: store.isLoading(.events),
                         hasError: store.errors[.events] != nil
                     )
@@ -706,6 +709,7 @@ struct ContentView: View {
             showOther: $showEventOther,
             showPlanned: $showEventPlanned,
             showUnplanned: $showEventUnplanned,
+            showResolved: $showResolvedEvents,
             island: $eventIslandFilter
         )
     }
@@ -739,6 +743,7 @@ struct ContentView: View {
             impacts: allowedEventImpacts,
             showPlanned: showEventPlanned,
             showUnplanned: showEventUnplanned,
+            showResolved: showResolvedEvents,
             island: eventIslandFilter
         )
     }

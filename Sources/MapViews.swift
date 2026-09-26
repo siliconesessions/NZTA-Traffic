@@ -558,7 +558,7 @@ private enum TrafficMapFeature: Identifiable {
             }
             return camera.underMaintenance ? "Maintenance" : "Offline"
         case .event(let event, _):
-            return event.impact ?? event.eventType ?? "Road Event"
+            return joinNonEmpty([event.lifecycleLabel, event.impact ?? event.eventType], separator: " · ") ?? "Road Event"
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? "VMS Sign" : "No message"
         case .tim(let sign, _):
@@ -572,8 +572,12 @@ private enum TrafficMapFeature: Identifiable {
         switch self {
         case .camera(let camera, _):
             return camera.isOnline ? "video.fill" : "video.slash"
-        case .event:
-            return "exclamationmark.triangle.fill"
+        case .event(let event, _):
+            // The glyph carries the lifecycle too, so it isn't colour-only.
+            if event.isResolved {
+                return "checkmark.circle.fill"
+            }
+            return event.isUpcoming ? "calendar" : "exclamationmark.triangle.fill"
         case .vms:
             return "signpost.right.fill"
         case .tim:
@@ -591,16 +595,7 @@ private enum TrafficMapFeature: Identifiable {
             }
             return camera.underMaintenance ? .orange : .red
         case .event(let event, _):
-            if event.isClosure {
-                return .red
-            }
-            if event.hasDelays {
-                return .orange
-            }
-            if event.impact?.range(of: "caution", options: .caseInsensitive) != nil {
-                return .yellow
-            }
-            return .gray
+            return event.displayTint
         case .vms(let sign, _):
             return sign.hasDisplayMessage ? .blue : .gray
         case .tim:
@@ -844,7 +839,13 @@ private struct MapLegend: View {
         case .cameras:
             return [("Online", .green), ("Maintenance", .orange), ("Offline", .red)]
         case .events:
-            return [("Closure", .red), ("Delays", .orange), ("Caution", .yellow), ("Other", .gray)]
+            return [
+                ("Closure", EventImpactKind.closure.color),
+                ("Delays", EventImpactKind.delays.color),
+                ("Caution", EventImpactKind.caution.color),
+                ("Upcoming", .eventUpcoming),
+                ("Other / Resolved", .eventResolved)
+            ]
         case .vms:
             return [("Message", .blue), ("No message", .gray)]
         case .flow:

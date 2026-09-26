@@ -129,6 +129,7 @@ struct NZTrafficCommands: Commands {
 // not a second UI.
 struct MenuBarContent: View {
     let store: TrafficStore
+    @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
 
     private var onlineCameras: Int {
         store.cameras.filter(\.isOnline).count
@@ -139,7 +140,7 @@ struct MenuBarContent: View {
             .font(.headline)
         Divider()
         Text("Cameras: \(store.cameras.count) (\(onlineCameras) online)")
-        Text("Road events: \(store.events.count)")
+        Text("Road events: \(store.visibleEventCount(showResolved: showResolvedEvents))")
         Text("Active closures: \(store.criticalAlertCount)")
         Text("VMS signs: \(store.vmsSigns.count)")
         Text("Travel times: \(store.journeys.count)")

@@ -106,7 +106,7 @@ struct AppHelpView: View {
                 AboutSection(title: "Shared Controls") {
                     VStack(alignment: .leading, spacing: 8) {
                         BulletText("Region limits cameras, road events, VMS signs, and map layers to the selected region.")
-                        BulletText("Highway searches route, journey, way, and location fields such as SH1 or SH16.")
+                        BulletText("Highway matches whole state highways: SH1, SH 1, State Highway 1, 01N and 1 all mean State Highway 1 — not SH10–SH18 or spurs such as SH1B (type SH1B for those). Items at a junction match both highways. Other text, such as CNC, matches whole words in route names.")
                         BulletText("Search matches names, locations, descriptions, event comments, regions, and VMS message text where available.")
                         BulletText("Refresh reloads all live data sources and refreshes camera image cache tokens.")
                         BulletText("Auto-refresh reloads data every 30 to 600 seconds while enabled.")
@@ -123,9 +123,11 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Road Events") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Events are sorted by severity so closures and delays appear before lower-impact items.")
-                        BulletText("Event cards can include location, impact, comments, alternative routes, dates, source, supplier, and status metadata.")
-                        BulletText("Map event pins use red for closures, orange for delays, yellow for caution, and gray for other or unknown impact.")
+                        BulletText("Events in force now are listed first, by severity (closures, then delays, caution and other), followed by Upcoming (scheduled) events.")
+                        BulletText("Resolved events stay in the NZTA feed for about a day. They are hidden unless you turn on Resolved in the Road Events filter bar or in Settings.")
+                        BulletText("The Dock badge and the menu bar count active road closures only — not upcoming or resolved ones.")
+                        BulletText("Event cards can include location, impact, comments, alternative routes, restrictions, dates, source, and status metadata.")
+                        BulletText("Map event pins use red for active closures, orange for delays, yellow for caution, purple for upcoming events, and gray for other impacts or resolved events.")
                         BulletText("Some map positions are approximate because the source feed can provide line geometry rather than a single point.")
                     }
                 }
