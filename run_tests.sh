@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Builds and runs the standalone unit tests for the pure logic in
-# Sources/Models.swift and Sources/AppIdentity.swift. No SwiftPM / XCTest —
-# just swiftc, matching the project's build approach. Exits non-zero if any
+# Builds and runs the standalone unit tests. They cover the Foundation-level
+# layers — the models (Models.swift), app identity and migration
+# (AppIdentity.swift), the refresh policy (RefreshPolicy.swift), and the API
+# client, offline cache and store (TrafficAPIService.swift, OfflineCache.swift,
+# TrafficStore.swift) against an in-process stub network and temporary cache
+# folders. No SwiftPM / XCTest — just swiftc, matching the project's build
+# approach. The SwiftUI/AppKit layer isn't compiled. Exits non-zero if any
 # test fails.
 set -euo pipefail
 
@@ -31,11 +35,25 @@ xcrun swiftc \
     -o "$OUT" \
     Sources/Models.swift \
     Sources/AppIdentity.swift \
+    Sources/RefreshPolicy.swift \
+    Sources/OfflineCache.swift \
+    Sources/TrafficAPIService.swift \
+    Sources/TrafficStore.swift \
     Tests/TestHarness.swift \
+    Tests/StubNetwork.swift \
     Tests/ModelTests.swift \
     Tests/EventFilterTests.swift \
     Tests/JourneyGeometryTests.swift \
     Tests/IdentityTests.swift \
+    Tests/RefreshPolicyTests.swift \
+    Tests/NetworkTests.swift \
+    Tests/StoreTests.swift \
     Tests/main.swift
 
-"./$OUT"
+# Run with a throwaway home folder, so nothing the frameworks might persist
+# (preferences, caches) can reach the real ~/Library. The tests themselves use
+# in-memory values, a stubbed URLSession and temporary cache folders.
+TEST_HOME="$BUILD_DIR/test-home"
+rm -rf "$TEST_HOME"
+mkdir -p "$TEST_HOME"
+CFFIXED_USER_HOME="$PWD/$TEST_HOME" "./$OUT"

@@ -5,7 +5,8 @@ import Foundation
 // endpoints or touch the user's real offline cache, so `TrafficStore.preview()`
 // builds a store whose URLSession is answered in-process by
 // `PreviewURLProtocol` (a small canned snapshot per endpoint, trimmed from real
-// 2026 responses) and whose OfflineCache is disabled. Sample cameras carry no
+// 2026 responses), whose OfflineCache is disabled, and which neither clears
+// the shared URL cache nor starts a reachability monitor. Sample cameras carry no
 // image URLs, so AsyncImage never fetches a JPEG either.
 //
 // Compiled only into Debug builds (Xcode previews); build_app.sh and the Xcode
@@ -19,7 +20,9 @@ extension TrafficStore {
         let session = URLSession(configuration: configuration)
         return TrafficStore(
             service: TrafficAPIService(session: session),
-            cache: OfflineCache(directory: nil)
+            cache: OfflineCache(directory: nil),
+            imageCache: nil,
+            monitorsNetwork: false
         )
     }
 }

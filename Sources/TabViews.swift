@@ -5,6 +5,7 @@ struct CamerasTabView: View {
     let isLoading: Bool
     let errorMessage: String?
     let cacheToken: Int
+    let imageGeneration: Int
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
     let onPreview: (TrafficCamera) -> Void
@@ -44,7 +45,7 @@ struct CamerasTabView: View {
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
                             ForEach(cameras) { camera in
-                                CameraCard(camera: camera, cacheToken: cacheToken) {
+                                CameraCard(camera: camera, cacheToken: cacheToken, imageGeneration: imageGeneration) {
                                     onPreview(camera)
                                 }
                                 .keyboardNavigable(id: camera.id, in: cameraIDs, focus: $focusedID) {

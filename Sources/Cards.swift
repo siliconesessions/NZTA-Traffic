@@ -246,36 +246,21 @@ struct JourneyLegRow: View {
 struct CameraCard: View {
     let camera: TrafficCamera
     let cacheToken: Int
+    // Bumped when the cameras section refreshes; see CameraImage.
+    let imageGeneration: Int
     let onPreview: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onPreview) {
             VStack(alignment: .leading, spacing: 0) {
-                AsyncImage(
+                CameraImage(
                     url: camera.thumbnailURL(cacheToken: cacheToken),
-                    transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
-                ) { phase in
-                    ZStack {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.08))
-
-                        switch phase {
-                        case .empty:
-                            ProgressView()
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        case .failure:
-                            CameraPlaceholder(text: camera.isOnline ? "Image unavailable" : "Offline")
-                        @unknown default:
-                            CameraPlaceholder(text: "Image unavailable")
-                        }
-                    }
-                    .frame(height: 170)
-                    .clipped()
-                }
+                    generation: imageGeneration,
+                    contentMode: .fill,
+                    failureText: camera.isOnline ? "Image unavailable" : "Offline"
+                )
+                .frame(height: 170)
+                .clipped()
                 .accessibilityLabel("\(camera.displayName) camera image")
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -320,6 +305,94 @@ struct CameraCard: View {
     }
 }
 
+// A camera frame that refreshes in place. When `generation` changes (the
+// cameras section refreshed) it re-requests the same URL with a revalidating
+// load — the camera JPEGs send ETag/Last-Modified, so an unchanged frame is a
+// cheap 304 — and keeps the current frame on screen until the new one arrives,
+// so auto-refresh never flashes a spinner. A new URL (⌘R's `?t=` token) loads
+// fresh. Plain AsyncImage can do neither: it never reloads an unchanged URL,
+// and resetting its identity blanks the image while it reloads.
+struct CameraImage: View {
+    let url: URL?
+    let generation: Int
+    var contentMode: ContentMode = .fill
+    var failureText = "Image unavailable"
+    @State private var image: NSImage?
+    @State private var didFail = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let userAgent = AppIdentity.userAgent()
+
+    private struct LoadKey: Equatable {
+        let url: URL?
+        let generation: Int
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+            } else if didFail || url == nil {
+                CameraPlaceholder(text: failureText)
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: LoadKey(url: url, generation: generation)) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        guard let url else {
+            return
+        }
+        // First load: whatever the URL cache allows. Reloads: always ask the
+        // server, sending the cached validators.
+        var request = URLRequest(
+            url: url,
+            cachePolicy: image == nil ? .useProtocolCachePolicy : .reloadRevalidatingCacheData
+        )
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled else {
+                return
+            }
+            guard let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200..<300).contains(status),
+                  let loaded = NSImage(data: data) else {
+                markFailedIfEmpty()
+                return
+            }
+            // Fade in the first frame only; later frames swap in place.
+            let animation: Animation? = reduceMotion || image != nil ? nil : .easeInOut(duration: 0.3)
+            withAnimation(animation) {
+                image = loaded
+                didFail = false
+            }
+        } catch {
+            // Cancelled (scrolled away, or a newer load took over) or failed:
+            // either way keep whatever frame is showing.
+            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else {
+                return
+            }
+            markFailedIfEmpty()
+        }
+    }
+
+    private func markFailedIfEmpty() {
+        if image == nil {
+            didFail = true
+        }
+    }
+}
+
 struct CameraPlaceholder: View {
     let text: String
 
@@ -337,8 +410,9 @@ struct CameraPlaceholder: View {
 struct CameraPreviewView: View {
     let camera: TrafficCamera
     let cacheToken: Int
+    // Follows the cameras section, so an open preview keeps updating.
+    let imageGeneration: Int
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // The legacy /camera/view/<id> page (camera.viewUrl) now 404s — trafficnz.info
     // redirects to journeys.nzta.govt.nz and the old view path is dead. Link to the
@@ -373,28 +447,11 @@ struct CameraPreviewView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            AsyncImage(
+            CameraImage(
                 url: camera.imageURL(cacheToken: cacheToken),
-                transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
-            ) { phase in
-                ZStack {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-
-                    switch phase {
-                    case .empty:
-                        ProgressView()
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    case .failure:
-                        CameraPlaceholder(text: "Image unavailable")
-                    @unknown default:
-                        CameraPlaceholder(text: "Image unavailable")
-                    }
-                }
-            }
+                generation: imageGeneration,
+                contentMode: .fit
+            )
             .frame(minWidth: 760, minHeight: 470)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel("\(camera.displayName) camera image")

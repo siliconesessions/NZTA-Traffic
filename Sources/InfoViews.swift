@@ -20,7 +20,7 @@ struct WelcomeView: View {
             }
             .font(.callout)
 
-            Toggle("Auto-refresh data while the app is open", isOn: $enableAutoRefresh)
+            Toggle("Refresh data automatically (every 2 minutes — change it in Settings)", isOn: $enableAutoRefresh)
                 .toggleStyle(.checkbox)
 
             HStack {
@@ -108,8 +108,8 @@ struct AppHelpView: View {
                         BulletText("Region limits cameras, road events, VMS signs, and map layers to the selected region.")
                         BulletText("Highway matches whole state highways: SH1, SH 1, State Highway 1, 01N and 1 all mean State Highway 1 — not SH10–SH18 or spurs such as SH1B (type SH1B for those). Items at a junction match both highways. Other text, such as CNC, matches whole words in route names.")
                         BulletText("Search matches names, locations, descriptions, event comments, regions, and VMS message text where available.")
-                        BulletText("Refresh reloads all live data sources and refreshes camera image cache tokens.")
-                        BulletText("Auto-refresh reloads data every 30 to 600 seconds while enabled.")
+                        BulletText("Refresh (⌘R) reloads every live source and fetches fresh camera images. Each section updates as soon as its data arrives; Travel Times takes NZTA 15–20 seconds, so it finishes on its own.")
+                        BulletText("Auto-refresh reloads everything, including the camera images on screen, every 1 to 10 minutes. It keeps going with the window closed, so the menu bar and Dock badge stay current, and slows down (to at most every 15 minutes) while NZ Traffic is in the background with no window showing.")
                     }
                 }
 
@@ -125,7 +125,7 @@ struct AppHelpView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         BulletText("Events in force now are listed first, by severity (closures, then delays, caution and other), followed by Upcoming (scheduled) events.")
                         BulletText("Resolved events stay in the NZTA feed for about a day. They are hidden unless you turn on Resolved in the Road Events filter bar or in Settings.")
-                        BulletText("The Dock badge and the menu bar count active road closures only — not upcoming or resolved ones.")
+                        BulletText("The Dock badge and the menu bar count active road closures only — not upcoming or resolved ones. A “?” after the Dock count means it comes from saved data rather than the latest fetch.")
                         BulletText("Event cards can include location, impact, comments, alternative routes, restrictions, dates, source, and status metadata.")
                         BulletText("Map event pins use red for active closures, orange for delays, yellow for caution, purple for upcoming events, and gray for other impacts or resolved events.")
                         BulletText("Some map positions are approximate because the source feed can provide line geometry rather than a single point.")
@@ -155,6 +155,8 @@ struct AppHelpView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         BulletText("If a section is empty, clear filters first, then press Refresh.")
                         BulletText("If a section shows an error banner, that live source failed while other loaded sections may still be usable.")
+                        BulletText("When NZTA can’t be reached, or the Mac is offline, the app shows the data it saved last time and says how old it is. It reloads by itself when the connection comes back.")
+                        BulletText("If saved data looks wrong, choose Clear Offline Cache in Settings or the Help menu to delete it and reload.")
                         BulletText("If a camera preview is stale or missing, press Refresh and check whether the camera is marked offline or maintenance.")
                         BulletText("If a road event is not mapped, the live event may not include usable geometry or coordinates.")
                         BulletText("If macOS blocks the app on first launch, Control-click the app, choose Open, and confirm the prompt.")
@@ -163,10 +165,10 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Data and Privacy") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Traffic data is requested directly from the NZTA Traffic and Travel REST API v5.")
+                        BulletText("Traffic data is requested directly from the NZTA Traffic and Travel REST API v5, falling back to the documented v4 if v5 stops answering.")
                         BulletText("The map uses Apple MapKit.")
                         BulletText("The app does not include analytics, accounts, tracking, or an app-specific backend.")
-                        BulletText("Last Updated means the app completed a refresh. It does not mean every source item changed at that time.")
+                        BulletText("Updated shows when data last arrived from NZTA. It doesn’t move while fetches are failing, and turns orange after 10 minutes. It does not mean every source item changed at that time.")
                     }
                 }
             }

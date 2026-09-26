@@ -1,4 +1,3 @@
-import AppKit
 import MapKit
 import SwiftUI
 
@@ -34,8 +33,8 @@ enum TrafficTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @State private var store: TrafficStore
-    @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
-    @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    @AppStorage(AutoRefreshPolicy.enabledKey) private var autoRefreshEnabled = false
+    @AppStorage(AutoRefreshPolicy.intervalKey) private var refreshIntervalSeconds = AutoRefreshPolicy.defaultInterval
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
     @AppStorage("nzta.event.showClosures") private var showEventClosures = true
     @AppStorage("nzta.event.showDelays") private var showEventDelays = true
@@ -60,7 +59,6 @@ struct ContentView: View {
     @SceneStorage("nzta.scene.highway") private var highwayFilter = ""
     @SceneStorage("nzta.scene.search") private var searchFilter = ""
     @State private var selectedCamera: TrafficCamera?
-    @State private var autoRefreshTask: Task<Void, Never>?
     @State private var mapPosition = MapCameraPosition.region(trafficMapInitialRegion)
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
     @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
@@ -94,30 +92,21 @@ struct ContentView: View {
         .background { tabShortcuts }
         .background { searchFocusShortcut }
         .task {
-            // Show any cached data instantly, then fetch live and replace it.
-            await store.primeFromCache()
-            await store.loadAllData()
+            // The App starts the launch load (saved data, then live) and owns
+            // auto-refresh and the Dock badge, so none of that depends on this
+            // window. Reopening the window after a while shows fresh data.
+            await store.refreshIfStale(maxAge: Self.reopenRefreshAge)
         }
         .onAppear {
-            refreshIntervalSeconds = clampedRefreshInterval
             // Seed the debounced filters from any @SceneStorage-restored values.
             debouncedHighway = highwayFilter
             debouncedSearch = searchFilter
-            configureAutoRefresh()
             if !hasSeenWelcome {
                 showWelcome = true
             }
         }
         .onDisappear {
-            autoRefreshTask?.cancel()
             filterDebounceTask?.cancel()
-        }
-        .onChange(of: autoRefreshEnabled) {
-            configureAutoRefresh()
-        }
-        .onChange(of: refreshIntervalSeconds) {
-            refreshIntervalSeconds = clampedRefreshInterval
-            configureAutoRefresh()
         }
         .onChange(of: highwayFilter) {
             scheduleFilterDebounce()
@@ -125,26 +114,26 @@ struct ContentView: View {
         .onChange(of: searchFilter) {
             scheduleFilterDebounce()
         }
-        .onChange(of: store.criticalAlertCount, initial: true) { _, count in
-            updateDockBadge(count)
-        }
         .sheet(item: $selectedCamera) { camera in
-            CameraPreviewView(camera: camera, cacheToken: store.imageCacheToken)
+            CameraPreviewView(
+                camera: camera,
+                cacheToken: store.imageCacheToken,
+                imageGeneration: store.cameraImageGeneration
+            )
         }
         .sheet(isPresented: $showWelcome) {
             WelcomeView(onFinish: finishWelcome)
         }
     }
 
-    // Show a Dock badge with the active-closure count (or clear it).
-    private func updateDockBadge(_ count: Int) {
-        NSApplication.shared.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
-    }
+    // Data older than this is refreshed when the window (re)appears.
+    private static let reopenRefreshAge: TimeInterval = 120
 
+    // Turning auto-refresh on here reaches the scheduler the same way the
+    // Settings toggle does: through the `nzta.*` default (see AppController).
     private func finishWelcome(enableAutoRefresh: Bool) {
         if enableAutoRefresh {
             autoRefreshEnabled = true
-            configureAutoRefresh()
         }
         hasSeenWelcome = true
     }
@@ -159,7 +148,7 @@ struct ContentView: View {
     }
 
     private var clampedRefreshInterval: Int {
-        min(600, max(30, refreshIntervalSeconds))
+        AutoRefreshPolicy.clamp(refreshIntervalSeconds)
     }
 
     // Hidden buttons that bind ⌘1…⌘6 to each tab. They stay in the hierarchy so
@@ -246,26 +235,7 @@ struct ContentView: View {
 
                 Spacer()
 
-                HStack(spacing: 4) {
-                    if store.isRefreshing {
-                        Text("Refreshing…")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.blue)
-                    } else {
-                        if isDataStale {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                                .help("Data may be stale — refresh to update")
-                        }
-                        Text("Updated")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(lastUpdatedText)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(isDataStale ? .orange : .primary)
-                    }
-                }
+                refreshStatus
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
@@ -281,48 +251,61 @@ struct ContentView: View {
         .background(.background)
     }
 
-    // Offline / cached-data banner under the header. Hidden in the normal online
-    // case; appears when unreachable or while any section is served from cache.
+    // "Refreshing…", or when data last arrived. Re-rendered every 30 s by the
+    // TimelineView so the relative time and the stale warning age on their
+    // own, not only when something else redraws the window.
+    private var refreshStatus: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            HStack(spacing: 4) {
+                if store.isRefreshing {
+                    Text("Refreshing…")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.blue)
+                } else {
+                    let isStale = AutoRefreshPolicy.isDataStale(lastUpdated: store.lastUpdated, now: context.date)
+                    if isStale {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .help("Data may be stale — refresh to update")
+                    }
+                    Text("Updated")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(lastUpdatedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(isStale ? .orange : .primary)
+                }
+            }
+        }
+    }
+
+    // Freshness banner under the header (see FreshnessBanner): offline,
+    // couldn't reach NZTA, or saved data on screen while the live load runs.
+    // Hidden while everything shown is live. Its age re-renders every 30 s.
     @ViewBuilder
     private var offlineBanner: some View {
-        if store.shouldShowOfflineBanner {
-            OfflineBanner(message: offlineBannerMessage)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 6)
-                .background(.background)
+        if let banner = store.freshnessBanner {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                OfflineBanner(
+                    message: banner.message(relativeTo: context.date),
+                    isWarning: banner.isWarning,
+                    isUpdating: banner.isUpdating
+                )
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 6)
+            .background(.background)
         }
     }
 
-    private var offlineBannerMessage: String {
-        let suffix: String
-        if let timestamp = store.cacheTimestamp {
-            suffix = " from \(timestamp.formatted(.relative(presentation: .named)))"
-        } else {
-            suffix = ""
-        }
-        if !store.isOnline {
-            return store.isServingCachedData
-                ? "Offline — showing cached data\(suffix)"
-                : "Offline — no internet connection. Showing the latest available data."
-        }
-        // Online, but a fetch failed and we fell back to the on-disk cache.
-        return "Showing cached data\(suffix) — couldn’t reach NZTA."
-    }
-
+    // Only "Updated" times from a successful live fetch (see
+    // TrafficStore.lastUpdated).
     private var lastUpdatedText: String {
         guard let lastUpdated = store.lastUpdated else {
             return "Not yet"
         }
         return lastUpdated.formatted(.relative(presentation: .named))
-    }
-
-    // Considered stale after 10 minutes without a completed refresh. Recomputed
-    // on each render (e.g. when auto-refresh ticks or the user interacts).
-    private var isDataStale: Bool {
-        guard let lastUpdated = store.lastUpdated, !store.isRefreshing else {
-            return false
-        }
-        return Date().timeIntervalSince(lastUpdated) > 600
     }
 
     private var filters: some View {
@@ -386,11 +369,9 @@ struct ContentView: View {
             Toggle("Enable Auto-refresh", isOn: $autoRefreshEnabled)
             Divider()
             Picker("Interval", selection: $refreshIntervalSeconds) {
-                Text("30 seconds").tag(30)
-                Text("1 minute").tag(60)
-                Text("2 minutes").tag(120)
-                Text("5 minutes").tag(300)
-                Text("10 minutes").tag(600)
+                ForEach(AutoRefreshPolicy.intervalOptions, id: \.self) { seconds in
+                    Text(AutoRefreshPolicy.intervalLabel(seconds)).tag(seconds)
+                }
             }
             .disabled(!autoRefreshEnabled)
         } label: {
@@ -414,14 +395,7 @@ struct ContentView: View {
     }
 
     private var autoRefreshIntervalLabel: String {
-        let seconds = clampedRefreshInterval
-        if seconds < 60 {
-            return "\(seconds)s"
-        }
-        if seconds % 60 == 0 {
-            return "\(seconds / 60)m"
-        }
-        return "\(seconds)s"
+        AutoRefreshPolicy.shortIntervalLabel(clampedRefreshInterval)
     }
 
     // Chrome for a tab's scoped (per-section) filter row.
@@ -476,6 +450,7 @@ struct ContentView: View {
                 isLoading: store.isLoading(.cameras),
                 errorMessage: store.errors[.cameras],
                 cacheToken: store.imageCacheToken,
+                imageGeneration: store.cameraImageGeneration,
                 hasActiveFilters: hasActiveFilters,
                 onClearFilters: clearAllFilters,
                 onPreview: { selectedCamera = $0 },
@@ -768,28 +743,6 @@ struct ContentView: View {
 
     private func scopedTIMSigns() -> [TIMSign] {
         store.filteredTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-    }
-
-    private func configureAutoRefresh() {
-        autoRefreshTask?.cancel()
-
-        guard autoRefreshEnabled else {
-            autoRefreshTask = nil
-            return
-        }
-
-        let seconds = clampedRefreshInterval
-        autoRefreshTask = Task {
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(seconds))
-                } catch {
-                    // Cancelled while sleeping — exit cleanly.
-                    return
-                }
-                await store.loadAllData()
-            }
-        }
     }
 }
 

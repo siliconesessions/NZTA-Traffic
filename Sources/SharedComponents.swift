@@ -259,6 +259,12 @@ struct DataSectionPill: View {
     let isLoading: Bool
     let hasError: Bool
 
+    // The section's latest fetch failed but earlier data is still on screen:
+    // show that count with a warning, not a blank.
+    private var isShowingLastData: Bool {
+        hasError && count > 0
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             indicator
@@ -280,6 +286,9 @@ struct DataSectionPill: View {
     }
 
     private var accessibilityValue: String {
+        if isShowingLastData {
+            return "\(count), last update failed"
+        }
         if hasError {
             return "failed to load"
         }
@@ -295,6 +304,10 @@ struct DataSectionPill: View {
             ProgressView()
                 .controlSize(.mini)
                 .frame(width: 12, height: 12)
+        } else if isShowingLastData {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+                .foregroundStyle(.orange)
         } else if hasError {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption2)
@@ -307,7 +320,7 @@ struct DataSectionPill: View {
     }
 
     private var displayCount: String {
-        if hasError {
+        if hasError && count == 0 {
             return "—"
         }
         if isLoading && count == 0 {
@@ -317,6 +330,9 @@ struct DataSectionPill: View {
     }
 
     private var helpText: String {
+        if isShowingLastData {
+            return "\(label): the latest update failed — showing the last data received"
+        }
         if hasError {
             return "\(label): failed to load"
         }
@@ -357,17 +373,25 @@ struct ErrorBanner: View {
     }
 }
 
-// Top-of-window banner shown when the app is offline or is displaying data from
-// the on-disk cache rather than a live fetch. Styled distinctly from ErrorBanner
-// (amber / informational rather than red / error) because cached data is still
-// useful — it just may be stale.
+// Top-of-window banner shown while the data on screen isn't freshly
+// confirmed (see FreshnessBanner). Offline / couldn't-reach states are amber
+// warnings, styled distinctly from ErrorBanner (red) because saved data is
+// still useful — it just may be stale. Saved data shown while the live load
+// runs is neutral: nothing has gone wrong.
 struct OfflineBanner: View {
     let message: String
+    var isWarning = true
+    var isUpdating = false
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "wifi.slash")
-                .foregroundStyle(.orange)
+            if isUpdating {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: isWarning ? "wifi.slash" : "clock.arrow.circlepath")
+                    .foregroundStyle(isWarning ? Color.orange : Color.secondary)
+            }
             Text(message)
                 .font(.callout.weight(.medium))
                 .fixedSize(horizontal: false, vertical: true)
@@ -375,11 +399,11 @@ struct OfflineBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.12))
+        .background(isWarning ? Color.orange.opacity(0.12) : Color.primary.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+                .stroke(isWarning ? Color.orange.opacity(0.3) : Color.cardStroke, lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
     }
@@ -506,32 +530,69 @@ extension View {
     }
 }
 
+// Shared by Settings and the Help menu's Clear Offline Cache… confirmation.
+enum ClearOfflineCacheText {
+    static let explanation = "NZ Traffic deletes the traffic data it saved for offline use and its cached camera images, then reloads everything from NZTA. Use this if saved data looks wrong or keeps causing problems."
+}
+
 struct SettingsView: View {
-    @AppStorage("nzta.autoRefreshEnabled") private var autoRefreshEnabled = false
-    @AppStorage("nzta.refreshIntervalSeconds") private var refreshIntervalSeconds = 120
+    let store: TrafficStore
+    @AppStorage(AutoRefreshPolicy.enabledKey) private var autoRefreshEnabled = false
+    @AppStorage(AutoRefreshPolicy.intervalKey) private var refreshIntervalSeconds = AutoRefreshPolicy.defaultInterval
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
     @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
+    @State private var isConfirmingClear = false
+    @State private var isClearing = false
 
     var body: some View {
         Form {
-            Section("Auto-Refresh") {
+            Section {
                 Toggle("Automatically refresh data", isOn: $autoRefreshEnabled)
                 Picker("Interval", selection: $refreshIntervalSeconds) {
-                    Text("30 seconds").tag(30)
-                    Text("1 minute").tag(60)
-                    Text("2 minutes").tag(120)
-                    Text("5 minutes").tag(300)
-                    Text("10 minutes").tag(600)
+                    ForEach(AutoRefreshPolicy.intervalOptions, id: \.self) { seconds in
+                        Text(AutoRefreshPolicy.intervalLabel(seconds)).tag(seconds)
+                    }
                 }
                 .disabled(!autoRefreshEnabled)
+            } header: {
+                Text("Auto-Refresh")
+            } footer: {
+                Text("Keeps running with the window closed, so the menu bar and Dock badge stay current. Slows down while NZ Traffic is in the background with no window showing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Display") {
                 Toggle("Hide VMS signs with no active message", isOn: $hideEmptyVMS)
                 Toggle("Show resolved road events", isOn: $showResolvedEvents)
             }
+            Section("Offline Cache") {
+                LabeledContent {
+                    Button("Clear Offline Cache…") {
+                        isConfirmingClear = true
+                    }
+                    .disabled(isClearing)
+                } label: {
+                    Text("Saved traffic data and camera images")
+                    Text("Shown when NZTA can’t be reached.")
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 300)
+        .frame(width: 460, height: 420)
+        .confirmationDialog("Clear the offline cache?", isPresented: $isConfirmingClear) {
+            Button("Clear and Reload", role: .destructive) {
+                clearOfflineCache()
+            }
+        } message: {
+            Text(ClearOfflineCacheText.explanation)
+        }
+    }
+
+    private func clearOfflineCache() {
+        isClearing = true
+        Task {
+            await store.clearOfflineCache()
+            isClearing = false
+        }
     }
 }
-

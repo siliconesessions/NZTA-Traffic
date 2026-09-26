@@ -412,6 +412,17 @@ struct RoadEvent: Decodable, Identifiable, Hashable, TrafficFilterable {
         showResolved || !isResolved
     }
 
+    /// The event's end date has passed. Used to leave finished events out
+    /// when the offline cache is replayed, so old saved data can't show (or
+    /// badge) them as current. No end date, or an unreadable one, means not
+    /// ended.
+    func hasEnded(before reference: Date) -> Bool {
+        guard let endDate, let date = parseTrafficDate(endDate) else {
+            return false
+        }
+        return date < reference
+    }
+
     var hasDelays: Bool {
         impact?.range(of: "delay", options: .caseInsensitive) != nil
     }
@@ -3209,10 +3220,11 @@ func sectionRefreshDecision(fetchedCount: Int, currentCount: Int) -> SectionRefr
 
 // Plain-text diagnostics snapshot for Help → Export Diagnostics. Pure /
 // Foundation-only so it can be unit-tested; the store gathers the live inputs
-// (section counts, recent per-section errors, preferences, app version) and the
-// view layer writes the rendered text to disk via NSSavePanel. Carries no
-// personal data — only counts, error strings, and the app's own `nzta.*`
-// preference keys.
+// (section counts and status, recent per-section errors, the offline cache's
+// files, refresh and API state, preferences, app and OS version) and the view
+// layer writes the rendered text to disk via NSSavePanel. Carries no personal
+// data — only counts, statuses, error strings, file sizes/dates, and the app's
+// own `nzta.*` preference keys.
 struct DiagnosticsReport {
     struct SectionStat {
         let name: String
@@ -3220,6 +3232,16 @@ struct DiagnosticsReport {
         let error: String?
         // Unreadable feed entries the lenient decode skipped last time.
         var droppedCount = 0
+        // Where the data on screen came from ("live", "saved data (offline
+        // cache)", "last fetch failed", …) and when it was last fetched live.
+        var status: String?
+        var lastSuccess: Date?
+    }
+
+    struct CacheFile {
+        let name: String
+        let byteCount: Int
+        let savedAt: Date?
     }
 
     let appVersion: String
@@ -3229,6 +3251,15 @@ struct DiagnosticsReport {
     let isOnline: Bool
     let sections: [SectionStat]
     let preferences: [String: String]
+    // macOS version and architecture (see systemDescription()).
+    var system: String?
+    // The freshness banner's text, if one is showing.
+    var freshness: String?
+    // Auto-refresh cadence and refresh state, one line each.
+    var refresh: [String] = []
+    var cacheFiles: [CacheFile] = []
+    // Traffic API paths that fell back from rest/5 to rest/4 this session.
+    var apiFallbacks: [String] = []
 
     // Collects the app's own persisted preferences (the `nzta.*` @AppStorage
     // keys) from UserDefaults, stringified for the report.
@@ -3246,6 +3277,20 @@ struct DiagnosticsReport {
         return result
     }
 
+    /// "macOS Version 27.0 (Build 27A266a), arm64".
+    static func systemDescription(
+        operatingSystem: String = ProcessInfo.processInfo.operatingSystemVersionString
+    ) -> String {
+        #if arch(arm64)
+        let architecture = "arm64"
+        #elseif arch(x86_64)
+        let architecture = "x86_64"
+        #else
+        let architecture = "unknown architecture"
+        #endif
+        return "macOS \(operatingSystem), \(architecture)"
+    }
+
     func formattedText() -> String {
         let isoFormatter = ISO8601DateFormatter()
         var lines: [String] = []
@@ -3254,11 +3299,20 @@ struct DiagnosticsReport {
         lines.append(String(repeating: "=", count: title.count))
         lines.append("Generated:    \(isoFormatter.string(from: generatedAt))")
         lines.append("App Version:  \(appVersion) (build \(appBuild))")
+        if let system {
+            lines.append("System:       \(system)")
+        }
         lines.append("Network:      \(isOnline ? "online" : "offline")")
         if let lastUpdated {
             lines.append("Last Updated: \(isoFormatter.string(from: lastUpdated))")
         } else {
             lines.append("Last Updated: never")
+        }
+        if let freshness {
+            lines.append("Banner:       \(freshness)")
+        }
+        for line in refresh {
+            lines.append(line)
         }
         lines.append("")
         lines.append("Data Sections")
@@ -3273,6 +3327,29 @@ struct DiagnosticsReport {
                 line += " — ERROR: \(error)"
             }
             lines.append(line)
+            if let status = section.status {
+                let success = section.lastSuccess.map(isoFormatter.string(from:)) ?? "never"
+                lines.append("    \(status); last live fetch: \(success)")
+            }
+        }
+        lines.append("")
+        lines.append("Offline Cache")
+        lines.append("-------------")
+        if cacheFiles.isEmpty {
+            lines.append("(empty)")
+        } else {
+            for file in cacheFiles {
+                let saved = file.savedAt.map(isoFormatter.string(from:)) ?? "unknown date"
+                lines.append("\(file.name): \(file.byteCount) bytes, saved \(saved)")
+            }
+        }
+        lines.append("")
+        lines.append("API")
+        lines.append("---")
+        if apiFallbacks.isEmpty {
+            lines.append("Traffic API: rest/5")
+        } else {
+            lines.append("Traffic API: rest/5, falling back to rest/4 for \(apiFallbacks.joined(separator: ", "))")
         }
         lines.append("")
         lines.append("Preferences")
