@@ -8,6 +8,7 @@ func runModelTests(_ t: TestRunner) {
     testWKTParsing(t)
     testVMSMessage(t)
     testTrafficDate(t)
+    testTrafficDateParsing(t)
     testCameraMatching(t)
     testEventFields(t)
     testRegions(t)
@@ -49,14 +50,20 @@ private func testDiagnosticsReport(_ t: TestRunner) {
     )
     t.check(text.contains("nzta.autoRefreshEnabled = true"), "report lists app preferences")
 
-    let defaults = UserDefaults(suiteName: "nzta.diagnostics.test")!
-    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
-    defaults.set(true, forKey: "nzta.autoRefreshEnabled")
-    defaults.set("ignored", forKey: "com.apple.unrelated.key")
-    let prefs = DiagnosticsReport.collectPreferences(from: defaults)
+    // An in-memory snapshot shaped like `UserDefaults.dictionaryRepresentation()`
+    // (Bools come back as NSNumber) — the tests never touch a real defaults
+    // domain on disk.
+    let snapshot: [String: Any] = [
+        "nzta.autoRefreshEnabled": NSNumber(value: true),
+        "nzta.refreshIntervalSeconds": NSNumber(value: 120),
+        "com.apple.unrelated.key": "ignored",
+        "NSGlobalDomainKey": "ignored"
+    ]
+    let prefs = DiagnosticsReport.collectPreferences(from: snapshot)
     t.equal(prefs["nzta.autoRefreshEnabled"], "1", "collects nzta.* preferences")
+    t.equal(prefs["nzta.refreshIntervalSeconds"], "120", "stringifies numeric preferences")
     t.check(prefs["com.apple.unrelated.key"] == nil, "ignores non-nzta preference keys")
-    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
+    t.equal(prefs.count, 2, "only nzta.* keys are collected")
 }
 
 // The offline cache stores each cacheable section's raw API response bytes and
@@ -431,6 +438,38 @@ private func testTrafficDate(_ t: TestRunner) {
     t.check(display?.contains("15 Jun") == true, "ISO date formats to NZ day/month (got \(display ?? "nil"))")
     t.equal(formatTrafficDate(nil), nil, "nil -> nil")
     t.equal(formatTrafficDate("garbage"), "garbage", "unparseable string returned as-is")
+}
+
+// The three timestamp shapes the live feeds use (fractional ISO, whole-second
+// ISO, and NZ-local "dd/MM/yyyy HH:mm") must parse to the exact instant. Pins
+// the Swift 6 move from ISO8601DateFormatter to Date.ISO8601FormatStyle.
+private func testTrafficDateParsing(_ t: TestRunner) {
+    t.group("parseTrafficDate")
+    func epoch(_ raw: String) -> Double? {
+        parseTrafficDate(raw)?.timeIntervalSince1970
+    }
+    t.nearlyEqual(epoch("2026-06-15T00:00:00+12:00"), 1_781_438_400, "whole-second ISO with NZST offset")
+    t.nearlyEqual(epoch("2026-09-26T17:29:14.757+12:00"), 1_790_400_554.757, "fractional-second ISO keeps milliseconds")
+    t.nearlyEqual(epoch("2026-10-02T17:30:00+13:00"), 1_790_915_400, "whole-second ISO with NZDT offset")
+    t.nearlyEqual(epoch("2026-06-15T00:00:00Z"), 1_781_481_600, "UTC 'Z' designator")
+    t.nearlyEqual(epoch("02/10/2026 17:30"), 1_790_915_400, "NZ-local dd/MM/yyyy HH:mm is read as Pacific/Auckland (NZDT)")
+    t.equal(epoch("2026-06-15"), nil, "date-only string is rejected")
+    t.equal(epoch("2026-06-15T00:00:00"), nil, "ISO without an offset is rejected")
+    t.equal(epoch("garbage"), nil, "garbage is rejected")
+
+    t.group("formatRelativeTrafficDate")
+    let base = Date(timeIntervalSince1970: 1_781_438_400)
+    t.equal(
+        formatRelativeTrafficDate("2026-06-15T00:00:00+12:00", relativeTo: base.addingTimeInterval(90)),
+        "1 minute ago",
+        "past instant uses full units (and RelativeDateTimeFormatter rounding)"
+    )
+    t.equal(
+        formatRelativeTrafficDate("2026-06-15T00:00:00+12:00", relativeTo: base.addingTimeInterval(-3 * 3600)),
+        "in 3 hours",
+        "future instant reads as 'in …'"
+    )
+    t.equal(formatRelativeTrafficDate("garbage"), nil, "unparseable -> nil so callers can fall back")
 }
 
 // Surfaced RoadEvent fields the app already downloads: planned flag,

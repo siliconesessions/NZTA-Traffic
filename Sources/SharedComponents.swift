@@ -45,10 +45,10 @@ struct StatCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -312,10 +312,10 @@ struct ErrorBanner: View {
         .padding(14)
         .background(Color.red.opacity(0.09))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.red.opacity(0.25), lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -339,10 +339,10 @@ struct OfflineBanner: View {
         .padding(.vertical, 10)
         .background(Color.orange.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-        )
+        }
         .accessibilityElement(children: .combine)
     }
 }

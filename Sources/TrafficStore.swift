@@ -56,7 +56,7 @@ final class TrafficStore {
     private(set) var cacheTimestamp: Date?
 
     @ObservationIgnored private let service: TrafficAPIService
-    @ObservationIgnored private let cache = OfflineCache()
+    @ObservationIgnored private let cache: OfflineCache
     // Sections currently served from the on-disk cache because their live fetch
     // failed (or has not completed yet). Drives `isServingCachedData`.
     @ObservationIgnored private var servedSections: Set<DataSection> = []
@@ -78,8 +78,12 @@ final class TrafficStore {
     @ObservationIgnored private var journeyCache: [FilterKey: [TrafficJourney]] = [:]
     @ObservationIgnored private var timCache: [FilterKey: [TIMSign]] = [:]
 
-    init(service: TrafficAPIService = TrafficAPIService()) {
+    // Both dependencies are injectable so SwiftUI previews (and, later, tests)
+    // can run against a stubbed URLSession and a disabled or scratch cache
+    // instead of the live API and the user's real Application Support folder.
+    init(service: TrafficAPIService = TrafficAPIService(), cache: OfflineCache = OfflineCache()) {
         self.service = service
+        self.cache = cache
         startNetworkMonitoring()
     }
 
@@ -559,9 +563,11 @@ final class TrafficStore {
 // is actor-isolated to keep it off the main actor, and every operation is
 // best-effort: failures silently no-op rather than disrupting live data.
 actor OfflineCache {
-    private let directory: URL
+    // nil disables the cache: every operation is a no-op (used by previews).
+    private let directory: URL?
 
-    init() {
+    /// Application Support/NZTATraffic/OfflineCache — the app's real cache.
+    static var defaultDirectory: URL {
         let fileManager = FileManager.default
         let base = (try? fileManager.url(
             for: .applicationSupportDirectory,
@@ -569,18 +575,30 @@ actor OfflineCache {
             appropriateFor: nil,
             create: true
         )) ?? fileManager.temporaryDirectory
-        directory = base
+        return base
             .appendingPathComponent("NZTATraffic", isDirectory: true)
             .appendingPathComponent("OfflineCache", isDirectory: true)
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    init(directory: URL? = OfflineCache.defaultDirectory) {
+        self.directory = directory
+        if let directory {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
     }
 
     func write(_ data: Data, section: DataSection) {
-        try? data.write(to: fileURL(for: section), options: .atomic)
+        guard let url = fileURL(for: section) else {
+            return
+        }
+        try? data.write(to: url, options: .atomic)
     }
 
     func read(section: DataSection) -> Data? {
-        try? Data(contentsOf: fileURL(for: section))
+        guard let url = fileURL(for: section) else {
+            return nil
+        }
+        return try? Data(contentsOf: url)
     }
 
     // Most recent on-disk modification time among the given cached sections —
@@ -589,7 +607,8 @@ actor OfflineCache {
         var newest: Date?
         for section in sections {
             guard
-                let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(for: section).path),
+                let url = fileURL(for: section),
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
                 let modified = attributes[.modificationDate] as? Date
             else {
                 continue
@@ -601,7 +620,7 @@ actor OfflineCache {
         return newest
     }
 
-    private func fileURL(for section: DataSection) -> URL {
-        directory.appendingPathComponent("\(section.rawValue).json", isDirectory: false)
+    private func fileURL(for section: DataSection) -> URL? {
+        directory?.appendingPathComponent("\(section.rawValue).json", isDirectory: false)
     }
 }

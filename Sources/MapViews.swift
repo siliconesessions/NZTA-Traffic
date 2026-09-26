@@ -328,10 +328,10 @@ struct TrafficMapTabView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(
+            .overlay {
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-            )
+            }
             .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(state.message)
@@ -832,10 +832,10 @@ private struct MapLegend: View {
         }
         .padding(8)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        )
+        }
         .accessibilityHidden(true)
     }
 

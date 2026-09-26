@@ -34,62 +34,65 @@ struct TrafficAPIService {
     // The four offline-cacheable JSON sections surface their raw response bytes
     // alongside the decoded value so the store can persist the exact JSON to disk
     // (see TrafficStore.OfflineCache). The same bytes are later re-decoded via the
-    // `decodeCached…` helpers through these identical payload wrappers.
-    func fetchCameras() async throws -> (value: [TrafficCamera], data: Data) {
+    // `decodeCached…` helpers through these identical payload wrappers. Every
+    // async entry point in this type is `@concurrent` so decoding never runs on
+    // the caller's (main) actor — see the note above `fetchCamerasResult()`.
+    @concurrent nonisolated func fetchCameras() async throws -> (value: [TrafficCamera], data: Data) {
         let data = try await requestData(baseURL + "/cameras/all", accept: "application/json")
         return (try decodePayload(CamerasPayload.self, from: data).response.camera, data)
     }
 
-    func fetchRoadEvents() async throws -> (value: [RoadEvent], data: Data) {
+    @concurrent nonisolated func fetchRoadEvents() async throws -> (value: [RoadEvent], data: Data) {
         let data = try await requestData(baseURL + "/events/all/10", accept: "application/json")
         return (try decodePayload(RoadEventsPayload.self, from: data).response.roadevent, data)
     }
 
-    func fetchVMSSigns() async throws -> (value: [VMSSign], data: Data) {
+    @concurrent nonisolated func fetchVMSSigns() async throws -> (value: [VMSSign], data: Data) {
         let data = try await requestData(baseURL + "/signs/vms/all", accept: "application/json")
         return (try decodePayload(VMSPayload.self, from: data).response.vms, data)
     }
 
-    func fetchJourneys() async throws -> (value: [TrafficJourney], data: Data) {
+    @concurrent nonisolated func fetchJourneys() async throws -> (value: [TrafficJourney], data: Data) {
         let data = try await requestData(baseURL + "/journeys/all/10", accept: "application/json")
         return (try decodePayload(JourneysPayload.self, from: data).response.journey, data)
     }
 
-    // Re-decode persisted section bytes for offline replay, off the main actor.
+    // Re-decode persisted section bytes for offline replay, off the main actor
+    // (`@concurrent`, see the note on the `…Result()` entry points below).
     // Returns nil when the cached JSON no longer parses (e.g. the API shape
     // changed since it was written) so the caller can quietly skip that section.
-    nonisolated func decodeCachedCameras(_ data: Data) async -> [TrafficCamera]? {
+    @concurrent nonisolated func decodeCachedCameras(_ data: Data) async -> [TrafficCamera]? {
         try? decoder.decode(CamerasPayload.self, from: data).response.camera
     }
 
-    nonisolated func decodeCachedRoadEvents(_ data: Data) async -> [RoadEvent]? {
+    @concurrent nonisolated func decodeCachedRoadEvents(_ data: Data) async -> [RoadEvent]? {
         try? decoder.decode(RoadEventsPayload.self, from: data).response.roadevent
     }
 
-    nonisolated func decodeCachedVMSSigns(_ data: Data) async -> [VMSSign]? {
+    @concurrent nonisolated func decodeCachedVMSSigns(_ data: Data) async -> [VMSSign]? {
         try? decoder.decode(VMSPayload.self, from: data).response.vms
     }
 
-    nonisolated func decodeCachedJourneys(_ data: Data) async -> [TrafficJourney]? {
+    @concurrent nonisolated func decodeCachedJourneys(_ data: Data) async -> [TrafficJourney]? {
         try? decoder.decode(JourneysPayload.self, from: data).response.journey
     }
 
-    func fetchTIMSigns() async throws -> [TIMSign] {
+    @concurrent nonisolated func fetchTIMSigns() async throws -> [TIMSign] {
         let payload: TIMSignsPayload = try await request("/signs/tim/all")
         return payload.response.tim
     }
 
-    func fetchRegions() async throws -> [Region] {
+    @concurrent nonisolated func fetchRegions() async throws -> [Region] {
         let payload: RegionsPayload = try await request("/regions/all/10")
         return payload.response.region
     }
 
-    func fetchEVChargers() async throws -> [EVCharger] {
+    @concurrent nonisolated func fetchEVChargers() async throws -> [EVCharger] {
         let payload: EVChargersPayload = try await requestAbsolute(evChargersURL)
         return payload.features
     }
 
-    func fetchCongestion() async throws -> [CongestionSegment] {
+    @concurrent nonisolated func fetchCongestion() async throws -> [CongestionSegment] {
         let data = try await requestData(congestionURL, accept: "application/xml")
         guard let segments = CongestionXMLParser.parse(data) else {
             let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
@@ -98,47 +101,49 @@ struct TrafficAPIService {
         return segments
     }
 
-    // These entry points are `nonisolated` so that, when called from the
-    // @MainActor `TrafficStore`, the network fetch and (notably) the JSON
-    // decode of large payloads run on the cooperative thread pool rather than
-    // blocking the main thread.
-    nonisolated func fetchCamerasResult() async -> Result<(value: [TrafficCamera], data: Data), Error> {
+    // These entry points are `@concurrent` so that, when called from the
+    // @MainActor `TrafficStore`, the network fetch and (notably) the decode of
+    // multi-megabyte payloads always run on the cooperative thread pool rather
+    // than blocking the main thread. Plain `nonisolated async` is not enough:
+    // under NonisolatedNonsendingByDefault (part of Xcode's "Approachable
+    // Concurrency") it would run on the caller's actor — i.e. the main actor.
+    @concurrent nonisolated func fetchCamerasResult() async -> Result<(value: [TrafficCamera], data: Data), Error> {
         await result { try await fetchCameras() }
     }
 
-    nonisolated func fetchRoadEventsResult() async -> Result<(value: [RoadEvent], data: Data), Error> {
+    @concurrent nonisolated func fetchRoadEventsResult() async -> Result<(value: [RoadEvent], data: Data), Error> {
         await result { try await fetchRoadEvents() }
     }
 
-    nonisolated func fetchVMSSignsResult() async -> Result<(value: [VMSSign], data: Data), Error> {
+    @concurrent nonisolated func fetchVMSSignsResult() async -> Result<(value: [VMSSign], data: Data), Error> {
         await result { try await fetchVMSSigns() }
     }
 
-    nonisolated func fetchJourneysResult() async -> Result<(value: [TrafficJourney], data: Data), Error> {
+    @concurrent nonisolated func fetchJourneysResult() async -> Result<(value: [TrafficJourney], data: Data), Error> {
         await result { try await fetchJourneys() }
     }
 
-    nonisolated func fetchTIMSignsResult() async -> Result<[TIMSign], Error> {
+    @concurrent nonisolated func fetchTIMSignsResult() async -> Result<[TIMSign], Error> {
         await result { try await fetchTIMSigns() }
     }
 
-    nonisolated func fetchRegionsResult() async -> Result<[Region], Error> {
+    @concurrent nonisolated func fetchRegionsResult() async -> Result<[Region], Error> {
         await result { try await fetchRegions() }
     }
 
-    nonisolated func fetchEVChargersResult() async -> Result<[EVCharger], Error> {
+    @concurrent nonisolated func fetchEVChargersResult() async -> Result<[EVCharger], Error> {
         await result { try await fetchEVChargers() }
     }
 
-    nonisolated func fetchCongestionResult() async -> Result<[CongestionSegment], Error> {
+    @concurrent nonisolated func fetchCongestionResult() async -> Result<[CongestionSegment], Error> {
         await result { try await fetchCongestion() }
     }
 
-    nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
+    @concurrent nonisolated private func request<T: Decodable>(_ path: String) async throws -> T {
         try await requestAbsolute(baseURL + path)
     }
 
-    nonisolated private func requestAbsolute<T: Decodable>(_ urlString: String) async throws -> T {
+    @concurrent nonisolated private func requestAbsolute<T: Decodable>(_ urlString: String) async throws -> T {
         guard let url = URL(string: urlString) else {
             throw TrafficAPIError.invalidURL(urlString)
         }
@@ -165,7 +170,7 @@ struct TrafficAPIService {
     // Raw-Data variant of requestAbsolute for non-JSON endpoints (the XML
     // congestion feed). Shares the same retry/backoff and status-code handling;
     // the caller is responsible for parsing the returned bytes.
-    nonisolated private func requestData(_ urlString: String, accept: String) async throws -> Data {
+    @concurrent nonisolated private func requestData(_ urlString: String, accept: String) async throws -> Data {
         guard let url = URL(string: urlString) else {
             throw TrafficAPIError.invalidURL(urlString)
         }
@@ -186,7 +191,7 @@ struct TrafficAPIService {
         throw TrafficAPIError.transport("Exhausted \(maxAttempts) attempts")
     }
 
-    nonisolated private func performDataRequest(_ urlRequest: URLRequest) async throws -> Data {
+    @concurrent nonisolated private func performDataRequest(_ urlRequest: URLRequest) async throws -> Data {
         let data: Data
         let response: URLResponse
 
@@ -211,7 +216,7 @@ struct TrafficAPIService {
         return data
     }
 
-    nonisolated private func performRequest<T: Decodable>(_ urlRequest: URLRequest) async throws -> T {
+    @concurrent nonisolated private func performRequest<T: Decodable>(_ urlRequest: URLRequest) async throws -> T {
         let data: Data
         let response: URLResponse
 

@@ -12,7 +12,7 @@ dist/NZTA-Traffic-1.0-macOS-universal.dmg
 
 To install, open the DMG and drag `NZTA Traffic.app` to the `Applications` shortcut in the installer window.
 
-This universal build supports Apple Silicon and Intel Macs and requires macOS 15.0 or later. The app is ad-hoc signed but not notarized with an Apple Developer ID, so macOS Gatekeeper may block the first launch. If that happens, Control-click `NZTA Traffic.app`, choose `Open`, and confirm that you want to open it.
+Current builds are Apple silicon (`arm64`) only and require macOS 27.0 or later. (The older 1.x–2.1.1 DMGs in `dist/` are universal builds for macOS 15.) The app is ad-hoc signed but not notarized with an Apple Developer ID, so macOS Gatekeeper may block the first launch. If that happens, Control-click `NZTA Traffic.app`, choose `Open`, and confirm that you want to open it.
 
 ## Build
 
@@ -34,21 +34,29 @@ The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.p
 ./build_app.sh
 ```
 
-The script compiles the Swift sources with the active Command Line Tools SDK, writes module caches under `/tmp`, creates `build/NZTA Traffic.app`, and ad-hoc signs the bundle when `codesign` is available. By default it creates a universal `arm64` + `x86_64` app.
+The script compiles the Swift sources (Swift 6 language mode, `-O` whole-module, with debug info) with the active SDK, writes module caches under `$TMPDIR`, creates `build/NZTA Traffic.app` plus `build/NZTA Traffic.app.dSYM`, and ad-hoc signs the bundle with the hardened runtime when `codesign` is available. By default it builds for Apple silicon (`arm64`) only, matching the Xcode project.
 
 The app icon is stored as `Resources/NZTATraffic.icns` with a 1024px PNG source at `Resources/AppIcon.png`.
 
-To override the deployment target:
+To override the deployment target (default `27.0`; the bundled `LSMinimumSystemVersion` follows it):
 
 ```sh
-MACOSX_DEPLOYMENT_TARGET=15.0 ./build_app.sh
+MACOSX_DEPLOYMENT_TARGET=27.0 ./build_app.sh
 ```
 
-To build for only the current Mac architecture:
+To build a universal binary instead:
 
 ```sh
-ARCHS="$(uname -m)" ./build_app.sh
+ARCHS="arm64 x86_64" ./build_app.sh
 ```
+
+## Tests
+
+```sh
+./run_tests.sh
+```
+
+Compiles `Sources/Models.swift` with the files in `Tests/` into a standalone executable (no XCTest) and runs it for the host architecture.
 
 ## Package DMG
 
@@ -56,7 +64,7 @@ ARCHS="$(uname -m)" ./build_app.sh
 ./package_dmg.sh
 ```
 
-The packaging script rebuilds the app, stages it with an `Applications` shortcut, verifies the staged app signature, and creates a compressed read-only DMG under `dist/`. The filename includes the app version and architecture label from the built executable.
+The packaging script rebuilds the app, stages it with an `Applications` shortcut, verifies the staged app signature (including the hardened runtime), and creates a compressed read-only DMG under `dist/`, plus a zipped dSYM beside it. The filename includes the app version (from `Resources/Info.plist`) and the architecture label from the built executable, e.g. `NZTA-Traffic-3.0.0-macOS-arm64.dmg`.
 
 ## Run
 

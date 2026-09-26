@@ -52,10 +52,10 @@ struct JourneyCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        }
     }
 
     // The journey's bottleneck. Only highlighted when it's genuinely slow or
@@ -292,10 +292,10 @@ struct CameraCard: View {
             }
             .background(.background)
             .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-            .overlay(
+            .overlay {
                 RoundedRectangle(cornerRadius: Radii.card)
                     .stroke(Color.cardStroke, lineWidth: 1)
-            )
+            }
         }
         .buttonStyle(.plain)
     }
@@ -451,10 +451,10 @@ struct RoadEventCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        }
     }
 
     private var impactColor: Color {
@@ -603,10 +603,10 @@ struct EVChargerCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -653,10 +653,10 @@ struct TIMCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        }
     }
 }
 
@@ -716,10 +716,10 @@ struct VMSCard: View {
         .padding(18)
         .background(Color.vmsCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.vmsCardBorder, lineWidth: 1)
-        )
+        }
     }
 }
 

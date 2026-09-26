@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import Synchronization
 
 struct Region: Decodable, Hashable {
     let id: String?
@@ -759,17 +760,13 @@ func formatVMSMessage(_ message: String?) -> String {
     return cleanText(formatted) ?? "No message"
 }
 
-private let isoFractionalDateFormatter: ISO8601DateFormatter = {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter
-}()
-
-private let isoDateFormatter: ISO8601DateFormatter = {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime]
-    return formatter
-}()
+// ISO 8601 parse strategies for the API's `2026-09-26T17:29:14.757+12:00`
+// (fractional) and `…T17:29:00+12:00` (whole-second) timestamps. These are
+// Sendable value types, so unlike ISO8601DateFormatter they are safe as
+// globals under Swift 6 strict concurrency. Parsing matches the previous
+// ISO8601DateFormatter chain on every timestamp in the live feeds.
+private let isoFractionalDateStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+private let isoDateStyle = Date.ISO8601FormatStyle()
 
 // NZTA timestamps are New Zealand local time. Pin both the parse and the
 // display formatter to Pacific/Auckland so the app shows correct NZ times
@@ -792,9 +789,10 @@ private let nzDisplayDateFormatter: DateFormatter = {
     return formatter
 }()
 
-private func parseTrafficDate(_ rawValue: String) -> Date? {
-    isoFractionalDateFormatter.date(from: rawValue)
-        ?? isoDateFormatter.date(from: rawValue)
+// Internal (not private) so the test runner can pin the exact instants.
+func parseTrafficDate(_ rawValue: String) -> Date? {
+    (try? isoFractionalDateStyle.parse(rawValue))
+        ?? (try? isoDateStyle.parse(rawValue))
         ?? nzInputDateFormatter.date(from: rawValue)
 }
 
@@ -810,12 +808,18 @@ func formatTrafficDate(_ rawValue: String?) -> String? {
     return nzDisplayDateFormatter.string(from: date)
 }
 
-private let relativeTrafficDateFormatter: RelativeDateTimeFormatter = {
+// RelativeDateTimeFormatter isn't Sendable, so the shared instance lives behind
+// a Mutex rather than as a bare global. (Date.AnchoredRelativeFormatStyle is
+// Sendable but rounds differently — "2 minutes ago" for 90 s where this says
+// "1 minute ago" — so it isn't a drop-in replacement.)
+private let relativeTrafficDateFormatter = Mutex<RelativeDateTimeFormatter>(makeRelativeTrafficDateFormatter())
+
+private func makeRelativeTrafficDateFormatter() -> RelativeDateTimeFormatter {
     let formatter = RelativeDateTimeFormatter()
     formatter.locale = Locale(identifier: "en_NZ")
     formatter.unitsStyle = .full
     return formatter
-}()
+}
 
 // Relative phrasing ("2 days ago", "in 3 hours") for timestamps where a
 // relative reading is friendlier than the absolute one. Returns nil when the
@@ -826,7 +830,9 @@ func formatRelativeTrafficDate(_ rawValue: String?, relativeTo reference: Date =
         return nil
     }
 
-    return relativeTrafficDateFormatter.localizedString(for: date, relativeTo: reference)
+    return relativeTrafficDateFormatter.withLock { formatter in
+        formatter.localizedString(for: date, relativeTo: reference)
+    }
 }
 
 func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
@@ -2207,8 +2213,14 @@ struct DiagnosticsReport {
     // Collects the app's own persisted preferences (the `nzta.*` @AppStorage
     // keys) from UserDefaults, stringified for the report.
     static func collectPreferences(from defaults: UserDefaults = .standard) -> [String: String] {
+        collectPreferences(from: defaults.dictionaryRepresentation())
+    }
+
+    // Pure filter over a defaults snapshot — the seam the tests use, so they
+    // never read or write a real (on-disk) UserDefaults domain.
+    static func collectPreferences(from values: [String: Any]) -> [String: String] {
         var result: [String: String] = [:]
-        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("nzta.") {
+        for (key, value) in values where key.hasPrefix("nzta.") {
             result[key] = String(describing: value)
         }
         return result

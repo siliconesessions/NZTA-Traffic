@@ -8,8 +8,11 @@ final class TestRunner {
     private var failed = 0
     private var currentGroup = ""
 
+    // Each group name goes to stderr as it starts, so if a test traps (a
+    // crash rather than a failed check) the last line printed locates it.
     func group(_ name: String) {
         currentGroup = name
+        FileHandle.standardError.write(Data("▸ \(name)\n".utf8))
     }
 
     func check(_ condition: Bool, _ message: String) {

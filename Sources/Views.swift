@@ -88,8 +88,8 @@ struct ContentView: View {
         }
         .frame(minWidth: 980, minHeight: 680)
         .background(Color.primary.opacity(0.025))
-        .background(tabShortcuts)
-        .background(searchFocusShortcut)
+        .background { tabShortcuts }
+        .background { searchFocusShortcut }
         .task {
             // Show any cached data instantly, then fetch live and replace it.
             await store.primeFromCache()
@@ -789,9 +789,10 @@ struct ContentView: View {
 }
 
 
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
-            .previewDisplayName("NZTA Traffic")
-    }
+#if DEBUG
+// Runs against `TrafficStore.preview()` (PreviewSupport.swift): canned sample
+// data served in-process, no live network, and no offline-cache writes.
+#Preview("Main window") {
+    ContentView(store: .preview())
 }
+#endif

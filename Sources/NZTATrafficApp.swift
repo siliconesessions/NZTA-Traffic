@@ -18,9 +18,9 @@ struct NZTATrafficApp: App {
             diskCapacity: 200_000_000,
             directory: nil
         )
-        // TrafficStore() is @MainActor-isolated; App.init runs on the main thread
-        // at launch, so assume that isolation to build the store for @State.
-        _store = State(initialValue: MainActor.assumeIsolated { TrafficStore() })
+        // `App` is @MainActor-isolated, so its init can build the
+        // main-actor-isolated TrafficStore directly.
+        _store = State(initialValue: TrafficStore())
     }
 
     var body: some Scene {
@@ -160,7 +160,7 @@ struct MenuBarContent: View {
 
     // Bring the app and its existing main window forward.
     private func activateMainWindow() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApp.activate()
         for window in NSApplication.shared.windows where window.canBecomeMain {
             window.makeKeyAndOrderFront(nil)
             return
