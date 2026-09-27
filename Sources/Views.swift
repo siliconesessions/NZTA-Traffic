@@ -367,7 +367,8 @@ extension ContentView {
                 hasActiveFilters: hasActiveFilters(.flow),
                 onClearFilters: clearAllFilters,
                 onShowAll: showAllJourneys,
-                onRetry: { Task { await store.reload(.journeys) } }
+                onRetry: { Task { await store.reload(.journeys) } },
+                motorways: motorwayGroups()
             )
         }
     }
@@ -859,6 +860,13 @@ extension ContentView {
 
     private func scopedEVChargers() -> [EVCharger] {
         store.filteredEVChargers(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    }
+
+    // Auckland congestion as text for Travel Times, under the shared
+    // filters, in the feed's travel order (see congestionListGroups).
+    private func motorwayGroups() -> [CongestionListGroup] {
+        let shown = Set(scopedCongestion().map(\.id))
+        return congestionListGroups(store.congestion) { shown.contains($0.id) }
     }
 
     private func scopedCongestion() -> [CongestionSegment] {

@@ -129,7 +129,8 @@ struct AppHelpView: View {
                         BulletText("Resolved events stay in the NZTA feed for about a day. They are hidden unless you turn on Resolved in the Road Events filter bar or in Settings.")
                         BulletText("The Dock badge and the menu bar count active road closures only — not upcoming or resolved ones. A “?” after the Dock count means it comes from saved data rather than the latest fetch.")
                         BulletText("Event cards can include location, impact, comments, alternative routes, restrictions, dates, source, and status metadata.")
-                        BulletText("Map event pins use red for active closures, orange for delays, yellow for caution, purple for upcoming events, and gray for other impacts or resolved events.")
+                        BulletText("Map event pins use red for active closures, orange for delays, yellow for caution, purple for upcoming events, and gray for other impacts or resolved events, each with its own glyph.")
+                        BulletText("With VoiceOver, the Closures and Delays rotors jump between the closures and delays in force now.")
                         BulletText("Some map positions are approximate because the source feed can provide line geometry rather than a single point.")
                     }
                 }
@@ -148,8 +149,10 @@ struct AppHelpView: View {
                         BulletText("Use the map layer control to switch between Cameras, Road Events, VMS Signs, traffic Flow, travel time (TIM) signs, EV chargers and Auckland Congestion (Congestion). The layer's own filters sit in the row underneath.")
                         BulletText("The shared Region, Highway, and Search filters apply to every map layer.")
                         BulletText("Flow colours each journey leg by its own traffic, and the flow chips filter leg by leg. The two directions of a road are drawn side by side, and slower traffic is always drawn on top.")
-                        BulletText("Grouped pins show how many items they hold, ringed in the colour of the most notable one — an events group is red only when it contains a closure. Click a group to zoom in.")
+                        BulletText("Every pin has a glyph as well as a colour: closures, delays, caution, upcoming and resolved events, and online, offline and maintenance cameras each have their own. With Differentiate Without Colour on, Flow and Congestion lines are also drawn wider and more solid the worse the traffic.")
+                        BulletText("Pins that would overlap are grouped at every zoom. A group shows how many items it holds, ringed in the colour (and marked with the glyph) of the most notable one — an events group is red only when it contains a closure. Click a group to zoom in; items at the same spot are listed to choose from instead. Control-click a group to list its items at any zoom.")
                         BulletText("Gray travel time sign pins are blank right now; Hide blank boards leaves them off the map.")
+                        BulletText("The Auckland Congestion layer is also listed as text, motorway by motorway, under Auckland Motorways at the top of Travel Times.")
                         BulletText("Mapped shows the number of filtered items with usable coordinates.")
                         BulletText("Off-map shows filtered items that cannot be placed on the map.")
                         BulletText("Reset Map returns the map to the initial New Zealand view.")

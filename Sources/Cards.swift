@@ -21,6 +21,8 @@ struct JourneyCard: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 10)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
 
             slowestLegCallout
 
@@ -65,6 +67,7 @@ struct JourneyCard: View {
                 Image(systemName: "tortoise.fill")
                     .font(.caption2)
                     .foregroundStyle(leg.flowKind.color)
+                    .accessibilityHidden(true)
                 Text("Slowest leg")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -81,6 +84,7 @@ struct JourneyCard: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
+            .accessibilityElement(children: .combine)
         }
     }
 }
@@ -131,10 +135,12 @@ struct JourneyLegRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // The flow is also in the detail line as text, so the dot's
+            // colour isn't the only cue; VoiceOver hears it once, there.
             Circle()
                 .fill(leg.flowKind.color)
                 .frame(width: 10, height: 10)
-                .accessibilityLabel("Traffic flow: \(leg.flowKind.label)")
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(leg.name ?? "Leg")
@@ -178,6 +184,9 @@ struct JourneyLegRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        // One VoiceOver stop per leg: name, flow and length, then speed and
+        // time.
+        .accessibilityElement(children: .combine)
     }
 
     // Stands in for the leg's time when NZTA's figures are implausible: the
@@ -287,8 +296,8 @@ struct CameraCard: View {
                         if let region = camera.regionName {
                             Badge(text: region, tint: .badgeNeutral)
                         }
-                        if !camera.isOnline {
-                            Badge(text: camera.underMaintenance ? "Maintenance" : "Offline", tint: .red)
+                        if camera.statusKind != .online {
+                            Badge(text: camera.statusKind.label, tint: camera.statusKind.color)
                         }
                     }
                 }
@@ -299,6 +308,18 @@ struct CameraCard: View {
             .overlay { CardBorder() }
         }
         .buttonStyle(.plain)
+        // One VoiceOver stop: the camera's name, then its status and where
+        // it is.
+        .accessibilityLabel(camera.displayName)
+        .accessibilityValue(accessibilityDetails)
+        .accessibilityHint("Opens a larger view")
+    }
+
+    private var accessibilityDetails: String {
+        joinNonEmpty(
+            [camera.statusKind.label, camera.description, camera.routeLine, camera.regionName],
+            separator: ". "
+        ) ?? ""
     }
 }
 
@@ -590,6 +611,37 @@ struct RoadEventCard: View {
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay { CardBorder() }
+        // One VoiceOver stop per event instead of a dozen fragments: what
+        // and where in the label, the rest in the value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityValue(accessibilityDetails)
+    }
+
+    // "Road Closed, Upcoming. Slip. Northbound. Kaikōura" — impact and
+    // lifecycle first, since that is what the card's colour says.
+    private var accessibilitySummary: String {
+        joinNonEmpty(
+            [
+                joinNonEmpty([event.impact, event.lifecycleLabel], separator: ", "),
+                event.displayTitle,
+                event.directionText,
+                event.locationArea
+            ],
+            separator: ". "
+        ) ?? event.displayTitle
+    }
+
+    private var accessibilityDetails: String {
+        var parts: [String?] = [
+            event.isPlanned ? "Planned" : "Incident",
+            event.nearestLandmark.map { "Near \($0)" },
+            event.eventComments,
+            event.alternativeRouteText.map { "Alternative route: \($0)" },
+            event.restrictions.map { "Restrictions: \($0)" }
+        ]
+        parts += EventMetaGrid.items(for: event).map(\.text)
+        return joinNonEmpty(parts, separator: ". ") ?? ""
     }
 
     // "Road Closed", or "Upcoming · Road Closed" / "Resolved · Road Closed"
@@ -623,56 +675,68 @@ struct RoadEventCard: View {
 struct EventMetaGrid: View {
     let event: RoadEvent
 
+    struct Item: Hashable {
+        let text: String
+        let systemImage: String
+    }
+
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
-            if let eventType = event.eventType {
-                SmallMeta(text: eventType, systemImage: "tag")
+            ForEach(Self.items(for: event), id: \.self) { item in
+                SmallMeta(text: item.text, systemImage: item.systemImage)
             }
-            if let started = startedText {
-                SmallMeta(text: started, systemImage: "clock")
-            }
-            if let updated = updatedText {
-                SmallMeta(text: updated, systemImage: "arrow.clockwise")
-            }
-            if let ends = endsText {
-                SmallMeta(text: ends, systemImage: "calendar")
-            }
-            if let island = event.eventIsland {
-                SmallMeta(text: island, systemImage: "map")
-            }
-            if let source = event.informationSource {
-                SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
-            }
-            // Upcoming/Resolved already lead the impact badge; only a
-            // current event's status (Active, or an unrecognised raw value)
-            // is shown here.
-            if event.isActive, let status = event.statusKind.label {
-                SmallMeta(
+        }
+    }
+
+    // The type, dates, island, source and — for a current event — its raw
+    // status. Shared with the card's VoiceOver value.
+    static func items(for event: RoadEvent) -> [Item] {
+        var items: [Item] = []
+        if let eventType = event.eventType {
+            items.append(Item(text: eventType, systemImage: "tag"))
+        }
+        if let started = startedText(event) {
+            items.append(Item(text: started, systemImage: "clock"))
+        }
+        if let updated = formatRelativeTrafficDate(event.eventModified).map({ "Updated \($0)" }) {
+            items.append(Item(text: updated, systemImage: "arrow.clockwise"))
+        }
+        if let ends = endsText(event) {
+            items.append(Item(text: ends, systemImage: "calendar"))
+        }
+        if let island = event.eventIsland {
+            items.append(Item(text: island, systemImage: "map"))
+        }
+        if let source = event.informationSource {
+            items.append(Item(text: "Source: \(source)", systemImage: "info.circle"))
+        }
+        // Upcoming/Resolved already lead the impact badge; only a current
+        // event's status (Active, or an unrecognised raw value) is shown here.
+        if event.isActive, let status = event.statusKind.label {
+            items.append(
+                Item(
                     text: status,
                     systemImage: event.statusKind == .active ? "dot.radiowaves.left.and.right" : "questionmark.circle"
                 )
-            }
+            )
         }
+        return items
     }
 
     // Tense follows the date: "Started 2 days ago", or for a scheduled event
     // "Starts in 1 day · Sun 27 Sep, 8:00 pm". Falls back to the absolute NZ
     // reading when the timestamp can't be parsed.
-    private var startedText: String? {
+    private static func startedText(_ event: RoadEvent) -> String? {
         if let phrase = eventDatePhrase(event.startDate, past: "Started", future: "Starts") {
             return phrase
         }
         return formatTrafficDate(event.startDate).map { "Start: \($0)" }
     }
 
-    private var updatedText: String? {
-        formatRelativeTrafficDate(event.eventModified).map { "Updated \($0)" }
-    }
-
     // "Ends in 3 days" / "Ended 2 hours ago". Most events carry `endDate`; the
     // few that don't fall back to the planned resolution estimate so the card
     // still has a "when" cue.
-    private var endsText: String? {
+    private static func endsText(_ event: RoadEvent) -> String? {
         if let phrase = eventDatePhrase(event.endDate, past: "Ended", future: "Ends") {
             return phrase
         }
@@ -740,6 +804,7 @@ struct EVChargerCard: View {
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay { CardBorder() }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -787,6 +852,7 @@ struct TIMCard: View {
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay { CardBorder() }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -850,6 +916,20 @@ struct VMSCard: View {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.vmsCardBorder, lineWidth: 1)
         }
+        // One VoiceOver stop: the sign, then its message in normal case (the
+        // upper-cased monospaced text can be read out letter by letter).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sign: \(sign.displayName)")
+        .accessibilityValue(
+            joinNonEmpty(
+                [
+                    sign.formattedMessage,
+                    sign.regionName,
+                    formatTrafficDate(sign.lastMessageUpdate ?? sign.lastUpdate).map { "Updated \($0)" }
+                ],
+                separator: ". "
+            ) ?? ""
+        )
     }
 }
 

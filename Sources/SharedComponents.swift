@@ -1,13 +1,24 @@
 import SwiftUI
 
+// The stats side by side while they fit; at larger text sizes, or in a
+// narrow window, they wrap into a grid instead of truncating.
 struct StatsRow: View {
     let stats: [StatItem]
 
     var body: some View {
-        HStack(spacing: 14) {
-            ForEach(stats) { stat in
-                StatCard(stat: stat)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                cards
             }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)], spacing: 14) {
+                cards
+            }
+        }
+    }
+
+    private var cards: some View {
+        ForEach(stats) { stat in
+            StatCard(stat: stat)
         }
     }
 }
@@ -40,9 +51,12 @@ struct StatCard: View {
                     .font(.system(.largeTitle, design: .rounded, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 Text(stat.title)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 16)
@@ -51,6 +65,11 @@ struct StatCard: View {
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay { CardBorder() }
+        // One VoiceOver stop that names the stat before its number
+        // ("Active Closures, 12"), not two fragments number-first.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stat.title)
+        .accessibilityValue(stat.value)
     }
 }
 
@@ -118,6 +137,7 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .help(isOn ? "Showing \(label) — click to hide" : "Hiding \(label) — click to show")
+        .accessibilityLabel("Show \(label)")
         .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
     }
@@ -330,6 +350,20 @@ extension EventImpactKind {
     }
 }
 
+// Camera status colours: the map pins, legend and card badges.
+extension CameraStatusKind {
+    var color: Color {
+        switch self {
+        case .online:
+            return .green
+        case .maintenance:
+            return .orange
+        case .offline:
+            return .red
+        }
+    }
+}
+
 extension RoadEvent {
     /// Card stripe, impact badge and map pin colour: the impact colour for
     /// events in force now, purple for upcoming ones and grey for resolved
@@ -368,6 +402,22 @@ extension FlowKind {
 }
 
 extension CongestionLevel {
+    // A shape per level for the text list, beside the level's name.
+    var symbol: String {
+        switch self {
+        case .freeFlow:
+            return "circle"
+        case .moderate:
+            return "circle.lefthalf.filled"
+        case .heavy:
+            return "circle.fill"
+        case .congested:
+            return "exclamationmark.circle.fill"
+        case .unknown:
+            return "questionmark.circle"
+        }
+    }
+
     var color: Color {
         switch self {
         case .freeFlow:
@@ -394,6 +444,7 @@ struct ErrorBanner: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
+                .accessibilityLabel("Error")
             Text(message)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)

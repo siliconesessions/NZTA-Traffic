@@ -13,6 +13,7 @@ struct CamerasTabView: View {
     @FocusState private var focusedID: String?
     // The grid's current column count, for ↑/↓ to move a row.
     @State private var columns = 1
+    @Namespace private var rotorNamespace
 
     private nonisolated static let minimumCardWidth: CGFloat = 280
     private nonisolated static let gridSpacing: CGFloat = 16
@@ -45,29 +46,7 @@ struct CamerasTabView: View {
                             StatItem(title: "Online", value: "\(onlineCount)", tint: .green)
                         ])
 
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: Self.minimumCardWidth), spacing: Self.gridSpacing)],
-                            spacing: Self.gridSpacing
-                        ) {
-                            ForEach(cameras) { camera in
-                                CameraCard(camera: camera, cacheToken: cacheToken, imageGeneration: imageGeneration) {
-                                    onPreview(camera)
-                                }
-                                .keyboardFocusable(id: camera.id, focus: $focusedID) {
-                                    onPreview(camera)
-                                }
-                            }
-                        }
-                        .onGeometryChange(for: Int.self) { geometry in
-                            adaptiveGridColumnCount(
-                                width: geometry.size.width,
-                                minimum: Self.minimumCardWidth,
-                                spacing: Self.gridSpacing
-                            )
-                        } action: { count in
-                            columns = count
-                        }
-                        .keyboardNavigation(over: cameraIDs, columns: columns, focus: $focusedID)
+                        cameraGrid(ids: cameraIDs)
                     }
                 }
                 .padding(24)
@@ -76,6 +55,40 @@ struct CamerasTabView: View {
                 keepFocusVisible(newValue, proxy: proxy)
             }
         }
+    }
+
+    // The cards, one VoiceOver rotor stop per camera that isn't live.
+    private func cameraGrid(ids cameraIDs: [String]) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: Self.minimumCardWidth), spacing: Self.gridSpacing)],
+            spacing: Self.gridSpacing
+        ) {
+            ForEach(cameras) { camera in
+                CameraCard(camera: camera, cacheToken: cacheToken, imageGeneration: imageGeneration) {
+                    onPreview(camera)
+                }
+                .keyboardFocusable(id: camera.id, focus: $focusedID) {
+                    onPreview(camera)
+                }
+                .accessibilityRotorEntry(id: camera.id, in: rotorNamespace)
+            }
+        }
+        // VoiceOver: jump between cameras that aren't live.
+        .accessibilityRotor("Offline Cameras") {
+            ForEach(cameras.filter { !$0.isOnline }) { camera in
+                AccessibilityRotorEntry(Text(camera.displayName), id: camera.id, in: rotorNamespace)
+            }
+        }
+        .onGeometryChange(for: Int.self) { geometry in
+            adaptiveGridColumnCount(
+                width: geometry.size.width,
+                minimum: Self.minimumCardWidth,
+                spacing: Self.gridSpacing
+            )
+        } action: { count in
+            columns = count
+        }
+        .keyboardNavigation(over: cameraIDs, columns: columns, focus: $focusedID)
     }
 }
 
@@ -98,6 +111,7 @@ struct RoadEventsTabView: View {
     let onClearFilters: () -> Void
     var onRetry: (() -> Void)?
     @FocusState private var focusedID: String?
+    @Namespace private var rotorNamespace
 
     // Closures and delays in force now; upcoming and resolved events are
     // counted separately (resolved ones only appear when "Show resolved" is on).
@@ -139,19 +153,36 @@ struct RoadEventsTabView: View {
                             StatItem(title: "Upcoming", value: "\(upcoming)", tint: .eventUpcoming)
                         ])
 
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(events) { event in
-                                RoadEventCard(event: event)
-                                    .keyboardFocusable(id: event.id, focus: $focusedID)
-                            }
-                        }
-                        .keyboardNavigation(over: eventIDs, focus: $focusedID)
+                        eventList(ids: eventIDs)
                     }
                 }
                 .padding(24)
             }
             .onChange(of: focusedID) { _, newValue in
                 keepFocusVisible(newValue, proxy: proxy)
+            }
+        }
+    }
+
+    private func eventList(ids eventIDs: [String]) -> some View {
+        LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(events) { event in
+                RoadEventCard(event: event)
+                    .keyboardFocusable(id: event.id, focus: $focusedID)
+                    .accessibilityRotorEntry(id: event.id, in: rotorNamespace)
+            }
+        }
+        .keyboardNavigation(over: eventIDs, focus: $focusedID)
+        // VoiceOver: jump straight to the closures (and the delays) in
+        // force now among hundreds of events.
+        .accessibilityRotor("Closures") {
+            ForEach(events.filter(\.isActiveClosure)) { event in
+                AccessibilityRotorEntry(Text(event.displayTitle), id: event.id, in: rotorNamespace)
+            }
+        }
+        .accessibilityRotor("Delays") {
+            ForEach(events.filter { $0.isActive && $0.hasDelays }) { event in
+                AccessibilityRotorEntry(Text(event.displayTitle), id: event.id, in: rotorNamespace)
             }
         }
     }
@@ -258,6 +289,9 @@ struct TravelTimesTabView: View {
     // Turns every flow chip on, No Data included.
     var onShowAll: (() -> Void)?
     var onRetry: (() -> Void)?
+    // Auckland motorway congestion as text (see AucklandMotorwaysSection),
+    // under the shared filters; empty hides the section.
+    var motorways: [CongestionListGroup] = []
     @FocusState private var focusedID: String?
 
     private var liveJourneyCount: Int {
@@ -289,6 +323,10 @@ struct TravelTimesTabView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if let errorMessage {
                         ErrorBanner(message: errorMessage, onRetry: onRetry)
+                    }
+
+                    if !motorways.isEmpty {
+                        AucklandMotorwaysSection(groups: motorways)
                     }
 
                     if isLoading && journeys.isEmpty {
@@ -351,6 +389,81 @@ struct TravelTimesTabView: View {
                         .help("Show every journey, including those with no live data")
                 }
                 Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+// The Auckland congestion map layer as text: each motorway direction with its
+// segments in travel order and their level in words, so the data isn't only
+// coloured lines on the map — for VoiceOver, and for anyone who can't tell
+// the colours apart. Collapsed by default under a one-line summary.
+struct AucklandMotorwaysSection: View {
+    let groups: [CongestionListGroup]
+    @AppStorage("nzta.travelTimes.showMotorways") private var isExpanded = false
+
+    private var summary: String {
+        congestionSummary(groups.flatMap(\.segments))
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(groups) { group in
+                    CongestionGroupView(group: group)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Text("Auckland Motorways")
+                    .font(.headline)
+                Text(summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+        }
+        .padding(14)
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay { CardBorder() }
+    }
+}
+
+private struct CongestionGroupView: View {
+    let group: CongestionListGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(group.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(group.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+
+            ForEach(group.segments) { segment in
+                HStack(spacing: 10) {
+                    Image(systemName: segment.level.symbol)
+                        .font(.caption)
+                        .foregroundStyle(segment.level.color)
+                        .frame(width: 16)
+                        .accessibilityHidden(true)
+                    Text(segment.name ?? segment.displayName)
+                        .font(.callout)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(segment.level.label)
+                        .font(.callout.weight(segment.level.severityRank >= 2 ? .semibold : .regular))
+                        .foregroundStyle(segment.level.severityRank >= 2 ? .primary : .secondary)
+                }
+                .padding(.vertical, 3)
+                .accessibilityElement(children: .combine)
             }
         }
     }

@@ -2,7 +2,7 @@
 # Builds and runs the standalone unit tests. They cover the Foundation-level
 # layers — the models (Models.swift), app identity and migration
 # (AppIdentity.swift), the refresh policy (RefreshPolicy.swift), the views'
-# Foundation-only logic (ViewLogic.swift), and the API
+# Foundation-only logic (ViewLogic.swift, MapClustering.swift), and the API
 # client, offline cache and store (TrafficAPIService.swift, OfflineCache.swift,
 # TrafficStore.swift) against an in-process stub network and temporary cache
 # folders. No SwiftPM / XCTest — just swiftc, matching the project's build
@@ -41,6 +41,7 @@ xcrun swiftc \
     Sources/TrafficAPIService.swift \
     Sources/TrafficStore.swift \
     Sources/ViewLogic.swift \
+    Sources/MapClustering.swift \
     Tests/TestHarness.swift \
     Tests/StubNetwork.swift \
     Tests/ModelTests.swift \
@@ -51,6 +52,7 @@ xcrun swiftc \
     Tests/NetworkTests.swift \
     Tests/StoreTests.swift \
     Tests/ViewLogicTests.swift \
+    Tests/MapClusteringTests.swift \
     Tests/main.swift
 
 # Run with a throwaway home folder, so nothing the frameworks might persist

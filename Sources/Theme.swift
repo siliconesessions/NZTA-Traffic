@@ -43,8 +43,40 @@ extension View {
     /// Liquid Glass behind a small panel floating over content — the map's
     /// layer controls, legend and status — so it matches the system map
     /// controls and the toolbar beside it. Group neighbouring panels in a
-    /// GlassEffectContainer so their glass renders together.
+    /// GlassEffectContainer so their glass renders together. With Reduce
+    /// Transparency on, the panel is solid instead of glass, and with
+    /// Increase Contrast it gets a visible edge, so its text never sits on a
+    /// busy, see-through map.
     func floatingPanel(cornerRadius: CGFloat = Radii.floatingPanel) -> some View {
-        glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        modifier(FloatingPanelBackground(cornerRadius: cornerRadius))
+    }
+}
+
+private struct FloatingPanelBackground: ViewModifier {
+    let cornerRadius: CGFloat
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        if reduceTransparency {
+            content
+                .background(.background, in: shape)
+                .overlay {
+                    shape.strokeBorder(edgeColor, lineWidth: 1)
+                }
+        } else {
+            content
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    if contrast == .increased {
+                        shape.strokeBorder(Color.cardStrokeIncreased, lineWidth: 1)
+                    }
+                }
+        }
+    }
+
+    private var edgeColor: Color {
+        contrast == .increased ? .cardStrokeIncreased : .cardStroke
     }
 }

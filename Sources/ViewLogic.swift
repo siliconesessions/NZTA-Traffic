@@ -2,11 +2,13 @@ import CoreLocation
 import Foundation
 
 // Foundation-only logic behind the views: what the Flow and congestion map
-// layers draw and in which order, the side-by-side offset for opposite
-// directions, placing EV chargers in a region, which member tints a map
-// cluster, grid keyboard navigation, the region picker's restored selection
-// and the Travel Times "hidden journeys" caption. Kept out of the SwiftUI
-// files so run_tests.sh can compile and test it.
+// layers draw, in which order and — without colour — in which line style,
+// the congestion layer as a text list, the side-by-side offset for opposite
+// directions, placing EV chargers in a region, map pin glyphs and which
+// member tints a map cluster (the clustering itself is in
+// MapClustering.swift), grid keyboard navigation, the region picker's
+// restored selection and the Travel Times "hidden journeys" caption. Kept
+// out of the SwiftUI files so run_tests.sh can compile and test it.
 
 // MARK: - Flow and congestion layers
 
@@ -97,6 +99,127 @@ private func stableSorted<T>(_ items: [T], by rank: (T) -> Int) -> [T] {
         .map(\.element)
 }
 
+/// How a Flow or congestion line is drawn when colour can't be relied on
+/// (Differentiate Without Colour): worse traffic is wider and more solid —
+/// Congested a wide solid line, Slow / Heavy long dashes, Moderate short
+/// dashes, Free Flow dots and No Data / Unknown thin, sparse dots — so every
+/// level reads from its shape alone. `widthScale` multiplies the layer's line
+/// width; `dash` is in multiples of the drawn width (empty = solid) and is
+/// meant for a round line cap, which turns the near-zero dashes into dots.
+struct AccessibleLineStyle: Equatable {
+    let widthScale: Double
+    let dash: [Double]
+
+    /// By severity rank: -1 no data / unknown … 3 congested.
+    init(severityRank: Int) {
+        switch severityRank {
+        case ..<0:
+            self.init(widthScale: 0.6, dash: [0.01, 2.6])
+        case 0:
+            self.init(widthScale: 0.8, dash: [0.01, 1.8])
+        case 1:
+            self.init(widthScale: 1.0, dash: [1.6, 1.6])
+        case 2:
+            self.init(widthScale: 1.2, dash: [4, 1.4])
+        default:
+            self.init(widthScale: 1.45, dash: [])
+        }
+    }
+
+    init(widthScale: Double, dash: [Double]) {
+        self.widthScale = widthScale
+        self.dash = dash
+    }
+
+    /// The dash pattern in points for a line `width` points wide.
+    func dashPattern(lineWidth width: Double) -> [Double] {
+        dash.map { $0 * width }
+    }
+}
+
+extension FlowKind {
+    var accessibleLineStyle: AccessibleLineStyle {
+        AccessibleLineStyle(severityRank: drawRank)
+    }
+}
+
+extension CongestionLevel {
+    var accessibleLineStyle: AccessibleLineStyle {
+        AccessibleLineStyle(severityRank: severityRank)
+    }
+}
+
+// MARK: - Congestion as text
+
+/// One motorway direction in the Auckland congestion list: "Northern
+/// Motorway · Southbound" with its segments in feed (travel) order.
+struct CongestionListGroup: Identifiable, Equatable {
+    let motorway: String
+    let direction: String?
+    let segments: [CongestionSegment]
+
+    var id: String {
+        "\(motorway)|\(direction ?? "")"
+    }
+
+    var title: String {
+        joinNonEmpty([motorway, direction], separator: " · ") ?? motorway
+    }
+
+    /// The worst level any segment reports (Unknown only if all are).
+    var worstLevel: CongestionLevel {
+        segments.map(\.level).max { $0.severityRank < $1.severityRank } ?? .unknown
+    }
+
+    /// "2 congested, 1 heavy" — the segments worse than Moderate — or
+    /// "Flowing freely" / "No live data".
+    var summary: String {
+        congestionSummary(segments)
+    }
+}
+
+/// The congestion segments as a text list — the map layer's equivalent for
+/// VoiceOver and anyone who can't tell its colours apart. Grouped by motorway
+/// and direction in the order the feed lists them (which is travel order),
+/// keeping only `segments` that pass `isIncluded` (the shared filters).
+func congestionListGroups(
+    _ segments: [CongestionSegment],
+    isIncluded: (CongestionSegment) -> Bool = { _ in true }
+) -> [CongestionListGroup] {
+    var order: [String] = []
+    var grouped: [String: (motorway: String, direction: String?, segments: [CongestionSegment])] = [:]
+    for segment in segments where isIncluded(segment) {
+        let motorway = segment.motorwayName ?? "Auckland motorways"
+        let key = "\(motorway)|\(segment.direction ?? "")"
+        if grouped[key] == nil {
+            order.append(key)
+            grouped[key] = (motorway, segment.direction, [])
+        }
+        grouped[key]?.segments.append(segment)
+    }
+    return order.compactMap { key in
+        grouped[key].map { CongestionListGroup(motorway: $0.motorway, direction: $0.direction, segments: $0.segments) }
+    }
+}
+
+/// "3 congested, 2 heavy" for the segments worse than Moderate, worst first;
+/// "Flowing freely" when there are none; "No live data" when no segment has
+/// a level at all.
+func congestionSummary(_ segments: [CongestionSegment]) -> String {
+    let known = segments.filter { $0.level != .unknown }
+    guard !known.isEmpty else {
+        return "No live data"
+    }
+    let parts = [CongestionLevel.congested, .heavy].compactMap { level -> String? in
+        let count = known.filter { $0.level == level }.count
+        return count > 0 ? "\(count) \(level.label.lowercased())" : nil
+    }
+    return parts.isEmpty ? "Flowing freely" : parts.joined(separator: ", ")
+}
+
+
+// MARK: - Side-by-side directions
+
 /// `coordinates` moved `points` screen points to the left of their direction
 /// of travel, on a map showing `degreesLongitudePerPoint`. NZ drives on the
 /// left, and both the journey legs and the congestion segments run in their
@@ -168,12 +291,12 @@ func offsetPolyline(
 }
 
 // Web Mercator northing in degrees (so it shares units with longitude).
-private func mercatorY(latitude: Double) -> Double {
+func mercatorY(latitude: Double) -> Double {
     let clamped = min(max(latitude, -85), 85) * .pi / 180
     return log(tan(.pi / 4 + clamped / 2)) * 180 / .pi
 }
 
-private func latitude(mercatorY y: Double) -> Double {
+func latitude(mercatorY y: Double) -> Double {
     (2 * atan(exp(y * .pi / 180)) - .pi / 2) * 180 / .pi
 }
 
@@ -300,6 +423,67 @@ extension TIMSign {
     var isBlank: Bool {
         lines.isEmpty
     }
+}
+
+// MARK: - Map pin glyphs
+
+// The glyph inside each map pin and legend swatch. Every status a pin's
+// colour shows also has its own glyph, so a closure, a delay and a caution —
+// or an offline and a maintenance camera — can be told apart without colour.
+
+extension EventImpactKind {
+    var symbol: String {
+        switch self {
+        case .closure:
+            return "xmark.octagon.fill"
+        case .delays:
+            return "clock.fill"
+        case .caution:
+            return "exclamationmark.triangle.fill"
+        case .other:
+            return "info.circle.fill"
+        }
+    }
+}
+
+enum EventLifecycleSymbol {
+    static let upcoming = "calendar"
+    static let resolved = "checkmark.circle.fill"
+}
+
+extension RoadEvent {
+    /// Resolved and upcoming events by their lifecycle, events in force now
+    /// by their impact.
+    var mapSymbol: String {
+        if isResolved {
+            return EventLifecycleSymbol.resolved
+        }
+        if isUpcoming {
+            return EventLifecycleSymbol.upcoming
+        }
+        return impactKind.symbol
+    }
+}
+
+extension CameraStatusKind {
+    var symbol: String {
+        switch self {
+        case .online:
+            return "video.fill"
+        case .offline:
+            return "video.slash.fill"
+        case .maintenance:
+            return "wrench.fill"
+        }
+    }
+}
+
+enum MapPinSymbol {
+    static let vmsMessage = "signpost.right.fill"
+    static let blank = "minus"
+    static let timTimes = "clock.fill"
+    static let evDC = "bolt.fill"
+    static let evAC = "powerplug.fill"
 }
 
 // MARK: - Grid keyboard navigation
