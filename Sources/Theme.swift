@@ -20,6 +20,10 @@ enum Radii {
 extension Color {
     /// Hairline stroke drawn around content cards.
     static let cardStroke = Color.primary.opacity(0.10)
+    /// The card stroke with Increase Contrast on (see CardBorder).
+    static let cardStrokeIncreased = Color.primary.opacity(0.4)
+    /// Badge tint for information with no status, such as a region.
+    static let badgeNeutral = Color.gray
 
     // VMS "sign" card palette — an intentionally dark, roadside-sign look.
     static let vmsCardBackground = Color(red: 0.09, green: 0.13, blue: 0.18)

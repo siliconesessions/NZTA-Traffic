@@ -5,16 +5,23 @@ import Synchronization
 struct Region: Decodable, Hashable {
     let id: String?
     let name: String?
+    // The region's outline: only /regions/all carries one (a coarse WKT
+    // POLYGON of 8–17 points); the regions embedded in features don't. Used
+    // to place EV chargers, which have no region of their own, in a region.
+    let boundary: [GeoPolyline]
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = container.decodeLossyString(forKey: .id)
         name = cleanText(container.decodeLossyString(forKey: .name))
+        boundary = parseWKTParts(container.decodeLossyString(forKey: .geometry))
+            .filter { $0.count >= 3 }
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case name
+        case geometry
     }
 }
 
@@ -71,7 +78,13 @@ struct TrafficCamera: Decodable, Identifiable, Hashable, TrafficFilterable {
     let direction: String?
     let group: String?
     let highway: String?
+    /// The live frame (`/camera/<id>.jpg`), rewritten about once a minute
+    /// with a burned-in timestamp.
     let imageUrl: String?
+    /// `/camera/thumb/<id>.jpg`: a 100×74 still NZTA never refreshes — most
+    /// were last written between 2021 and 2025 and show old scenes (daylight
+    /// at night, finished roadworks). Only a fallback for when the live frame
+    /// can't load, and never presented as the current view.
     let thumbUrl: String?
     /// Legacy `/camera/view/<id>` page path. trafficnz.info now redirects to
     /// journeys.nzta.govt.nz and this path 404s, so don't surface it as a link —
@@ -189,12 +202,23 @@ struct TrafficCamera: Decodable, Identifiable, Hashable, TrafficFilterable {
         return joinNonEmpty([route, direction], separator: " - ")
     }
 
+    // The preview sheet and "Open full image": the live frame, or the old
+    // still when a camera has no live path.
     func imageURL(cacheToken: Int) -> URL? {
         trafficNZURL(from: imageUrl ?? thumbUrl, cacheToken: cacheToken)
     }
 
-    func thumbnailURL(cacheToken: Int) -> URL? {
-        trafficNZURL(from: thumbUrl ?? imageUrl, cacheToken: cacheToken)
+    // The camera grid's image: the live frame only, so a card never shows
+    // the static thumbnail as if it were current.
+    func liveImageURL(cacheToken: Int) -> URL? {
+        trafficNZURL(from: imageUrl, cacheToken: cacheToken)
+    }
+
+    // The static thumbnail (see `thumbUrl`), for the grid to fall back on —
+    // labelled as not live — when the live frame fails. No cache token: the
+    // file never changes.
+    var stillThumbnailURL: URL? {
+        trafficNZURL(from: thumbUrl)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1149,11 +1173,18 @@ func mergedRegionNames(canonical: [String], derived: [String]) -> [String] {
 }
 
 func searchableHaystack(_ fields: [String?]) -> String {
-    fields.compactMap(cleanText).joined(separator: " ").lowercased()
+    foldedForSearch(fields.compactMap(cleanText).joined(separator: " "))
+}
+
+// Lowercased with diacritics removed, applied to both the haystacks and the
+// query, so "otaki" finds "Ōtaki" and "whangarei" finds "Whangārei" (the
+// feeds mix macron and plain spellings of the same place).
+func foldedForSearch(_ text: String) -> String {
+    text.folding(options: .diacriticInsensitive, locale: nil).lowercased()
 }
 
 func matchesNeedle(_ needle: String, in haystack: String) -> Bool {
-    let query = needle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let query = foldedForSearch(needle.trimmingCharacters(in: .whitespacesAndNewlines))
     guard !query.isEmpty else {
         return true
     }
@@ -1269,7 +1300,7 @@ struct HighwayQuery: Hashable, Sendable {
     private static let highwayPrefixes: Set<String> = ["SH", "STATE", "STATEHIGHWAY", "HIGHWAY", "HWY"]
 
     init(_ raw: String) {
-        text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        text = foldedForSearch(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         key = text.isEmpty ? nil : canonicalHighwayKey(text)
         isHighwayPrefixOnly = Self.highwayPrefixes.contains(compactHighwayToken(text))
     }
@@ -1707,6 +1738,50 @@ struct CongestionSegment: Identifiable, Hashable {
 
     var routeLine: String? {
         joinNonEmpty([motorwayName, direction], separator: " · ")
+    }
+}
+
+// The shared Region / Highway / Search filter for the congestion layer. The
+// feed covers Auckland's motorways only, so every segment is in Auckland, and
+// its highway is the one its motorway carries (the segment names only mention
+// the highways it meets at each end). Computed rather than stored: the feed
+// is about 80 segments and the store memoizes the filtered result.
+extension CongestionSegment: TrafficFilterable {
+    var regionName: String? {
+        "Auckland"
+    }
+
+    var highwayKeys: Set<String> {
+        highwayKeySet(structured: [aucklandMotorwayHighway(motorwayName) ?? motorwayName], text: [])
+    }
+
+    var highwayHaystack: String {
+        searchableHaystack([motorwayName, name])
+    }
+
+    var searchHaystack: String {
+        searchableHaystack([motorwayName, name, direction, level.label])
+    }
+}
+
+// Named Auckland motorways and the state highway each one is. The feed's
+// other "motorways" are named by their highway already ("SH20A George Bolt
+// Memorial Dr") or aren't state highways ("Route 12").
+func aucklandMotorwayHighway(_ motorwayName: String?) -> String? {
+    guard let name = motorwayName?.lowercased().replacingOccurrences(of: "-", with: "") else {
+        return nil
+    }
+    switch name.trimmingCharacters(in: .whitespaces) {
+    case "northern motorway", "southern motorway", "central motorway junction":
+        return "SH1"
+    case "northwestern motorway":
+        return "SH16"
+    case "southwestern motorway":
+        return "SH20"
+    case "upper harbour motorway":
+        return "SH18"
+    default:
+        return nil
     }
 }
 
@@ -2728,9 +2803,9 @@ struct TIMSignsResponse: Decodable {
     }
 }
 
-// /regions/all/10 → the 14 canonical NZTA regions. Only id/name are decoded
-// (via the shared `Region` type); the per-region WKT POLYGON `geometry` is
-// ignored — the region filter just needs stable, consistently-cased names.
+// /regions/all/10 → the 14 canonical NZTA regions: stable, consistently-cased
+// names for the region filter, and each region's coarse WKT POLYGON outline
+// (`Region.boundary`), used to place EV chargers in a region.
 struct RegionsPayload: Decodable {
     let response: RegionsResponse
 }
@@ -2765,6 +2840,8 @@ struct EVCharger: Decodable, Identifiable, Hashable {
     let maxPowerKW: Double?
     let connectorTypes: [String]
     let hasDCConnector: Bool
+    let highwayKeys: Set<String>
+    let highwayHaystack: String
     let searchHaystack: String
 
     init(from decoder: Decoder) throws {
@@ -2821,12 +2898,24 @@ struct EVCharger: Decodable, Identifiable, Hashable {
         connectorTypes = parsed.connectorTypes
         hasDCConnector = parsed.hasDCConnector
 
+        // A charger isn't on a highway record; an address on a state highway
+        // ("85379 State Highway 2") ties it to that highway.
+        highwayKeys = highwayKeySet(structured: [], text: [nameValue, addressValue])
+        highwayHaystack = searchableHaystack([nameValue, addressValue])
+        // Folded like every haystack, so "whangarei" finds "Whangārei".
         searchHaystack = searchableHaystack([
             nameValue,
             operatorValue,
             addressValue,
             currentTypeValue
         ] + parsed.connectorTypes)
+    }
+
+    // Highway and Search. The feed has no region: the store places each
+    // charger in one from its location (see regionName(containing:in:)).
+    func matches(highway: HighwayQuery, search: String) -> Bool {
+        highway.matches(keys: highwayKeys, haystack: highwayHaystack)
+            && matchesNeedle(search, in: searchHaystack)
     }
 
     var displayName: String {

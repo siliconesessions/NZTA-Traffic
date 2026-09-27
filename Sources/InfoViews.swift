@@ -105,9 +105,10 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Shared Controls") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Region limits cameras, road events, VMS signs, and map layers to the selected region.")
+                        BulletText("Region limits cameras, road events, VMS signs, travel times, and every map layer to the selected region. EV chargers are placed in a region by their location; the Auckland congestion layer only has Auckland motorways.")
                         BulletText("Highway matches whole state highways: SH1, SH 1, State Highway 1, 01N and 1 all mean State Highway 1 — not SH10–SH18 or spurs such as SH1B (type SH1B for those). Items at a junction match both highways. Other text, such as CNC, matches whole words in route names.")
-                        BulletText("Search matches names, locations, descriptions, event comments, regions, and VMS message text where available.")
+                        BulletText("Search matches names, locations, descriptions, event comments, regions, and VMS message text where available. Macrons are optional: otaki finds Ōtaki.")
+                        BulletText("Each tab's own chips (camera status, event impact, flow) count as filters too: the orange Filtered label lists what they hide, and Clear (⌘E) resets them along with Region, Highway and Search.")
                         BulletText("Refresh (⌘R) reloads every live source and fetches fresh camera images. Each section updates as soon as its data arrives; Travel Times takes NZTA 15–20 seconds, so it finishes on its own.")
                         BulletText("Auto-refresh reloads everything, including the camera images on screen, every 1 to 10 minutes. It keeps going with the window closed, so the menu bar and Dock badge stay current, and slows down (to at most every 15 minutes) while NZ Traffic is in the background with no window showing.")
                     }
@@ -115,7 +116,7 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Traffic Cameras") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("The camera tab shows thumbnails, names, region, route or direction metadata, and offline or maintenance status.")
+                        BulletText("The camera tab shows each camera's latest image, name, region, route or direction metadata, and offline or maintenance status. If the latest image can't load, an older still from NZTA may be shown instead, marked Not live.")
                         BulletText("Click a camera card, or a camera pin on the map, to open the full-size camera preview.")
                         BulletText("If an image is unavailable, the source camera may be offline, under maintenance, slow to update, or temporarily unavailable.")
                     }
@@ -143,10 +144,13 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Map") {
                     VStack(alignment: .leading, spacing: 8) {
-                        BulletText("Use the map layer control to switch between Cameras, Road Events, and VMS Signs.")
-                        BulletText("The shared Region, Highway, and Search filters apply to the active map layer.")
+                        BulletText("Use the map layer control to switch between Cameras, Road Events, VMS Signs, traffic Flow, travel time (TIM) signs, EV chargers and Auckland Congestion (Congestion). The layer's own filters sit in the row underneath.")
+                        BulletText("The shared Region, Highway, and Search filters apply to every map layer.")
+                        BulletText("Flow colours each journey leg by its own traffic, and the flow chips filter leg by leg. The two directions of a road are drawn side by side, and slower traffic is always drawn on top.")
+                        BulletText("Grouped pins show how many items they hold, ringed in the colour of the most notable one — an events group is red only when it contains a closure. Click a group to zoom in.")
+                        BulletText("Gray travel time sign pins are blank right now; Hide blank boards leaves them off the map.")
                         BulletText("Mapped shows the number of filtered items with usable coordinates.")
-                        BulletText("Without coordinates shows filtered items that cannot be placed on the map.")
+                        BulletText("Off-map shows filtered items that cannot be placed on the map.")
                         BulletText("Reset Map returns the map to the initial New Zealand view.")
                     }
                 }

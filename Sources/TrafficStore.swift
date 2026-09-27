@@ -25,6 +25,9 @@ final class TrafficStore {
     // into `allRegions` so the region Picker is stable and consistently cased
     // even before (or independently of) the feature data finishing loading.
     private(set) var canonicalRegions: [String] = []
+    // The canonical regions' outlines, from the same fetch. EV chargers carry
+    // no region, so the EV layer's region filter places them by location.
+    private(set) var regionOutlines: [RegionOutline] = []
     private(set) var allRegions: [String] = []
     private(set) var loadingSections: Set<DataSection> = []
     // The latest problem per section. Kept until that section's next result,
@@ -135,6 +138,17 @@ final class TrafficStore {
     @ObservationIgnored private var vmsCache: [FilterKey: [VMSSign]] = [:]
     @ObservationIgnored private var journeyCache: [FilterKey: [TrafficJourney]] = [:]
     @ObservationIgnored private var timCache: [FilterKey: [TIMSign]] = [:]
+    @ObservationIgnored private var congestionCache: [FilterKey: [CongestionSegment]] = [:]
+    @ObservationIgnored private var evChargerCache: [FilterKey: [EVCharger]] = [:]
+    // The Flow map's per-leg selection also depends on the flow chips.
+    private struct FlowSegmentKey: Hashable {
+        let filter: FilterKey
+        let flows: Set<FlowKind>
+    }
+    @ObservationIgnored private var flowSegmentCache: [FlowSegmentKey: [FlowMapSegment]] = [:]
+    // Each EV charger's region (by id), worked out once per charger list and
+    // set of region outlines; nil until needed.
+    @ObservationIgnored private var evChargerRegions: [String: String]?
 
     // Every dependency is injectable so SwiftUI previews and the tests run
     // against a stubbed URLSession, a disabled or temporary cache, no image
@@ -413,6 +427,7 @@ final class TrafficStore {
             return
         }
         evChargers = []
+        evChargersChanged()
         evChargersError = nil
         await loadEVChargers()
     }
@@ -686,6 +701,7 @@ final class TrafficStore {
         switch await service.fetchEVChargersResult() {
         case .success(let fetched):
             evChargers = fetched.value
+            evChargersChanged()
             droppedEVChargerCount = fetched.dropped
             evChargersError = nil
         case .failure(let error):
@@ -715,7 +731,21 @@ final class TrafficStore {
             return
         }
         canonicalRegions = names
+        regionOutlines = regions.compactMap { region in
+            guard let name = cleanText(region.name), !region.boundary.isEmpty else {
+                return nil
+            }
+            return RegionOutline(name: name, rings: region.boundary)
+        }
+        evChargersChanged()
         refreshRegions()
+    }
+
+    // The EV memo and region placements are stale once the charger list or
+    // the region outlines change.
+    private func evChargersChanged() {
+        evChargerCache.removeAll(keepingCapacity: true)
+        evChargerRegions = nil
     }
 
     // MARK: - Auto-refresh
@@ -1012,7 +1042,90 @@ final class TrafficStore {
             .filter { flows.contains($0.overallFlowKind) }
     }
 
-    // Only the changed section's memo is stale; congestion isn't filtered.
+    // The Flow map filters per leg rather than per journey (see
+    // flowMapSegments), so it starts from the unscoped journey slice.
+    func mapFlowSegments(region: String, highway: String, search: String, flows: Set<FlowKind>) -> [FlowMapSegment] {
+        let key = FlowSegmentKey(filter: FilterKey(region: region, highway: highway, search: search), flows: flows)
+        if let cached = flowSegmentCache[key] {
+            return cached
+        }
+        let result = flowMapSegments(
+            for: filteredJourneys(region: region, highway: highway, search: search),
+            allowedKinds: flows
+        )
+        flowSegmentCache[key] = result
+        return result
+    }
+
+    func scopedTIMSigns(region: String, highway: String, search: String, hideBlank: Bool) -> [TIMSign] {
+        let base = filteredTIMSigns(region: region, highway: highway, search: search)
+        return hideBlank ? base.filter { !$0.isBlank } : base
+    }
+
+    // Auckland congestion: Auckland only, the highway its motorway carries,
+    // and search over the motorway, segment, direction and level. Ordered
+    // for drawing, worst level on top (see congestionDrawOrder).
+    func filteredCongestion(region: String, highway: String, search: String) -> [CongestionSegment] {
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = congestionCache[key] {
+            return cached
+        }
+        let highwayQuery = HighwayQuery(highway)
+        let result = congestionDrawOrder(
+            congestion.filter { $0.matches(region: region, highway: highwayQuery, search: search) }
+        )
+        congestionCache[key] = result
+        return result
+    }
+
+    // EV chargers by region (placed by location, see evChargerRegion),
+    // highway (an address on one) and search, sorted by name.
+    func filteredEVChargers(region: String, highway: String, search: String) -> [EVCharger] {
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = evChargerCache[key] {
+            return cached
+        }
+        let highwayQuery = HighwayQuery(highway)
+        let regions = region.isEmpty ? [:] : placedEVChargerRegions()
+        let result = evChargers
+            .filter { charger in
+                (region.isEmpty || matchesRegion(regions[charger.id], selectedRegion: region))
+                    && charger.matches(highway: highwayQuery, search: search)
+            }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        evChargerCache[key] = result
+        return result
+    }
+
+    private func placedEVChargerRegions() -> [String: String] {
+        if let evChargerRegions {
+            return evChargerRegions
+        }
+        var placed: [String: String] = [:]
+        for charger in evChargers {
+            if let name = evChargerRegion(charger) {
+                placed[charger.id] = name
+            }
+        }
+        evChargerRegions = placed
+        return placed
+    }
+
+    // From the region outlines when they've loaded. Without them (the
+    // regions fetch failed), fall back to a region named in the address —
+    // "…, Flat Bush, Auckland, 2012" — which covers the main centres.
+    private func evChargerRegion(_ charger: EVCharger) -> String? {
+        if !regionOutlines.isEmpty {
+            guard let coordinate = charger.mapCoordinate else {
+                return nil
+            }
+            return regionName(containing: coordinate, in: regionOutlines)
+        }
+        let address = foldedForSearch(charger.address ?? "")
+        return allRegions.first { containsWholeWords(foldedForSearch($0), in: address) }
+    }
+
+    // Only the changed section's memo is stale.
     private func invalidateFilterCache(for section: DataSection) {
         switch section {
         case .cameras:
@@ -1023,10 +1136,11 @@ final class TrafficStore {
             vmsCache.removeAll(keepingCapacity: true)
         case .journeys:
             journeyCache.removeAll(keepingCapacity: true)
+            flowSegmentCache.removeAll(keepingCapacity: true)
         case .timSigns:
             timCache.removeAll(keepingCapacity: true)
         case .congestion:
-            break
+            congestionCache.removeAll(keepingCapacity: true)
         }
     }
 

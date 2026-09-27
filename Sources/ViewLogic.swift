@@ -1,0 +1,393 @@
+import CoreLocation
+import Foundation
+
+// Foundation-only logic behind the views: what the Flow and congestion map
+// layers draw and in which order, the side-by-side offset for opposite
+// directions, placing EV chargers in a region, which member tints a map
+// cluster, grid keyboard navigation, the region picker's restored selection
+// and the Travel Times "hidden journeys" caption. Kept out of the SwiftUI
+// files so run_tests.sh can compile and test it.
+
+// MARK: - Flow and congestion layers
+
+extension FlowKind {
+    /// Draw order on the Flow map: higher draws later, on top. No Data is
+    /// lowest so a grey leg never covers a live one, and Congested is highest
+    /// so the worst traffic is never hidden under better traffic.
+    var drawRank: Int {
+        switch self {
+        case .noData:
+            return -1
+        case .freeFlow:
+            return 0
+        case .moderate:
+            return 1
+        case .slow:
+            return 2
+        case .congested:
+            return 3
+        }
+    }
+}
+
+/// One drawable run of a journey leg on the Flow map.
+struct FlowMapSegment: Identifiable {
+    let id: String
+    let coordinates: [CLLocationCoordinate2D]
+    let flowKind: FlowKind
+}
+
+/// The Flow map's lines. Filtered per leg on the leg's own flow — not the
+/// journey's average, which hid slow legs inside mostly free-flowing journeys
+/// and drew grey No Data legs with No Data turned off — then ordered bottom to
+/// top by `drawRank`, keeping feed order within a rank so the result is the
+/// same on every render. Leg ids are unique within a journey and parts are
+/// never joined, so `journey|leg|part` is a unique, stable id.
+func flowMapSegments(for journeys: [TrafficJourney], allowedKinds: Set<FlowKind>) -> [FlowMapSegment] {
+    var segments: [FlowMapSegment] = []
+    for journey in journeys {
+        for leg in journey.legs where allowedKinds.contains(leg.flowKind) {
+            for (partIndex, part) in leg.polylineParts.enumerated() where part.isDrawable {
+                segments.append(
+                    FlowMapSegment(
+                        id: "\(journey.id)|\(leg.id)|\(partIndex)",
+                        coordinates: part.coordinates,
+                        flowKind: leg.flowKind
+                    )
+                )
+            }
+        }
+    }
+    return stableSorted(segments) { $0.flowKind.drawRank }
+}
+
+/// The Flow layer's "mapped / off-map" counts, over the same per-leg filter
+/// the map draws: legs whose flow is allowed, and how many of those can be
+/// drawn.
+func flowMapLegCounts(for journeys: [TrafficJourney], allowedKinds: Set<FlowKind>) -> (mapped: Int, total: Int) {
+    var mapped = 0
+    var total = 0
+    for journey in journeys {
+        for leg in journey.legs where allowedKinds.contains(leg.flowKind) {
+            total += 1
+            if leg.hasMapGeometry {
+                mapped += 1
+            }
+        }
+    }
+    return (mapped, total)
+}
+
+/// Congestion segments that can be drawn, worst on top (Unknown lowest),
+/// keeping feed order within a level. Opposite directions share the same two
+/// end points, so without this a Heavy segment could sit under a Free Flow one
+/// at every zoom.
+func congestionDrawOrder(_ segments: [CongestionSegment]) -> [CongestionSegment] {
+    stableSorted(segments.filter { $0.polyline.count >= 2 }) { $0.level.severityRank }
+}
+
+// Sorted ascending by `rank`, ties kept in their original order.
+private func stableSorted<T>(_ items: [T], by rank: (T) -> Int) -> [T] {
+    items.enumerated()
+        .sorted { lhs, rhs in
+            let lhsRank = rank(lhs.element)
+            let rhsRank = rank(rhs.element)
+            return lhsRank != rhsRank ? lhsRank < rhsRank : lhs.offset < rhs.offset
+        }
+        .map(\.element)
+}
+
+/// `coordinates` moved `points` screen points to the left of their direction
+/// of travel, on a map showing `degreesLongitudePerPoint`. NZ drives on the
+/// left, and both the journey legs and the congestion segments run in their
+/// own direction of travel, so the two directions of a road land side by
+/// side — as their carriageways do — instead of one covering the other. The
+/// offset is worked out in Web Mercator, where a point is the same distance
+/// in x and y, so it is `points` wide on screen at any latitude. Joins are
+/// mitred (limited to twice the offset) so the line keeps its width around
+/// bends. Anything that can't be offset comes back unchanged.
+func offsetPolyline(
+    _ coordinates: [CLLocationCoordinate2D],
+    points: Double,
+    degreesLongitudePerPoint: Double
+) -> [CLLocationCoordinate2D] {
+    let distance = points * degreesLongitudePerPoint
+    guard coordinates.count >= 2, distance.isFinite, distance != 0 else {
+        return coordinates
+    }
+
+    let xs = coordinates.map(\.longitude)
+    let ys = coordinates.map { mercatorY(latitude: $0.latitude) }
+    let count = coordinates.count
+
+    // The left-hand unit normal of each segment, nil for a zero-length one.
+    var normals: [(x: Double, y: Double)?] = []
+    normals.reserveCapacity(count - 1)
+    for index in 0..<(count - 1) {
+        let dx = xs[index + 1] - xs[index]
+        let dy = ys[index + 1] - ys[index]
+        let length = (dx * dx + dy * dy).squareRoot()
+        normals.append(length > 1e-12 && length.isFinite ? (-dy / length, dx / length) : nil)
+    }
+
+    var result: [CLLocationCoordinate2D] = []
+    result.reserveCapacity(count)
+    for index in 0..<count {
+        // The nearest real segment on each side of this vertex.
+        let before = index > 0 ? normals[..<index].last(where: { $0 != nil }) ?? nil : nil
+        let after = index < count - 1 ? normals[index...].first(where: { $0 != nil }) ?? nil : nil
+        let offset: (x: Double, y: Double)
+        switch (before, after) {
+        case let (incoming?, outgoing?):
+            let sumX = incoming.x + outgoing.x
+            let sumY = incoming.y + outgoing.y
+            let sumLength = (sumX * sumX + sumY * sumY).squareRoot()
+            if sumLength < 1e-9 {
+                // The line doubles back on itself: follow the new direction.
+                offset = outgoing
+            } else {
+                let bisector = (x: sumX / sumLength, y: sumY / sumLength)
+                let cosine = max(bisector.x * outgoing.x + bisector.y * outgoing.y, 0.5)
+                offset = (bisector.x / cosine, bisector.y / cosine)
+            }
+        case let (incoming?, nil):
+            offset = incoming
+        case let (nil, outgoing?):
+            offset = outgoing
+        case (nil, nil):
+            offset = (0, 0)
+        }
+        result.append(
+            CLLocationCoordinate2D(
+                latitude: latitude(mercatorY: ys[index] + offset.y * distance),
+                longitude: xs[index] + offset.x * distance
+            )
+        )
+    }
+    return result
+}
+
+// Web Mercator northing in degrees (so it shares units with longitude).
+private func mercatorY(latitude: Double) -> Double {
+    let clamped = min(max(latitude, -85), 85) * .pi / 180
+    return log(tan(.pi / 4 + clamped / 2)) * 180 / .pi
+}
+
+private func latitude(mercatorY y: Double) -> Double {
+    (2 * atan(exp(y * .pi / 180)) - .pi / 2) * 180 / .pi
+}
+
+// MARK: - Regions for EV chargers
+
+/// A region's name and outline (from /regions/all).
+struct RegionOutline: Hashable, Sendable {
+    let name: String
+    let rings: [GeoPolyline]
+}
+
+/// The region `coordinate` is in, from the NZTA region outlines: the one it is
+/// inside (the most deeply, where the coarse outlines overlap), or else the
+/// nearest within `maxDistanceKm` — the outlines are coarse, so many coastal
+/// sites (central Wellington, Waiheke, Akaroa) fall just outside every one.
+/// nil when no outline is that close.
+func regionName(
+    containing coordinate: CLLocationCoordinate2D,
+    in outlines: [RegionOutline],
+    maxDistanceKm: Double = 60
+) -> String? {
+    var bestInside: (name: String, depth: Double)?
+    var bestNearby: (name: String, distance: Double)?
+    for outline in outlines {
+        let distance = outline.rings.map { distanceKm(from: coordinate, toRing: $0) }.min() ?? .infinity
+        if outline.rings.contains(where: { ringContains($0, coordinate) }) {
+            if bestInside == nil || distance > bestInside!.depth {
+                bestInside = (outline.name, distance)
+            }
+        } else if distance <= maxDistanceKm, bestNearby == nil || distance < bestNearby!.distance {
+            bestNearby = (outline.name, distance)
+        }
+    }
+    return bestInside?.name ?? bestNearby?.name
+}
+
+// Even-odd ray cast, longitude as x and latitude as y.
+private func ringContains(_ ring: GeoPolyline, _ coordinate: CLLocationCoordinate2D) -> Bool {
+    let x = coordinate.longitude
+    let y = coordinate.latitude
+    var inside = false
+    var previous = ring.count - 1
+    for index in 0..<ring.count {
+        let xi = ring.longitudes[index], yi = ring.latitudes[index]
+        let xj = ring.longitudes[previous], yj = ring.latitudes[previous]
+        if (yi > y) != (yj > y), x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside.toggle()
+        }
+        previous = index
+    }
+    return inside
+}
+
+// Distance to the nearest edge of `ring`, on a local flat projection — ample
+// for choosing between regions a few kilometres apart.
+private func distanceKm(from coordinate: CLLocationCoordinate2D, toRing ring: GeoPolyline) -> Double {
+    guard ring.count >= 2 else {
+        return .infinity
+    }
+    let kmPerDegree = 111.32
+    let xScale = cos(coordinate.latitude * .pi / 180) * kmPerDegree
+    let px = coordinate.longitude * xScale
+    let py = coordinate.latitude * kmPerDegree
+    var best = Double.infinity
+    var previous = ring.count - 1
+    for index in 0..<ring.count {
+        let ax = ring.longitudes[previous] * xScale, ay = ring.latitudes[previous] * kmPerDegree
+        let bx = ring.longitudes[index] * xScale, by = ring.latitudes[index] * kmPerDegree
+        let dx = bx - ax, dy = by - ay
+        let lengthSquared = dx * dx + dy * dy
+        let t = lengthSquared > 0 ? min(max(((px - ax) * dx + (py - ay) * dy) / lengthSquared, 0), 1) : 0
+        let ex = px - (ax + t * dx), ey = py - (ay + t * dy)
+        best = min(best, (ex * ex + ey * ey).squareRoot())
+        previous = index
+    }
+    return best
+}
+
+// MARK: - Map cluster emphasis
+
+// How much a feature should stand out, for tinting a cluster by its most
+// notable member in the colour the legend gives that member (a cluster of
+// Caution events is yellow, and red only when it holds an active closure).
+
+extension RoadEvent {
+    /// Active closure > delays > caution > other > upcoming > resolved.
+    var mapEmphasis: Int {
+        if isResolved {
+            return 0
+        }
+        if isUpcoming {
+            return 1
+        }
+        switch impactKind {
+        case .other:
+            return 2
+        case .caution:
+            return 3
+        case .delays:
+            return 4
+        case .closure:
+            return 5
+        }
+    }
+}
+
+extension TrafficCamera {
+    /// Offline > maintenance > online.
+    var mapEmphasis: Int {
+        switch statusKind {
+        case .online:
+            return 0
+        case .maintenance:
+            return 1
+        case .offline:
+            return 2
+        }
+    }
+}
+
+extension TIMSign {
+    /// Shows no destination/time lines right now. Many boards blank
+    /// overnight, and a blank board has nothing to read on the map.
+    var isBlank: Bool {
+        lines.isEmpty
+    }
+}
+
+// MARK: - Grid keyboard navigation
+
+enum GridMove {
+    case up
+    case down
+    case left
+    case right
+}
+
+/// Columns in a `GridItem(.adaptive(minimum:), spacing:)` grid `width` wide:
+/// as many `minimum`-wide columns as fit with `spacing` between them.
+func adaptiveGridColumnCount(width: Double, minimum: Double, spacing: Double) -> Int {
+    guard width.isFinite, minimum > 0, width > minimum else {
+        return 1
+    }
+    return max(1, Int(((width + spacing) / (minimum + spacing)).rounded(.down)))
+}
+
+/// Where an arrow key moves keyboard focus in a list or grid of `count` items
+/// laid out `columns` wide, row by row. ←/→ step one item; ↑/↓ step a row,
+/// and ↓ from the row above a shorter last row lands on its last item. From
+/// nothing focused, any arrow enters at the first item. nil when the move
+/// would leave the list.
+func gridFocusTarget(from index: Int?, count: Int, columns: Int, move: GridMove) -> Int? {
+    guard count > 0 else {
+        return nil
+    }
+    guard let index, (0..<count).contains(index) else {
+        return 0
+    }
+    let columns = max(1, columns)
+    let target: Int
+    switch move {
+    case .left:
+        target = index - 1
+    case .right:
+        target = index + 1
+    case .up:
+        target = index - columns
+    case .down:
+        let lastRow = (count - 1) / columns
+        guard index / columns < lastRow else {
+            return nil
+        }
+        target = min(index + columns, count - 1)
+    }
+    return (0..<count).contains(target) ? target : nil
+}
+
+// MARK: - Region picker
+
+/// The region picker's selection once the region list is known. A restored
+/// (or typed-case) selection takes the list's casing; one the list doesn't
+/// have falls back to All Regions ("") — but only when `listIsComplete` (the
+/// canonical /regions list has loaded). Until then the list is only what the
+/// data so far mentions, so the selection is kept.
+func normalizedRegionSelection(_ selection: String, available: [String], listIsComplete: Bool) -> String {
+    let trimmed = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return ""
+    }
+    if let match = available.first(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+        return match
+    }
+    return listIsComplete ? "" : selection
+}
+
+// MARK: - Travel Times
+
+/// The Travel Times caption when the flow filters hide journeys, e.g.
+/// "Showing 9 of 131 journeys · 122 with no live data are hidden". nil when
+/// nothing is hidden.
+func journeyVisibilityCaption(shown: Int, total: Int, hiddenWithoutLiveData: Int) -> String? {
+    let hidden = total - shown
+    guard hidden > 0 else {
+        return nil
+    }
+    let noData = min(max(hiddenWithoutLiveData, 0), hidden)
+    let byFilters = hidden - noData
+    let lead = "Showing \(shown) of \(total) journeys"
+    switch (noData, byFilters) {
+    case (_, 0):
+        return "\(lead) · \(noData) with no live data \(noData == 1 ? "is" : "are") hidden"
+    case (0, _):
+        return "\(lead) · \(byFilters) hidden by the flow filters"
+    default:
+        return "\(lead) · \(noData) with no live data and \(byFilters) more by the flow filters are hidden"
+    }
+}

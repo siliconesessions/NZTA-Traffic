@@ -34,7 +34,6 @@ enum TrafficTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @State private var store: TrafficStore
     @AppStorage(AutoRefreshPolicy.enabledKey) private var autoRefreshEnabled = false
-    @AppStorage(AutoRefreshPolicy.intervalKey) private var refreshIntervalSeconds = AutoRefreshPolicy.defaultInterval
     @AppStorage("nzta.hideEmptyVMS") private var hideEmptyVMS = true
     @AppStorage("nzta.event.showClosures") private var showEventClosures = true
     @AppStorage("nzta.event.showDelays") private var showEventDelays = true
@@ -54,20 +53,21 @@ struct ContentView: View {
     @AppStorage("nzta.flow.showSlow") private var showFlowSlow = true
     @AppStorage("nzta.flow.showCongested") private var showFlowCongested = true
     @AppStorage("nzta.flow.showNoData") private var showFlowNoData = false
+    @AppStorage("nzta.map.hideBlankTIM") private var hideBlankTIMSigns = false
     @SceneStorage("nzta.scene.selectedTab") private var selectedTab: TrafficTab = .cameras
     @SceneStorage("nzta.scene.region") private var selectedRegion = ""
-    @SceneStorage("nzta.scene.highway") private var highwayFilter = ""
-    @SceneStorage("nzta.scene.search") private var searchFilter = ""
     @State private var selectedCamera: TrafficCamera?
     @State private var mapPosition = MapCameraPosition.region(trafficMapInitialRegion)
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
     @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // The Highway and Search filters after GlobalFilterBar's 300 ms debounce.
+    // The bar owns the raw text, so typing re-renders only the bar.
     @State private var debouncedHighway = ""
     @State private var debouncedSearch = ""
-    @State private var filterDebounceTask: Task<Void, Never>?
+    // Bumped to make GlobalFilterBar clear its text fields.
+    @State private var filterClearRequest = 0
     @AppStorage("nzta.hasSeenWelcome") private var hasSeenWelcome = false
-    @FocusState private var searchFocused: Bool
     @State private var showWelcome = false
 
     // Injectable store so previews/tests can supply one backed by a stubbed
@@ -90,7 +90,6 @@ struct ContentView: View {
         .frame(minWidth: 980, minHeight: 680)
         .background(Color.primary.opacity(0.025))
         .background { tabShortcuts }
-        .background { searchFocusShortcut }
         .task {
             // The App starts the launch load (saved data, then live) and owns
             // auto-refresh and the Dock badge, so none of that depends on this
@@ -98,21 +97,9 @@ struct ContentView: View {
             await store.refreshIfStale(maxAge: Self.reopenRefreshAge)
         }
         .onAppear {
-            // Seed the debounced filters from any @SceneStorage-restored values.
-            debouncedHighway = highwayFilter
-            debouncedSearch = searchFilter
             if !hasSeenWelcome {
                 showWelcome = true
             }
-        }
-        .onDisappear {
-            filterDebounceTask?.cancel()
-        }
-        .onChange(of: highwayFilter) {
-            scheduleFilterDebounce()
-        }
-        .onChange(of: searchFilter) {
-            scheduleFilterDebounce()
         }
         .sheet(item: $selectedCamera) { camera in
             CameraPreviewView(
@@ -138,19 +125,6 @@ struct ContentView: View {
         hasSeenWelcome = true
     }
 
-    // Hidden control: ⌘F moves focus to the search field.
-    private var searchFocusShortcut: some View {
-        Button("") { searchFocused = true }
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-    }
-
-    private var clampedRefreshInterval: Int {
-        AutoRefreshPolicy.clamp(refreshIntervalSeconds)
-    }
-
     // Hidden buttons that bind ⌘1…⌘6 to each tab. They stay in the hierarchy so
     // their keyboard shortcuts are active, but are not visible or focusable.
     private var tabShortcuts: some View {
@@ -163,40 +137,26 @@ struct ContentView: View {
         }
     }
 
-    private var hasActiveFilters: Bool {
-        !selectedRegion.isEmpty || !highwayFilter.isEmpty || !searchFilter.isEmpty
+    // The shared Region / Highway / Search filters, as applied.
+    private var hasSharedFilters: Bool {
+        !selectedRegion.isEmpty || !debouncedHighway.isEmpty || !debouncedSearch.isEmpty
     }
 
-    private var activeFilterSummary: String {
-        var parts: [String] = []
-        if !selectedRegion.isEmpty { parts.append("Region: \(selectedRegion)") }
-        if !highwayFilter.isEmpty { parts.append("Highway: \(highwayFilter)") }
-        if !searchFilter.isEmpty { parts.append("Search: \(searchFilter)") }
-        return parts.isEmpty ? "No active filters" : parts.joined(separator: " · ")
+    // Whether anything — the shared filters or this section's own chips — may
+    // be hiding results, for a section's empty state.
+    private func hasActiveFilters(_ section: ScopedFilterSection) -> Bool {
+        hasSharedFilters || scopedFilterSummary(section) != nil
     }
 
+    // Clears the shared filters and the visible section's chips (⌘E, or an
+    // empty state's Clear Filters).
     private func clearAllFilters() {
         selectedRegion = ""
-        highwayFilter = ""
-        searchFilter = ""
+        filterClearRequest += 1
         // Clear the debounced copies immediately so results update at once.
-        filterDebounceTask?.cancel()
         debouncedHighway = ""
         debouncedSearch = ""
-    }
-
-    // Coalesce rapid keystrokes in the highway/search fields so filtering and
-    // sorting run at most once per 300 ms of typing rather than per keystroke.
-    private func scheduleFilterDebounce() {
-        filterDebounceTask?.cancel()
-        filterDebounceTask = Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else {
-                return
-            }
-            debouncedHighway = highwayFilter
-            debouncedSearch = searchFilter
-        }
+        resetScopedFilters(visibleScopedSection)
     }
 
     private var header: some View {
@@ -309,93 +269,15 @@ struct ContentView: View {
     }
 
     private var filters: some View {
-        HStack(spacing: 10) {
-            Picker("Region", selection: $selectedRegion) {
-                Text("All Regions").tag("")
-                ForEach(store.allRegions, id: \.self) { region in
-                    Text(region).tag(region)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 180)
-
-            TextField("Highway (e.g. SH1)", text: $highwayFilter)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 120, maxWidth: 200)
-
-            TextField("Search locations", text: $searchFilter)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 180, maxWidth: 360)
-                .focused($searchFocused)
-
-            if hasActiveFilters {
-                Label("Filtered", systemImage: "line.3.horizontal.decrease.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .help(activeFilterSummary)
-            }
-
-            Button {
-                clearAllFilters()
-            } label: {
-                Image(systemName: "xmark.circle")
-            }
-            .keyboardShortcut("e", modifiers: .command)
-            .disabled(!hasActiveFilters)
-            .help("Clear all filters (⌘E)")
-
-            Button {
-                Task {
-                    await store.loadAllData(bustImageCache: true)
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .keyboardShortcut("r", modifiers: .command)
-            .disabled(store.isRefreshing)
-            .help(store.isRefreshing ? "Refreshing…" : "Refresh now (⌘R)")
-
-            Spacer(minLength: 8)
-
-            autoRefreshMenu
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(.background)
-    }
-
-    private var autoRefreshMenu: some View {
-        Menu {
-            Toggle("Enable Auto-refresh", isOn: $autoRefreshEnabled)
-            Divider()
-            Picker("Interval", selection: $refreshIntervalSeconds) {
-                ForEach(AutoRefreshPolicy.intervalOptions, id: \.self) { seconds in
-                    Text(AutoRefreshPolicy.intervalLabel(seconds)).tag(seconds)
-                }
-            }
-            .disabled(!autoRefreshEnabled)
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: autoRefreshEnabled
-                      ? "arrow.triangle.2.circlepath.circle.fill"
-                      : "arrow.triangle.2.circlepath.circle")
-                    .foregroundStyle(autoRefreshEnabled ? Color.blue : .secondary)
-                if autoRefreshEnabled {
-                    Text(autoRefreshIntervalLabel)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(autoRefreshEnabled
-              ? "Auto-refresh every \(autoRefreshIntervalLabel)"
-              : "Auto-refresh off")
-    }
-
-    private var autoRefreshIntervalLabel: String {
-        AutoRefreshPolicy.shortIntervalLabel(clampedRefreshInterval)
+        GlobalFilterBar(
+            store: store,
+            selectedRegion: $selectedRegion,
+            debouncedHighway: $debouncedHighway,
+            debouncedSearch: $debouncedSearch,
+            scopedFilterSummary: scopedFilterSummary(visibleScopedSection),
+            clearRequest: filterClearRequest,
+            onClearAll: clearAllFilters
+        )
     }
 
     // Chrome for a tab's scoped (per-section) filter row.
@@ -451,7 +333,7 @@ struct ContentView: View {
                 errorMessage: store.errors[.cameras],
                 cacheToken: store.imageCacheToken,
                 imageGeneration: store.cameraImageGeneration,
-                hasActiveFilters: hasActiveFilters,
+                hasActiveFilters: hasActiveFilters(.cameras),
                 onClearFilters: clearAllFilters,
                 onPreview: { selectedCamera = $0 },
                 onRetry: { Task { await store.reload(.cameras) } }
@@ -467,7 +349,7 @@ struct ContentView: View {
                 events: scopedEvents(),
                 isLoading: store.isLoading(.events),
                 errorMessage: store.errors[.events],
-                hasActiveFilters: hasActiveFilters,
+                hasActiveFilters: hasActiveFilters(.events),
                 onClearFilters: clearAllFilters,
                 onRetry: { Task { await store.reload(.events) } }
             )
@@ -478,13 +360,16 @@ struct ContentView: View {
         tabContainer(.vms) {
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
         } content: {
+            let signs = scopedVMSSigns()
             VMSTabView(
-                signs: scopedVMSSigns(),
+                signs: signs,
                 isLoading: store.isLoading(.vms),
                 errorMessage: store.errors[.vms],
                 hideEmpty: hideEmptyVMS,
-                hasActiveFilters: hasActiveFilters,
+                hiddenBlankCount: hideEmptyVMS ? sharedVMSSigns().count - signs.count : 0,
+                hasActiveFilters: hasActiveFilters(.vms),
                 onClearFilters: clearAllFilters,
+                onShowBlank: { hideEmptyVMS = false },
                 onRetry: { Task { await store.reload(.vms) } }
             )
         }
@@ -494,15 +379,29 @@ struct ContentView: View {
         tabContainer(.travelTimes) {
             flowFilters
         } content: {
+            let all = sharedJourneys()
+            let noDataHidden = showFlowNoData ? 0 : all.filter { $0.overallFlowKind == .noData }.count
             TravelTimesTabView(
                 journeys: scopedJourneys(),
+                totalCount: all.count,
+                hiddenWithoutLiveData: noDataHidden,
                 isLoading: store.isLoading(.journeys),
                 errorMessage: store.errors[.journeys],
-                hasActiveFilters: hasActiveFilters,
+                hasActiveFilters: hasActiveFilters(.flow),
                 onClearFilters: clearAllFilters,
+                onShowAll: showAllJourneys,
                 onRetry: { Task { await store.reload(.journeys) } }
             )
         }
+    }
+
+    // Travel Times' "Show All": every flow chip on, No Data included.
+    private func showAllJourneys() {
+        showFlowFreeFlow = true
+        showFlowModerate = true
+        showFlowSlow = true
+        showFlowCongested = true
+        showFlowNoData = true
     }
 
     private var mapTab: some View {
@@ -510,33 +409,60 @@ struct ContentView: View {
             mapTabFilterBar
         } content: {
             TrafficMapTabView(
-                cameras: scopedCameras(),
-                events: scopedEvents(),
-                vmsSigns: scopedVMSSigns(),
-                journeys: scopedJourneys(),
-                timSigns: scopedTIMSigns(),
-                evChargers: store.evChargers,
-                congestion: store.congestion,
-                camerasLoading: store.isLoading(.cameras),
-                eventsLoading: store.isLoading(.events),
-                vmsLoading: store.isLoading(.vms),
-                journeysLoading: store.isLoading(.journeys),
-                timSignsLoading: store.isLoading(.timSigns),
-                evChargersLoading: store.isLoadingEVChargers,
-                congestionLoading: store.isLoading(.congestion),
-                cameraErrorMessage: store.errors[.cameras],
-                eventErrorMessage: store.errors[.events],
-                vmsErrorMessage: store.errors[.vms],
-                journeyErrorMessage: store.errors[.journeys],
-                timSignsErrorMessage: store.errors[.timSigns],
-                evChargersErrorMessage: store.evChargersError,
-                congestionErrorMessage: store.errors[.congestion],
+                cameras: mapSelectedLayer == .cameras ? scopedCameras() : [],
+                events: mapSelectedLayer == .events ? scopedEvents() : [],
+                vmsSigns: mapSelectedLayer == .vms ? scopedVMSSigns() : [],
+                flowSegments: mapSelectedLayer == .flow ? mapFlowSegments() : [],
+                flowLegCount: mapSelectedLayer == .flow ? mapFlowLegCounts().total : 0,
+                timSigns: mapSelectedLayer == .timSigns ? scopedTIMSigns() : [],
+                evChargers: mapSelectedLayer == .evChargers ? scopedEVChargers() : [],
+                congestion: mapSelectedLayer == .congestion ? scopedCongestion() : [],
+                isLoading: mapLayerIsLoading,
+                errorMessage: mapLayerErrorMessage,
                 position: $mapPosition,
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
                 onCameraPreview: { selectedCamera = $0 },
                 onRetry: { layer in Task { await reloadMapLayer(layer) } }
             )
+        }
+    }
+
+    private var mapLayerIsLoading: Bool {
+        switch mapSelectedLayer {
+        case .cameras:
+            return store.isLoading(.cameras)
+        case .events:
+            return store.isLoading(.events)
+        case .vms:
+            return store.isLoading(.vms)
+        case .flow:
+            return store.isLoading(.journeys)
+        case .timSigns:
+            return store.isLoading(.timSigns)
+        case .evChargers:
+            return store.isLoadingEVChargers
+        case .congestion:
+            return store.isLoading(.congestion)
+        }
+    }
+
+    private var mapLayerErrorMessage: String? {
+        switch mapSelectedLayer {
+        case .cameras:
+            return store.errors[.cameras]
+        case .events:
+            return store.errors[.events]
+        case .vms:
+            return store.errors[.vms]
+        case .flow:
+            return store.errors[.journeys]
+        case .timSigns:
+            return store.errors[.timSigns]
+        case .evChargers:
+            return store.evChargersError
+        case .congestion:
+            return store.errors[.congestion]
         }
     }
 
@@ -560,42 +486,66 @@ struct ContentView: View {
         }
     }
 
+    // Two rows, so the layer's own filters never squeeze the layer picker
+    // (at the default 1,180 pt window the single row ran to 1,470 pt): the
+    // layer, its counts and Reset on top; the layer's chips — or a note on
+    // how the shared filters apply to it — underneath.
     private var mapTabFilterBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                mapLayerPicker
+                Spacer(minLength: 8)
+                mapCountLabels
+                Button {
+                    mapPosition = .region(trafficMapInitialRegion)
+                } label: {
+                    Image(systemName: "scope")
+                }
+                .help("Reset map view")
+            }
+            mapLayerFilters
+        }
+        .padding(.vertical, 4)
+    }
+
+    // Segmented while it fits, a pop-up menu in a narrower window. Laid out
+    // first in its row, so it is offered all the width the counts leave.
+    private var mapLayerPicker: some View {
+        ViewThatFits(in: .horizontal) {
+            mapLayerPickerContent(fullNames: false)
+                .pickerStyle(.segmented)
+                .fixedSize()
+            mapLayerPickerContent(fullNames: true)
+                .pickerStyle(.menu)
+                .fixedSize()
+        }
+        .layoutPriority(1)
+    }
+
+    private func mapLayerPickerContent(fullNames: Bool) -> some View {
+        Picker("Layer", selection: $mapSelectedLayer) {
+            ForEach(TrafficMapLayer.allCases) { layer in
+                Text(fullNames ? layer.rawValue : layer.pickerLabel).tag(layer)
+            }
+        }
+        .labelsHidden()
+        .help(mapSelectedLayer.rawValue)
+    }
+
+    private var mapCountLabels: some View {
         let counts = mapCounts
         return HStack(spacing: 12) {
-            Picker("Layer", selection: $mapSelectedLayer) {
-                Text("Cameras").tag(TrafficMapLayer.cameras)
-                Text("Events").tag(TrafficMapLayer.events)
-                Text("VMS").tag(TrafficMapLayer.vms)
-                Text("Flow").tag(TrafficMapLayer.flow)
-                Text("TIM").tag(TrafficMapLayer.timSigns)
-                Text("EV").tag(TrafficMapLayer.evChargers)
-                Text("Akl Jam").tag(TrafficMapLayer.congestion)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 470)
-
-            mapLayerFilters
-
-            Spacer()
-
             Label("\(counts.mapped) mapped", systemImage: "mappin.and.ellipse")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize()
 
             if counts.unmapped > 0 {
                 Label("\(counts.unmapped) off-map", systemImage: "location.slash")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                    .fixedSize()
             }
-
-            Button {
-                mapPosition = .region(trafficMapInitialRegion)
-            } label: {
-                Image(systemName: "scope")
-            }
-            .help("Reset map view")
         }
     }
 
@@ -611,11 +561,25 @@ struct ContentView: View {
         case .flow:
             flowFilters
         case .timSigns:
-            EmptyView()
+            BlankTIMToggleRow(hideBlank: $hideBlankTIMSigns)
         case .evChargers:
-            EmptyView()
+            FilterBarNote(text: "Region places each charger by its location; Highway matches chargers with a state highway address.")
         case .congestion:
-            EmptyView()
+            congestionNote
+        }
+    }
+
+    // The congestion feed is Auckland's motorways only, so another region
+    // leaves the layer empty: say why.
+    @ViewBuilder
+    private var congestionNote: some View {
+        if !selectedRegion.isEmpty, !matchesRegion("Auckland", selectedRegion: selectedRegion) {
+            FilterBarNote(
+                text: "Auckland motorways only — nothing to show for \(selectedRegion).",
+                systemImage: "exclamationmark.triangle"
+            )
+        } else {
+            FilterBarNote(text: "Auckland motorways only. Both directions are drawn side by side.")
         }
     }
 
@@ -650,21 +614,22 @@ struct ContentView: View {
             let mapped = items.filter { $0.mapCoordinate != nil }.count
             return MapCounts(mapped: mapped, total: items.count)
         case .flow:
-            let allLegs = scopedJourneys().flatMap(\.legs)
-            let mapped = allLegs.filter(\.hasMapGeometry).count
-            return MapCounts(mapped: mapped, total: allLegs.count)
+            // Legs, filtered per leg exactly as the map draws them.
+            let counts = mapFlowLegCounts()
+            return MapCounts(mapped: counts.mapped, total: counts.total)
         case .timSigns:
             let items = scopedTIMSigns()
             let mapped = items.filter { $0.mapCoordinate != nil }.count
             return MapCounts(mapped: mapped, total: items.count)
         case .evChargers:
-            let items = store.evChargers
+            let items = scopedEVChargers()
             let mapped = items.filter { $0.mapCoordinate != nil }.count
             return MapCounts(mapped: mapped, total: items.count)
         case .congestion:
-            let items = store.congestion
-            let mapped = items.filter { $0.polyline.count >= 2 }.count
-            return MapCounts(mapped: mapped, total: items.count)
+            let total = store.congestion.filter {
+                $0.matches(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+            }.count
+            return MapCounts(mapped: scopedCongestion().count, total: total)
         }
     }
 
@@ -688,6 +653,101 @@ struct ContentView: View {
             island: $eventIslandFilter
         )
     }
+
+    // MARK: - Section (chip) filters
+
+    // The chip filters that belong to the visible tab — or, on the Map, to
+    // the visible layer.
+    private var visibleScopedSection: ScopedFilterSection? {
+        switch selectedTab {
+        case .cameras:
+            return .cameras
+        case .events:
+            return .events
+        case .vms:
+            return .vms
+        case .travelTimes:
+            return .flow
+        case .trafficMap:
+            switch mapSelectedLayer {
+            case .cameras:
+                return .cameras
+            case .events:
+                return .events
+            case .vms:
+                return .vms
+            case .flow:
+                return .flow
+            case .timSigns:
+                return .timSigns
+            case .evChargers, .congestion:
+                return nil
+            }
+        case .about:
+            return nil
+        }
+    }
+
+    // What a section's chips hide beyond its defaults, e.g. "Hidden: Offline,
+    // Maintenance" — nil when they're at their defaults. The defaults
+    // themselves (No Data journeys, blank VMS signs, resolved events) aren't
+    // counted as filtering: the sections explain those where they apply.
+    private func scopedFilterSummary(_ section: ScopedFilterSection?) -> String? {
+        var hidden: [String] = []
+        switch section {
+        case .cameras:
+            if !showCameraOnline { hidden.append("Online") }
+            if !showCameraOffline { hidden.append("Offline") }
+            if !showCameraMaintenance { hidden.append("Maintenance") }
+        case .events:
+            if !showEventClosures { hidden.append("Closures") }
+            if !showEventDelays { hidden.append("Delays") }
+            if !showEventCaution { hidden.append("Caution") }
+            if !showEventOther { hidden.append("Other") }
+            if !showEventPlanned { hidden.append("Planned") }
+            if !showEventUnplanned { hidden.append("Incident") }
+            if eventIslandFilter != .all { hidden.append("outside the \(eventIslandFilter.label)") }
+        case .flow:
+            if !showFlowFreeFlow { hidden.append("Free Flow") }
+            if !showFlowModerate { hidden.append("Moderate") }
+            if !showFlowSlow { hidden.append("Slow") }
+            if !showFlowCongested { hidden.append("Congested") }
+        case .timSigns:
+            if hideBlankTIMSigns { hidden.append("blank boards") }
+        case .vms, nil:
+            break
+        }
+        return hidden.isEmpty ? nil : "Hidden: " + hidden.joined(separator: ", ")
+    }
+
+    // Back to the defaults for everything scopedFilterSummary counts.
+    private func resetScopedFilters(_ section: ScopedFilterSection?) {
+        switch section {
+        case .cameras:
+            showCameraOnline = true
+            showCameraOffline = true
+            showCameraMaintenance = true
+        case .events:
+            showEventClosures = true
+            showEventDelays = true
+            showEventCaution = true
+            showEventOther = true
+            showEventPlanned = true
+            showEventUnplanned = true
+            eventIslandFilter = .all
+        case .flow:
+            showFlowFreeFlow = true
+            showFlowModerate = true
+            showFlowSlow = true
+            showFlowCongested = true
+        case .timSigns:
+            hideBlankTIMSigns = false
+        case .vms, nil:
+            break
+        }
+    }
+
+    // MARK: - Slices from the store
 
     private var allowedEventImpacts: Set<EventImpactKind> {
         var set = Set<EventImpactKind>()
@@ -723,6 +783,11 @@ struct ContentView: View {
         )
     }
 
+    // VMS signs matching the shared filters, blank ones included.
+    private func sharedVMSSigns() -> [VMSSign] {
+        store.filteredVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    }
+
     private func scopedVMSSigns() -> [VMSSign] {
         store.scopedVMSSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, hideEmpty: hideEmptyVMS)
     }
@@ -737,13 +802,45 @@ struct ContentView: View {
         return set
     }
 
+    // Journeys matching the shared filters, before the flow chips.
+    private func sharedJourneys() -> [TrafficJourney] {
+        store.filteredJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    }
+
     private func scopedJourneys() -> [TrafficJourney] {
         store.scopedJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
     }
 
-    private func scopedTIMSigns() -> [TIMSign] {
-        store.filteredTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    // The Flow map filters each leg on its own flow (see flowMapSegments).
+    private func mapFlowSegments() -> [FlowMapSegment] {
+        store.mapFlowSegments(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
     }
+
+    private func mapFlowLegCounts() -> (mapped: Int, total: Int) {
+        flowMapLegCounts(for: sharedJourneys(), allowedKinds: allowedFlowKinds)
+    }
+
+    private func scopedTIMSigns() -> [TIMSign] {
+        store.scopedTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, hideBlank: hideBlankTIMSigns)
+    }
+
+    private func scopedEVChargers() -> [EVCharger] {
+        store.filteredEVChargers(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    }
+
+    private func scopedCongestion() -> [CongestionSegment] {
+        store.filteredCongestion(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+    }
+}
+
+// A group of per-section chip filters. The Map shares the tabs' chips for
+// its cameras, events, VMS and flow layers, and has its own for TIM boards.
+private enum ScopedFilterSection {
+    case cameras
+    case events
+    case vms
+    case flow
+    case timSigns
 }
 
 

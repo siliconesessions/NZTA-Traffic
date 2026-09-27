@@ -13,7 +13,7 @@ struct JourneyCard: View {
                 Spacer()
 
                 if let region = journey.regionName {
-                    Badge(text: region, tint: .black)
+                    Badge(text: region, tint: .badgeNeutral)
                 }
 
                 Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
@@ -45,10 +45,7 @@ struct JourneyCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        }
+        .overlay { CardBorder() }
     }
 
     // The journey's bottleneck. Only highlighted when it's genuinely slow or
@@ -253,8 +250,11 @@ struct CameraCard: View {
     var body: some View {
         Button(action: onPreview) {
             VStack(alignment: .leading, spacing: 0) {
+                // The live frame, scaled to the card. The static thumbnail is
+                // only a labelled fallback: it's years old (see thumbUrl).
                 CameraImage(
-                    url: camera.thumbnailURL(cacheToken: cacheToken),
+                    url: camera.liveImageURL(cacheToken: cacheToken),
+                    fallbackURL: camera.stillThumbnailURL,
                     generation: imageGeneration,
                     contentMode: .fill,
                     failureText: camera.isOnline ? "Image unavailable" : "Offline"
@@ -285,7 +285,7 @@ struct CameraCard: View {
 
                     HStack(spacing: 8) {
                         if let region = camera.regionName {
-                            Badge(text: region, tint: .black)
+                            Badge(text: region, tint: .badgeNeutral)
                         }
                         if !camera.isOnline {
                             Badge(text: camera.underMaintenance ? "Maintenance" : "Offline", tint: .red)
@@ -296,10 +296,7 @@ struct CameraCard: View {
             }
             .background(.background)
             .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radii.card)
-                    .stroke(Color.cardStroke, lineWidth: 1)
-            }
+            .overlay { CardBorder() }
         }
         .buttonStyle(.plain)
     }
@@ -311,13 +308,17 @@ struct CameraCard: View {
 // cheap 304 — and keeps the current frame on screen until the new one arrives,
 // so auto-refresh never flashes a spinner. A new URL (⌘R's `?t=` token) loads
 // fresh. Plain AsyncImage can do neither: it never reloads an unchanged URL,
-// and resetting its identity blanks the image while it reloads.
+// and resetting its identity blanks the image while it reloads. When the live
+// frame can't load and nothing is showing yet, `fallbackURL` (the camera's
+// static thumbnail) is shown instead, marked "Not live".
 struct CameraImage: View {
     let url: URL?
+    var fallbackURL: URL?
     let generation: Int
     var contentMode: ContentMode = .fill
     var failureText = "Image unavailable"
     @State private var image: NSImage?
+    @State private var isShowingFallback = false
     @State private var didFail = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -328,19 +329,36 @@ struct CameraImage: View {
         let generation: Int
     }
 
+    private enum LoadResult {
+        case loaded(NSImage)
+        case failed
+        case cancelled
+    }
+
     var body: some View {
         ZStack {
             Rectangle()
                 .fill(Color.primary.opacity(0.08))
 
             if let image {
+                // Filled to the frame it's given and cropped there, so a wide
+                // frame never makes the view (and the Not Live label's
+                // corner) bigger than the card shows.
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
-            } else if didFail || url == nil {
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .clipped()
+            } else if didFail || (url == nil && fallbackURL == nil) {
                 CameraPlaceholder(text: failureText)
             } else {
                 ProgressView()
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if isShowingFallback, image != nil {
+                NotLiveLabel()
+                    .padding(8)
             }
         }
         .task(id: LoadKey(url: url, generation: generation)) {
@@ -349,9 +367,37 @@ struct CameraImage: View {
     }
 
     private func load() async {
-        guard let url else {
+        if let url {
+            switch await fetch(url) {
+            case .loaded(let loaded):
+                show(loaded, isFallback: false)
+                return
+            case .cancelled:
+                return
+            case .failed:
+                break
+            }
+        }
+        // The live frame failed, or there isn't one. A frame already on
+        // screen stays; with nothing showing, try the static still.
+        guard image == nil else {
             return
         }
+        if let fallbackURL {
+            switch await fetch(fallbackURL) {
+            case .loaded(let loaded):
+                show(loaded, isFallback: true)
+                return
+            case .cancelled:
+                return
+            case .failed:
+                break
+            }
+        }
+        didFail = true
+    }
+
+    private func fetch(_ url: URL) async -> LoadResult {
         // First load: whatever the URL cache allows. Reloads: always ask the
         // server, sending the cached validators.
         var request = URLRequest(
@@ -362,34 +408,44 @@ struct CameraImage: View {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard !Task.isCancelled else {
-                return
+                return .cancelled
             }
             guard let status = (response as? HTTPURLResponse)?.statusCode,
                   (200..<300).contains(status),
                   let loaded = NSImage(data: data) else {
-                markFailedIfEmpty()
-                return
+                return .failed
             }
-            // Fade in the first frame only; later frames swap in place.
-            let animation: Animation? = reduceMotion || image != nil ? nil : .easeInOut(duration: 0.3)
-            withAnimation(animation) {
-                image = loaded
-                didFail = false
-            }
+            return .loaded(loaded)
         } catch {
-            // Cancelled (scrolled away, or a newer load took over) or failed:
-            // either way keep whatever frame is showing.
-            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else {
-                return
+            // Cancelled (scrolled away, or a newer load took over): keep
+            // whatever frame is showing.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                return .cancelled
             }
-            markFailedIfEmpty()
+            return .failed
         }
     }
 
-    private func markFailedIfEmpty() {
-        if image == nil {
-            didFail = true
+    private func show(_ loaded: NSImage, isFallback: Bool) {
+        // Fade in the first frame only; later frames swap in place.
+        let animation: Animation? = reduceMotion || image != nil ? nil : .easeInOut(duration: 0.3)
+        withAnimation(animation) {
+            image = loaded
+            isShowingFallback = isFallback
+            didFail = false
         }
+    }
+}
+
+// Marks a camera card showing the static thumbnail rather than a live frame.
+private struct NotLiveLabel: View {
+    var body: some View {
+        Label("Not live", systemImage: "clock.badge.exclamationmark")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.regularMaterial, in: Capsule())
+            .help("The live image couldn't load. This is an old still from NZTA, not the current view.")
     }
 }
 
@@ -533,10 +589,7 @@ struct RoadEventCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        }
+        .overlay { CardBorder() }
     }
 
     // "Road Closed", or "Upcoming · Road Closed" / "Resolved · Road Closed"
@@ -686,10 +739,7 @@ struct EVChargerCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        }
+        .overlay { CardBorder() }
     }
 }
 
@@ -708,7 +758,7 @@ struct TIMCard: View {
                 Spacer()
 
                 if let region = sign.regionName {
-                    Badge(text: region, tint: .black)
+                    Badge(text: region, tint: .badgeNeutral)
                 }
             }
             .padding(.horizontal, 16)
@@ -736,10 +786,7 @@ struct TIMCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        }
+        .overlay { CardBorder() }
     }
 }
 

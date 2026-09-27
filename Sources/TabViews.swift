@@ -11,16 +11,18 @@ struct CamerasTabView: View {
     let onPreview: (TrafficCamera) -> Void
     var onRetry: (() -> Void)?
     @FocusState private var focusedID: String?
+    // The grid's current column count, for ↑/↓ to move a row.
+    @State private var columns = 1
+
+    private nonisolated static let minimumCardWidth: CGFloat = 280
+    private nonisolated static let gridSpacing: CGFloat = 16
 
     private var onlineCount: Int {
         cameras.filter(\.isOnline).count
     }
 
-    private var cameraIDs: [String] {
-        cameras.map(\.id)
-    }
-
     var body: some View {
+        let cameraIDs = cameras.map(\.id)
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -43,16 +45,29 @@ struct CamerasTabView: View {
                             StatItem(title: "Online", value: "\(onlineCount)", tint: .green)
                         ])
 
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: Self.minimumCardWidth), spacing: Self.gridSpacing)],
+                            spacing: Self.gridSpacing
+                        ) {
                             ForEach(cameras) { camera in
                                 CameraCard(camera: camera, cacheToken: cacheToken, imageGeneration: imageGeneration) {
                                     onPreview(camera)
                                 }
-                                .keyboardNavigable(id: camera.id, in: cameraIDs, focus: $focusedID) {
+                                .keyboardFocusable(id: camera.id, focus: $focusedID) {
                                     onPreview(camera)
                                 }
                             }
                         }
+                        .onGeometryChange(for: Int.self) { geometry in
+                            adaptiveGridColumnCount(
+                                width: geometry.size.width,
+                                minimum: Self.minimumCardWidth,
+                                spacing: Self.gridSpacing
+                            )
+                        } action: { count in
+                            columns = count
+                        }
+                        .keyboardNavigation(over: cameraIDs, columns: columns, focus: $focusedID)
                     }
                 }
                 .padding(24)
@@ -98,11 +113,8 @@ struct RoadEventsTabView: View {
         events.filter(\.isUpcoming).count
     }
 
-    private var eventIDs: [String] {
-        events.map(\.id)
-    }
-
     var body: some View {
+        let eventIDs = events.map(\.id)
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -130,9 +142,10 @@ struct RoadEventsTabView: View {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(events) { event in
                                 RoadEventCard(event: event)
-                                    .keyboardNavigable(id: event.id, in: eventIDs, focus: $focusedID)
+                                    .keyboardFocusable(id: event.id, focus: $focusedID)
                             }
                         }
+                        .keyboardNavigation(over: eventIDs, focus: $focusedID)
                     }
                 }
                 .padding(24)
@@ -149,16 +162,35 @@ struct VMSTabView: View {
     let isLoading: Bool
     let errorMessage: String?
     let hideEmpty: Bool
+    // Signs matching the shared filters that "Hide signs with no active
+    // message" is hiding.
+    var hiddenBlankCount = 0
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
+    var onShowBlank: (() -> Void)?
     var onRetry: (() -> Void)?
     @FocusState private var focusedID: String?
+    @State private var columns = 1
 
-    private var signIDs: [String] {
-        signs.map(\.id)
+    private nonisolated static let minimumCardWidth: CGFloat = 300
+    private nonisolated static let gridSpacing: CGFloat = 16
+
+    // Everything left is blank and the toggle is hiding it: say so, rather
+    // than suggesting a refresh.
+    private var blankSignsHint: HiddenItemsHint? {
+        guard hiddenBlankCount > 0, let onShowBlank else {
+            return nil
+        }
+        let noun = hiddenBlankCount == 1 ? "sign has" : "signs have"
+        return HiddenItemsHint(
+            message: "\(hiddenBlankCount) \(noun) no message right now.",
+            actionTitle: "Show Blank Signs",
+            action: onShowBlank
+        )
     }
 
     var body: some View {
+        let signIDs = signs.map(\.id)
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -173,19 +205,33 @@ struct VMSTabView: View {
                             systemImage: "signpost.right",
                             title: "No VMS signs to show",
                             hasActiveFilters: hasActiveFilters,
-                            onClearFilters: onClearFilters
+                            onClearFilters: onClearFilters,
+                            hiddenByDefault: blankSignsHint
                         )
                     } else {
                         StatsRow(stats: [
                             StatItem(title: hideEmpty ? "Signs With Message" : "Active VMS Signs", value: "\(signs.count)", tint: .orange)
                         ])
 
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 16)], spacing: 16) {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: Self.minimumCardWidth), spacing: Self.gridSpacing)],
+                            spacing: Self.gridSpacing
+                        ) {
                             ForEach(signs) { sign in
                                 VMSCard(sign: sign)
-                                    .keyboardNavigable(id: sign.id, in: signIDs, focus: $focusedID)
+                                    .keyboardFocusable(id: sign.id, focus: $focusedID)
                             }
                         }
+                        .onGeometryChange(for: Int.self) { geometry in
+                            adaptiveGridColumnCount(
+                                width: geometry.size.width,
+                                minimum: Self.minimumCardWidth,
+                                spacing: Self.gridSpacing
+                            )
+                        } action: { count in
+                            columns = count
+                        }
+                        .keyboardNavigation(over: signIDs, columns: columns, focus: $focusedID)
                     }
                 }
                 .padding(24)
@@ -199,10 +245,18 @@ struct VMSTabView: View {
 
 struct TravelTimesTabView: View {
     let journeys: [TrafficJourney]
+    // Journeys matching the shared filters, before the flow chips — the
+    // "of 131" in "Showing 9 of 131 journeys".
+    var totalCount = 0
+    // How many of those the chips hide for having no live data (No Data is
+    // off by default).
+    var hiddenWithoutLiveData = 0
     let isLoading: Bool
     let errorMessage: String?
     let hasActiveFilters: Bool
     let onClearFilters: () -> Void
+    // Turns every flow chip on, No Data included.
+    var onShowAll: (() -> Void)?
     var onRetry: (() -> Void)?
     @FocusState private var focusedID: String?
 
@@ -216,11 +270,20 @@ struct TravelTimesTabView: View {
         }.count
     }
 
-    private var journeyIDs: [String] {
-        journeys.map(\.id)
+    private var noLiveDataHint: HiddenItemsHint? {
+        guard hiddenWithoutLiveData > 0, let onShowAll else {
+            return nil
+        }
+        let subject = hiddenWithoutLiveData == 1 ? "The 1 journey" : "All \(hiddenWithoutLiveData) journeys"
+        return HiddenItemsHint(
+            message: "\(subject) here \(hiddenWithoutLiveData == 1 ? "has" : "have") no live data right now, and No Data is hidden.",
+            actionTitle: "Show All Journeys",
+            action: onShowAll
+        )
     }
 
     var body: some View {
+        let journeyIDs = journeys.map(\.id)
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -235,21 +298,25 @@ struct TravelTimesTabView: View {
                             systemImage: "speedometer",
                             title: "No journeys to show",
                             hasActiveFilters: hasActiveFilters,
-                            onClearFilters: onClearFilters
+                            onClearFilters: onClearFilters,
+                            hiddenByDefault: noLiveDataHint
                         )
                     } else {
                         StatsRow(stats: [
-                            StatItem(title: "Total Journeys", value: "\(journeys.count)", tint: .gray),
+                            StatItem(title: "Journeys Shown", value: "\(journeys.count)", tint: .gray),
                             StatItem(title: "With Live Data", value: "\(liveJourneyCount)", tint: .blue),
                             StatItem(title: "Slow / Congested", value: "\(slowJourneyCount)", tint: .orange)
                         ])
 
+                        hiddenJourneysCaption
+
                         LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(journeys) { journey in
                                 JourneyCard(journey: journey)
-                                    .keyboardNavigable(id: journey.id, in: journeyIDs, focus: $focusedID)
+                                    .keyboardFocusable(id: journey.id, focus: $focusedID)
                             }
                         }
+                        .keyboardNavigation(over: journeyIDs, focus: $focusedID)
                     }
                 }
                 .padding(24)
@@ -259,5 +326,32 @@ struct TravelTimesTabView: View {
             }
         }
     }
-}
 
+    // "Showing 9 of 131 journeys · 122 with no live data are hidden [Show
+    // All]" whenever the flow chips hide journeys, so the list never quietly
+    // shows a fraction of what the header counts.
+    @ViewBuilder
+    private var hiddenJourneysCaption: some View {
+        if let caption = journeyVisibilityCaption(
+            shown: journeys.count,
+            total: totalCount,
+            hiddenWithoutLiveData: hiddenWithoutLiveData
+        ) {
+            HStack(spacing: 8) {
+                Image(systemName: "eye.slash")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(caption)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let onShowAll {
+                    Button("Show All", action: onShowAll)
+                        .controlSize(.small)
+                        .help("Show every journey, including those with no live data")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
