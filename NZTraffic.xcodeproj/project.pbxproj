@@ -7,12 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		1A2B3C4D5E6F700000000006 /* NZTraffic.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F700000000021 /* NZTraffic.icns */; };
+		1A2B3C4D5E6F7000000000D0 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F7000000000D1 /* AppIcon.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1A2B3C4D5E6F700000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		1A2B3C4D5E6F700000000021 /* NZTraffic.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = NZTraffic.icns; sourceTree = "<group>"; };
+		1A2B3C4D5E6F7000000000D1 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000022 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
 		1A2B3C4D5E6F700000000030 /* NZ Traffic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NZ Traffic.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A2B3C4D5E6F700000000031 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -65,7 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				1A2B3C4D5E6F700000000020 /* Info.plist */,
-				1A2B3C4D5E6F700000000021 /* NZTraffic.icns */,
+				1A2B3C4D5E6F7000000000D1 /* AppIcon.icon */,
 				1A2B3C4D5E6F700000000022 /* AppIcon.png */,
 			);
 			path = Resources;
@@ -141,7 +141,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1A2B3C4D5E6F700000000006 /* NZTraffic.icns in Resources */,
+				1A2B3C4D5E6F7000000000D0 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -293,6 +293,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -315,6 +316,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;

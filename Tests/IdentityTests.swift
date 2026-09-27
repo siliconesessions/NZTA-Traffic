@@ -63,11 +63,11 @@ private func testBundleMetadata(_ t: TestRunner) {
     t.equal(plist["CFBundleName"] as? String, AppIdentity.productName, "Info.plist CFBundleName")
     t.equal(plist["CFBundleDisplayName"] as? String, AppIdentity.productName, "Info.plist CFBundleDisplayName")
     t.equal(plist["CFBundleExecutable"] as? String, "NZTraffic", "Info.plist executable name")
-    let icon = plist["CFBundleIconFile"] as? String ?? ""
-    t.check(
-        FileManager.default.fileExists(atPath: root.appendingPathComponent("Resources/\(icon).icns").path),
-        "CFBundleIconFile names an icon that exists in Resources/"
-    )
+    // The icon comes from Resources/AppIcon.icon via actool, which supplies
+    // CFBundleIconName / CFBundleIconFile; a hand-set key would shadow it.
+    t.check(plist["CFBundleIconFile"] == nil, "Info.plist leaves CFBundleIconFile to actool")
+    t.check(plist["CFBundleIconName"] == nil, "Info.plist leaves CFBundleIconName to actool")
+    testIconComposerIcon(t, root: root)
     let copyright = plist["NSHumanReadableCopyright"] as? String ?? ""
     t.check(copyright.contains("siliconesessions"), "copyright names the author")
     t.check(copyright.contains("NZ Transport Agency Waka Kotahi"), "copyright still credits the data source")
@@ -86,6 +86,51 @@ private func testBundleMetadata(_ t: TestRunner) {
     t.check(
         bundleIDLines.allSatisfy { $0 == "PRODUCT_BUNDLE_IDENTIFIER = \(AppIdentity.bundleIdentifier);" },
         "every Xcode configuration uses the permanent bundle ID"
+    )
+}
+
+// The app icon is an Icon Composer document that both build paths compile
+// with actool: its icon.json must parse and name only images it contains,
+// Xcode must build it as the AppIcon, and build_app.sh must compile it too.
+private func testIconComposerIcon(_ t: TestRunner, root: URL) {
+    let iconURL = root.appendingPathComponent("Resources/AppIcon.icon")
+    guard
+        let data = try? Data(contentsOf: iconURL.appendingPathComponent("icon.json")),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        t.check(false, "Resources/AppIcon.icon/icon.json is readable JSON")
+        return
+    }
+    let groups = json["groups"] as? [[String: Any]] ?? []
+    let imageNames = groups
+        .flatMap { $0["layers"] as? [[String: Any]] ?? [] }
+        .compactMap { $0["image-name"] as? String }
+    t.check(!imageNames.isEmpty, "the icon has at least one image layer")
+    t.check(
+        imageNames.allSatisfy {
+            FileManager.default.fileExists(atPath: iconURL.appendingPathComponent("Assets/\($0)").path)
+        },
+        "every layer's image exists in AppIcon.icon/Assets"
+    )
+    let platforms = (json["supported-platforms"] as? [String: Any])?["squares"] as? [String] ?? []
+    t.check(platforms.contains("macOS"), "the icon supports macOS")
+
+    let project = (try? String(contentsOf: root.appendingPathComponent("NZTraffic.xcodeproj/project.pbxproj"), encoding: .utf8)) ?? ""
+    let appIconLines = project
+        .split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { $0.hasPrefix("ASSETCATALOG_COMPILER_APPICON_NAME") }
+    t.check(
+        appIconLines.count == 2 && appIconLines.allSatisfy { $0 == "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;" },
+        "both target configurations build AppIcon"
+    )
+    t.check(project.contains("AppIcon.icon in Resources"), "AppIcon.icon is in the target's Resources phase")
+    t.check(!project.contains(".icns"), "the Xcode project no longer bundles a hand-made .icns")
+
+    let script = (try? String(contentsOf: root.appendingPathComponent("build_app.sh"), encoding: .utf8)) ?? ""
+    t.check(
+        script.contains("actool") && script.contains("--app-icon AppIcon") && script.contains("Resources/AppIcon.icon"),
+        "build_app.sh compiles the same icon with actool"
     )
 }
 

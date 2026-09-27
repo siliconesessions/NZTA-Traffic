@@ -6,7 +6,7 @@ import Observation
 // app running):
 // - starts the store's launch load (saved data first, then live);
 // - feeds the store the `nzta.*` auto-refresh settings — whenever they change,
-//   from the filter bar, Settings or the Welcome sheet — and the app's
+//   from the toolbar's auto-refresh menu, Settings or the Welcome sheet — and the app's
 //   activity, so refreshing continues, more slowly, in the background;
 // - keeps the Dock badge in step with the active-closure count.
 @MainActor

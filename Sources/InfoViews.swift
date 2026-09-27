@@ -14,8 +14,8 @@ struct WelcomeView: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("Switch sections with the tabs or ⌘1–6.", systemImage: "square.grid.2x2")
-                Label("Filter by region, highway (e.g. SH1), or search (⌘F). ⌘E clears filters.", systemImage: "line.3.horizontal.decrease.circle")
+                Label("Switch sections in the sidebar or with ⌘1–6.", systemImage: "square.grid.2x2")
+                Label("Filter by region, highway (e.g. SH1), or search (⌘F) in the toolbar. ⌘E clears filters.", systemImage: "line.3.horizontal.decrease.circle")
                 Label("⌘R refreshes the data. Open Help (⌘?) any time.", systemImage: "arrow.clockwise")
             }
             .font(.callout)
@@ -105,10 +105,11 @@ struct AppHelpView: View {
 
                 AboutSection(title: "Shared Controls") {
                     VStack(alignment: .leading, spacing: 8) {
+                        BulletText("Region, Highway, Search, Clear Filters, Refresh and Auto-refresh are in the toolbar; the toolbar's middle says when the data last updated. The sidebar shows how many items each section has.")
                         BulletText("Region limits cameras, road events, VMS signs, travel times, and every map layer to the selected region. EV chargers are placed in a region by their location; the Auckland congestion layer only has Auckland motorways.")
                         BulletText("Highway matches whole state highways: SH1, SH 1, State Highway 1, 01N and 1 all mean State Highway 1 — not SH10–SH18 or spurs such as SH1B (type SH1B for those). Items at a junction match both highways. Other text, such as CNC, matches whole words in route names.")
                         BulletText("Search matches names, locations, descriptions, event comments, regions, and VMS message text where available. Macrons are optional: otaki finds Ōtaki.")
-                        BulletText("Each tab's own chips (camera status, event impact, flow) count as filters too: the orange Filtered label lists what they hide, and Clear (⌘E) resets them along with Region, Highway and Search.")
+                        BulletText("Each tab's own chips (camera status, event impact, flow) count as filters too: the Clear Filters button turns orange and its tooltip lists what they hide, and it (⌘E) resets them along with Region, Highway and Search.")
                         BulletText("Refresh (⌘R) reloads every live source and fetches fresh camera images. Each section updates as soon as its data arrives; Travel Times takes NZTA 15–20 seconds, so it finishes on its own.")
                         BulletText("Auto-refresh reloads everything, including the camera images on screen, every 1 to 10 minutes. It keeps going with the window closed, so the menu bar and Dock badge stay current, and slows down (to at most every 15 minutes) while NZ Traffic is in the background with no window showing.")
                     }

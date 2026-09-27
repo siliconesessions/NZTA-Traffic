@@ -391,3 +391,104 @@ func journeyVisibilityCaption(shown: Int, total: Int, hiddenWithoutLiveData: Int
         return "\(lead) · \(noData) with no live data and \(byFilters) more by the flow filters are hidden"
     }
 }
+
+// MARK: - Map framing
+
+/// A map region in plain degrees — MapKit's MKCoordinateRegion without
+/// MapKit, so the test runner can check it.
+struct MapFrame: Equatable {
+    let centerLatitude: Double
+    let centerLongitude: Double
+    let latitudeDelta: Double
+    let longitudeDelta: Double
+}
+
+/// New Zealand as the map sees it. Longitudes are measured eastward from 0°
+/// to 360° so the Chatham Islands (about 176.5°W, i.e. 183.5°E) sit next to
+/// the mainland instead of on the far side of the antimeridian.
+enum NZMapArea {
+    static let latitudes = -53.0 ... -28.0
+    static let eastLongitudes = 165.0 ... 185.0
+
+    /// Where the map camera's centre may go: the mainland, Stewart Island and
+    /// the Chathams with a margin, so the map can never be panned away from
+    /// New Zealand.
+    static let cameraCenterBounds = MapFrame(
+        centerLatitude: -41.0,
+        centerLongitude: 175.0,
+        latitudeDelta: 22.0,
+        longitudeDelta: 20.0
+    )
+
+    /// The furthest the camera may zoom out, in metres of camera distance:
+    /// enough for the whole country with the Chathams, not the planet.
+    static let maximumCameraDistance = 4_500_000.0
+
+    /// The longitude in 0°–360° if it is in the NZ area, else nil.
+    static func eastLongitude(_ longitude: Double) -> Double? {
+        let east = longitude < 0 ? longitude + 360 : longitude
+        return eastLongitudes.contains(east) ? east : nil
+    }
+}
+
+/// The region that shows every coordinate, padded by `padding` (1.3 = 15% on
+/// each side), for framing a filter's results on the map. Coordinates outside
+/// the NZ area (a bad feed value) are ignored so one stray point can't zoom
+/// the map out to the Pacific. A single point, or a tight cluster, gets at
+/// least `minimumSpan` degrees. Crossing the antimeridian (the Chathams) is
+/// handled; the centre comes back in −180°…180°. nil when nothing is in NZ.
+func mapFrame(
+    fitting coordinates: [CLLocationCoordinate2D],
+    padding: Double = 1.3,
+    minimumSpan: Double = 0.08
+) -> MapFrame? {
+    var minLatitude = Double.greatestFiniteMagnitude
+    var maxLatitude = -Double.greatestFiniteMagnitude
+    var minLongitude = Double.greatestFiniteMagnitude
+    var maxLongitude = -Double.greatestFiniteMagnitude
+    var found = false
+
+    for coordinate in coordinates {
+        guard coordinate.latitude.isFinite,
+              NZMapArea.latitudes.contains(coordinate.latitude),
+              coordinate.longitude.isFinite,
+              let longitude = NZMapArea.eastLongitude(coordinate.longitude) else {
+            continue
+        }
+        found = true
+        minLatitude = min(minLatitude, coordinate.latitude)
+        maxLatitude = max(maxLatitude, coordinate.latitude)
+        minLongitude = min(minLongitude, longitude)
+        maxLongitude = max(maxLongitude, longitude)
+    }
+    guard found else {
+        return nil
+    }
+
+    var centerLongitude = (minLongitude + maxLongitude) / 2
+    if centerLongitude > 180 {
+        centerLongitude -= 360
+    }
+    return MapFrame(
+        centerLatitude: (minLatitude + maxLatitude) / 2,
+        centerLongitude: centerLongitude,
+        latitudeDelta: max((maxLatitude - minLatitude) * padding, minimumSpan),
+        longitudeDelta: max((maxLongitude - minLongitude) * padding, minimumSpan)
+    )
+}
+
+// MARK: - Sidebar badges
+
+/// A section's sidebar badge: its count, marked "!" when its last fetch
+/// failed and older data is still shown; "!" alone when it failed with
+/// nothing to show; none while it loads empty (the toolbar status shows the
+/// refresh) or when it is simply empty. A retry in flight drops the mark.
+func sectionBadgeText(count: Int, isLoading: Bool, hasError: Bool) -> String? {
+    if count > 0 {
+        return hasError && !isLoading ? "\(count) !" : "\(count)"
+    }
+    if hasError && !isLoading {
+        return "!"
+    }
+    return nil
+}

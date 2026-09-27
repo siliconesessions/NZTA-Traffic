@@ -180,7 +180,7 @@ final class TrafficStore {
         loadingSections.contains(section)
     }
 
-    /// The banner under the header: offline, couldn't reach NZTA, or saved
+    /// The banner above each tab's content: offline, couldn't reach NZTA, or saved
     /// data on screen while the live load runs. nil when everything shown is
     /// live.
     var freshnessBanner: FreshnessBanner? {
@@ -270,7 +270,7 @@ final class TrafficStore {
         }
     }
 
-    // Progress of the shared part of a refresh (the header's progress bar).
+    // Progress of the shared part of a refresh (the toolbar status's progress).
     var loadProgress: Double {
         let sections = DataSection.refreshedTogether
         let remaining = sections.filter(loadingSections.contains).count
@@ -297,7 +297,7 @@ final class TrafficStore {
     }
 
     /// Number of road events the user sees: Resolved events are left out
-    /// unless "Show resolved" is on (header pill, menu bar).
+    /// unless "Show resolved" is on (sidebar badge, menu bar).
     func visibleEventCount(showResolved: Bool) -> Int {
         showResolved ? events.count : events.filter { !$0.isResolved }.count
     }

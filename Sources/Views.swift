@@ -61,11 +61,11 @@ struct ContentView: View {
     @State private var mapVisibleSpan: MKCoordinateSpan = trafficMapInitialRegion.span
     @SceneStorage("nzta.scene.mapLayer") private var mapSelectedLayer: TrafficMapLayer = .cameras
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    // The Highway and Search filters after GlobalFilterBar's 300 ms debounce.
-    // The bar owns the raw text, so typing re-renders only the bar.
+    // The Highway and Search filters after GlobalFilterToolbar's 300 ms
+    // debounce. The toolbar owns the raw text, so typing re-renders only it.
     @State private var debouncedHighway = ""
     @State private var debouncedSearch = ""
-    // Bumped to make GlobalFilterBar clear its text fields.
+    // Bumped to make GlobalFilterToolbar clear its text fields.
     @State private var filterClearRequest = 0
     @AppStorage("nzta.hasSeenWelcome") private var hasSeenWelcome = false
     @State private var showWelcome = false
@@ -79,43 +79,79 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            offlineBanner
-            Divider()
-            filters
-            Divider()
-            sectionTabs
-        }
-        .frame(minWidth: 980, minHeight: 680)
-        .background(Color.primary.opacity(0.025))
-        .background { tabShortcuts }
-        .task {
-            // The App starts the launch load (saved data, then live) and owns
-            // auto-refresh and the Dock badge, so none of that depends on this
-            // window. Reopening the window after a while shows fresh data.
-            await store.refreshIfStale(maxAge: Self.reopenRefreshAge)
-        }
-        .onAppear {
-            if !hasSeenWelcome {
-                showWelcome = true
+        sectionTabs
+            .modifier(filterToolbar)
+            .frame(minWidth: 980, minHeight: 680)
+            .background { tabShortcuts }
+            .onChange(of: selectedRegion) {
+                reframeMapForRegion()
             }
-        }
-        .sheet(item: $selectedCamera) { camera in
-            CameraPreviewView(
-                camera: camera,
-                cacheToken: store.imageCacheToken,
-                imageGeneration: store.cameraImageGeneration
-            )
-        }
-        .sheet(isPresented: $showWelcome) {
-            WelcomeView(onFinish: finishWelcome)
-        }
+            .modifier(windowLifecycle)
     }
+
+    // The launch refresh, the welcome sheet and the camera preview sheet.
+    private var windowLifecycle: some ViewModifier {
+        ContentWindowLifecycle(
+            store: store,
+            selectedCamera: $selectedCamera,
+            showWelcome: $showWelcome,
+            hasSeenWelcome: hasSeenWelcome,
+            onFinishWelcome: finishWelcome
+        )
+    }
+
+    private var filterToolbar: GlobalFilterToolbar {
+        GlobalFilterToolbar(
+            store: store,
+            selectedRegion: $selectedRegion,
+            debouncedHighway: $debouncedHighway,
+            debouncedSearch: $debouncedSearch,
+            scopedFilterSummary: scopedFilterSummary(visibleScopedSection),
+            clearRequest: filterClearRequest,
+            onClearAll: clearAllFilters
+        )
+    }
+}
+
+// ContentView's window-level behaviour, kept out of its body so that stays
+// small for the type-checker.
+private struct ContentWindowLifecycle: ViewModifier {
+    let store: TrafficStore
+    @Binding var selectedCamera: TrafficCamera?
+    @Binding var showWelcome: Bool
+    let hasSeenWelcome: Bool
+    let onFinishWelcome: (Bool) -> Void
 
     // Data older than this is refreshed when the window (re)appears.
     private static let reopenRefreshAge: TimeInterval = 120
 
+    func body(content: Content) -> some View {
+        content
+            .task {
+                // The App starts the launch load (saved data, then live) and owns
+                // auto-refresh and the Dock badge, so none of that depends on this
+                // window. Reopening the window after a while shows fresh data.
+                await store.refreshIfStale(maxAge: Self.reopenRefreshAge)
+            }
+            .onAppear {
+                if !hasSeenWelcome {
+                    showWelcome = true
+                }
+            }
+            .sheet(item: $selectedCamera) { camera in
+                CameraPreviewView(
+                    camera: camera,
+                    cacheToken: store.imageCacheToken,
+                    imageGeneration: store.cameraImageGeneration
+                )
+            }
+            .sheet(isPresented: $showWelcome) {
+                WelcomeView(onFinish: onFinishWelcome)
+            }
+    }
+}
+
+extension ContentView {
     // Turning auto-refresh on here reaches the scheduler the same way the
     // Settings toggle does: through the `nzta.*` default (see AppController).
     private func finishWelcome(enableAutoRefresh: Bool) {
@@ -159,90 +195,10 @@ struct ContentView: View {
         resetScopedFilters(visibleScopedSection)
     }
 
-    private var header: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    DataSectionPill(
-                        icon: "video.fill",
-                        label: "Cameras",
-                        count: store.cameras.count,
-                        isLoading: store.isLoading(.cameras),
-                        hasError: store.errors[.cameras] != nil
-                    )
-                    DataSectionPill(
-                        icon: "exclamationmark.triangle.fill",
-                        label: "Events",
-                        count: store.visibleEventCount(showResolved: showResolvedEvents),
-                        isLoading: store.isLoading(.events),
-                        hasError: store.errors[.events] != nil
-                    )
-                    DataSectionPill(
-                        icon: "signpost.right.fill",
-                        label: "VMS",
-                        count: store.vmsSigns.count,
-                        isLoading: store.isLoading(.vms),
-                        hasError: store.errors[.vms] != nil
-                    )
-                    DataSectionPill(
-                        icon: "speedometer",
-                        label: "Travel",
-                        count: store.journeys.count,
-                        isLoading: store.isLoading(.journeys),
-                        hasError: store.errors[.journeys] != nil
-                    )
-                }
-
-                Spacer()
-
-                refreshStatus
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 8)
-
-            ProgressView(value: store.loadProgress)
-                .progressViewStyle(.linear)
-                .tint(.blue)
-                .opacity(store.isRefreshing ? 1 : 0)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: store.isRefreshing)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 4)
-        }
-        .background(.background)
-    }
-
-    // "Refreshing…", or when data last arrived. Re-rendered every 30 s by the
-    // TimelineView so the relative time and the stale warning age on their
-    // own, not only when something else redraws the window.
-    private var refreshStatus: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            HStack(spacing: 4) {
-                if store.isRefreshing {
-                    Text("Refreshing…")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.blue)
-                } else {
-                    let isStale = AutoRefreshPolicy.isDataStale(lastUpdated: store.lastUpdated, now: context.date)
-                    if isStale {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                            .help("Data may be stale — refresh to update")
-                    }
-                    Text("Updated")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(lastUpdatedText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(isStale ? .orange : .primary)
-                }
-            }
-        }
-    }
-
-    // Freshness banner under the header (see FreshnessBanner): offline,
-    // couldn't reach NZTA, or saved data on screen while the live load runs.
-    // Hidden while everything shown is live. Its age re-renders every 30 s.
+    // Freshness banner above every tab's content (see FreshnessBanner):
+    // offline, couldn't reach NZTA, or saved data on screen while the live
+    // load runs. Hidden while everything shown is live. Its age re-renders
+    // every 30 s.
     @ViewBuilder
     private var offlineBanner: some View {
         if let banner = store.freshnessBanner {
@@ -254,77 +210,98 @@ struct ContentView: View {
                 )
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 6)
-            .background(.background)
+            .padding(.top, 8)
         }
     }
 
-    // Only "Updated" times from a successful live fetch (see
-    // TrafficStore.lastUpdated).
-    private var lastUpdatedText: String {
-        guard let lastUpdated = store.lastUpdated else {
-            return "Not yet"
-        }
-        return lastUpdated.formatted(.relative(presentation: .named))
-    }
-
-    private var filters: some View {
-        GlobalFilterBar(
-            store: store,
-            selectedRegion: $selectedRegion,
-            debouncedHighway: $debouncedHighway,
-            debouncedSearch: $debouncedSearch,
-            scopedFilterSummary: scopedFilterSummary(visibleScopedSection),
-            clearRequest: filterClearRequest,
-            onClearAll: clearAllFilters
-        )
-    }
-
-    // Chrome for a tab's scoped (per-section) filter row.
+    // Chrome for a tab's scoped (per-section) filter row. No background of
+    // its own: it sits in the tab's top safe-area bar, where content
+    // scrolling under it gets the system scroll-edge effect.
     private func scopedBar<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         HStack {
             content()
             Spacer()
         }
         .padding(.horizontal, 24)
-        .frame(minHeight: 48)
-        .padding(.vertical, 4)
-        .background(.background)
+        .frame(minHeight: 44)
     }
 
-    // One TabView page: its scoped filter bar above the section content.
-    @ViewBuilder
-    private func tabContainer<Filters: View, Content: View>(
-        _ tab: TrafficTab,
+    // One tab's page: the freshness banner and the tab's scoped filters in a
+    // bar under the toolbar, above the section content.
+    private func tabPage<Filters: View, Content: View>(
         @ViewBuilder filters: () -> Filters,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(spacing: 0) {
-            scopedBar { filters() }
-            Divider()
-            content()
-        }
-        .tabItem { Label(tab.rawValue, systemImage: tab.icon) }
-        .tag(tab)
+        let filters = filters()
+        return content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.primary.opacity(0.025))
+            .safeAreaBar(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    offlineBanner
+                    scopedBar { filters }
+                }
+            }
     }
 
-    // Section navigation. Each tab is its own computed property to keep the
-    // body expression small enough for the type-checker.
+    // A tab without scoped filters (the Map floats its own over the map, and
+    // About has none): only the freshness banner.
+    private func plainTabPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaBar(edge: .top, spacing: 0) {
+                offlineBanner
+            }
+    }
+
+    // Section navigation: a sidebar (collapsible to a tab bar) so the
+    // toolbar is free for the filters and actions. Each section's badge is
+    // its count (see sectionBadgeText); each tab is its own
+    // computed property to keep the expression small for the type-checker.
     private var sectionTabs: some View {
         TabView(selection: $selectedTab) {
-            camerasTab
-            eventsTab
-            vmsTab
-            travelTimesTab
-            mapTab
-            AboutView()
-                .tabItem { Label(TrafficTab.about.rawValue, systemImage: TrafficTab.about.icon) }
-                .tag(TrafficTab.about)
+            Tab(TrafficTab.cameras.rawValue, systemImage: TrafficTab.cameras.icon, value: TrafficTab.cameras) {
+                camerasTab
+            }
+            .badge(sectionBadge(count: store.cameras.count, section: .cameras))
+
+            Tab(TrafficTab.events.rawValue, systemImage: TrafficTab.events.icon, value: TrafficTab.events) {
+                eventsTab
+            }
+            .badge(sectionBadge(count: store.visibleEventCount(showResolved: showResolvedEvents), section: .events))
+
+            Tab(TrafficTab.vms.rawValue, systemImage: TrafficTab.vms.icon, value: TrafficTab.vms) {
+                vmsTab
+            }
+            .badge(sectionBadge(count: store.vmsSigns.count, section: .vms))
+
+            Tab(TrafficTab.travelTimes.rawValue, systemImage: TrafficTab.travelTimes.icon, value: TrafficTab.travelTimes) {
+                travelTimesTab
+            }
+            .badge(sectionBadge(count: store.journeys.count, section: .journeys))
+
+            Tab(TrafficTab.trafficMap.rawValue, systemImage: TrafficTab.trafficMap.icon, value: TrafficTab.trafficMap) {
+                mapTab
+            }
+
+            Tab(TrafficTab.about.rawValue, systemImage: TrafficTab.about.icon, value: TrafficTab.about) {
+                plainTabPage { AboutView() }
+            }
         }
+        .tabViewStyle(.sidebarAdaptable)
+    }
+
+    private func sectionBadge(count: Int, section: DataSection) -> Text? {
+        sectionBadgeText(
+            count: count,
+            isLoading: store.isLoading(section),
+            hasError: store.errors[section] != nil
+        )
+        .map { Text($0) }
     }
 
     private var camerasTab: some View {
-        tabContainer(.cameras) {
+        tabPage {
             cameraStatusFilters
         } content: {
             CamerasTabView(
@@ -342,7 +319,7 @@ struct ContentView: View {
     }
 
     private var eventsTab: some View {
-        tabContainer(.events) {
+        tabPage {
             eventImpactFilters
         } content: {
             RoadEventsTabView(
@@ -357,7 +334,7 @@ struct ContentView: View {
     }
 
     private var vmsTab: some View {
-        tabContainer(.vms) {
+        tabPage {
             EmptyVMSToggleRow(hideEmpty: $hideEmptyVMS)
         } content: {
             let signs = scopedVMSSigns()
@@ -376,7 +353,7 @@ struct ContentView: View {
     }
 
     private var travelTimesTab: some View {
-        tabContainer(.travelTimes) {
+        tabPage {
             flowFilters
         } content: {
             let all = sharedJourneys()
@@ -405,9 +382,7 @@ struct ContentView: View {
     }
 
     private var mapTab: some View {
-        tabContainer(.trafficMap) {
-            mapTabFilterBar
-        } content: {
+        plainTabPage {
             TrafficMapTabView(
                 cameras: mapSelectedLayer == .cameras ? scopedCameras() : [],
                 events: mapSelectedLayer == .events ? scopedEvents() : [],
@@ -423,7 +398,8 @@ struct ContentView: View {
                 visibleSpan: $mapVisibleSpan,
                 selectedLayer: $mapSelectedLayer,
                 onCameraPreview: { selectedCamera = $0 },
-                onRetry: { layer in Task { await reloadMapLayer(layer) } }
+                onRetry: { layer in Task { await reloadMapLayer(layer) } },
+                controls: mapTabFilterBar
             )
         }
     }
@@ -486,10 +462,11 @@ struct ContentView: View {
         }
     }
 
-    // Two rows, so the layer's own filters never squeeze the layer picker
-    // (at the default 1,180 pt window the single row ran to 1,470 pt): the
-    // layer, its counts and Reset on top; the layer's chips — or a note on
-    // how the shared filters apply to it — underneath.
+    // The map's floating glass panel, in two rows so the layer's own filters
+    // never squeeze the layer picker (at the default 1,180 pt window a single
+    // row ran to 1,470 pt): the layer, its counts, Zoom to Results and Reset
+    // on top; the layer's chips — or a note on how the shared filters apply
+    // to it — underneath.
     private var mapTabFilterBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -497,15 +474,71 @@ struct ContentView: View {
                 Spacer(minLength: 8)
                 mapCountLabels
                 Button {
-                    mapPosition = .region(trafficMapInitialRegion)
+                    frameMapOnResults()
                 } label: {
-                    Image(systemName: "scope")
+                    Label("Zoom to Results", systemImage: "viewfinder")
+                        .labelStyle(.iconOnly)
                 }
-                .help("Reset map view")
+                .buttonStyle(.borderless)
+                .help("Zoom to the layer's filtered results")
+                Button {
+                    resetMapView()
+                } label: {
+                    Label("Show All of New Zealand", systemImage: "scope")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .help("Show all of New Zealand")
             }
             mapLayerFilters
         }
-        .padding(.vertical, 4)
+    }
+
+    private func resetMapView() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) {
+            mapPosition = .region(trafficMapInitialRegion)
+        }
+    }
+
+    // Frames what the selected layer shows under the current filters; leaves
+    // the map alone when none of it has a position (nothing loaded yet).
+    private func frameMapOnResults() {
+        guard let frame = mapFrame(fitting: mapLayerCoordinates()) else {
+            return
+        }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) {
+            mapPosition = .region(MKCoordinateRegion(frame))
+        }
+    }
+
+    // Picking a region frames that region's results on the map (so the Map
+    // tab opens on them); All Regions goes back to the whole country.
+    private func reframeMapForRegion() {
+        if selectedRegion.isEmpty {
+            resetMapView()
+        } else {
+            frameMapOnResults()
+        }
+    }
+
+    // Every position the selected layer would draw under the current filters.
+    private func mapLayerCoordinates() -> [CLLocationCoordinate2D] {
+        switch mapSelectedLayer {
+        case .cameras:
+            return scopedCameras().compactMap(\.mapCoordinate)
+        case .events:
+            return scopedEvents().compactMap(\.mapCoordinate)
+        case .vms:
+            return scopedVMSSigns().compactMap(\.mapCoordinate)
+        case .flow:
+            return mapFlowSegments().flatMap(\.coordinates)
+        case .timSigns:
+            return scopedTIMSigns().compactMap(\.mapCoordinate)
+        case .evChargers:
+            return scopedEVChargers().compactMap(\.mapCoordinate)
+        case .congestion:
+            return scopedCongestion().flatMap(\.polyline)
+        }
     }
 
     // Segmented while it fits, a pop-up menu in a narrower window. Laid out

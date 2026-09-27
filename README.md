@@ -28,7 +28,7 @@ To build from Terminal with Xcode:
 xcodebuild -project NZTraffic.xcodeproj -scheme "NZ Traffic" -configuration Release -destination 'generic/platform=macOS' build
 ```
 
-The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.plist`, and `Resources/NZTraffic.icns`. Both build paths produce `NZ Traffic.app` with executable name `NZTraffic` and bundle ID `io.github.siliconesessions.nztraffic`.
+The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.plist`, and the Icon Composer icon `Resources/AppIcon.icon`. Both build paths produce `NZ Traffic.app` with executable name `NZTraffic` and bundle ID `io.github.siliconesessions.nztraffic`.
 
 ### Shell Script
 
@@ -38,7 +38,7 @@ The Xcode project uses the existing Swift files in `Sources/`, `Resources/Info.p
 
 The script compiles the Swift sources (Swift 6 language mode, `-O` whole-module, with debug info) with the active SDK, writes module caches under `$TMPDIR`, creates `build/NZ Traffic.app` plus `build/NZ Traffic.app.dSYM`, and ad-hoc signs the bundle with the hardened runtime when `codesign` is available. By default it builds for Apple silicon (`arm64`) only, matching the Xcode project.
 
-The app icon is stored as `Resources/NZTraffic.icns` with a 1024px PNG source at `Resources/AppIcon.png`.
+The app icon is an Icon Composer document, `Resources/AppIcon.icon` (one full-bleed layer cropped from the 1024px source `Resources/AppIcon.png`; the system applies the icon mask, glass and dark/clear/tinted styles). Both build paths compile it with `actool` into `Assets.car` plus an `AppIcon.icns` fallback, and actool supplies `CFBundleIconName` / `CFBundleIconFile` — so `Resources/Info.plist` deliberately sets neither. To change the icon, edit `AppIcon.icon` in Icon Composer (Xcode › Open Developer Tool).
 
 To override the deployment target (default `27.0`; the bundled `LSMinimumSystemVersion` follows it):
 

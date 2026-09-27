@@ -88,7 +88,7 @@ enum AutoRefreshPolicy {
     static let backgroundMultiplier = 3
     static let backgroundCeiling = 900
 
-    // A refresh older than this marks the header's "Updated" time as stale.
+    // A refresh older than this marks the toolbar's "Updated" time as stale.
     static let staleDataAge: TimeInterval = 600
 
     // Camera images are re-requested (a conditional GET, usually a 304) when

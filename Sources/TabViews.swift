@@ -329,7 +329,7 @@ struct TravelTimesTabView: View {
 
     // "Showing 9 of 131 journeys · 122 with no live data are hidden [Show
     // All]" whenever the flow chips hide journeys, so the list never quietly
-    // shows a fraction of what the header counts.
+    // shows a fraction of what the sidebar badge counts.
     @ViewBuilder
     private var hiddenJourneysCaption: some View {
         if let caption = journeyVisibilityCaption(

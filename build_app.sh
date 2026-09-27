@@ -16,7 +16,9 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 INFO_PLIST="$SCRIPT_DIR/Resources/Info.plist"
-ICON_FILE="$SCRIPT_DIR/Resources/NZTraffic.icns"
+# Icon Composer icon, compiled by actool into Assets.car (plus an AppIcon.icns
+# fallback); actool also supplies CFBundleIconName / CFBundleIconFile.
+APP_ICON="$SCRIPT_DIR/Resources/AppIcon.icon"
 # Apple silicon only by default (macOS 27 is arm64-only). ARCHS still accepts a
 # space-separated list, e.g. ARCHS="arm64 x86_64" for a lipo'd binary.
 ARCHS="${ARCHS:-arm64}"
@@ -98,9 +100,34 @@ rm -rf "$ARCH_BUILD_DIR"
 # Mach-O minimum OS disagree.
 cp "$INFO_PLIST" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" "$CONTENTS_DIR/Info.plist"
-if [[ -f "$ICON_FILE" ]]; then
-    cp "$ICON_FILE" "$RESOURCES_DIR/NZTraffic.icns"
+# Compile the Icon Composer icon the way Xcode does for the target's
+# ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon: Assets.car (the layered icon)
+# and AppIcon.icns into Resources/, and a partial Info.plist carrying
+# CFBundleIconName / CFBundleIconFile, merged into the bundle's plist.
+# actool's full report goes to build/actool.log; its warnings and errors are
+# echoed so an icon problem isn't silently lost.
+ICON_PARTIAL_PLIST="$BUILD_DIR/AppIcon-partial.plist"
+ACTOOL_LOG="$BUILD_DIR/actool.log"
+rm -f "$ICON_PARTIAL_PLIST"
+if ! xcrun actool "$APP_ICON" \
+    --compile "$RESOURCES_DIR" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_MACOS" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ICON_PARTIAL_PLIST" \
+    --output-format human-readable-text \
+    --errors --warnings --notices >"$ACTOOL_LOG" 2>&1; then
+    cat "$ACTOOL_LOG" >&2
+    echo "Error: actool failed; see $ACTOOL_LOG." >&2
+    exit 1
 fi
+grep -iE "warning|error" "$ACTOOL_LOG" >&2 || true
+if [[ ! -f "$RESOURCES_DIR/Assets.car" || ! -f "$ICON_PARTIAL_PLIST" ]]; then
+    echo "Error: actool did not compile $APP_ICON." >&2
+    exit 1
+fi
+/usr/libexec/PlistBuddy -c "Merge $ICON_PARTIAL_PLIST" "$CONTENTS_DIR/Info.plist" >/dev/null
+rm -f "$ICON_PARTIAL_PLIST"
 chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
 
 if command -v xattr >/dev/null 2>&1; then
@@ -110,12 +137,23 @@ fi
 # Ad-hoc signature with the hardened runtime, matching the Xcode target's
 # ENABLE_HARDENED_RUNTIME = YES. This is parity only: an ad-hoc signature can't
 # be notarized, so Gatekeeper still treats a downloaded copy as unidentified.
+# In a folder synced by a File Provider (e.g. iCloud Drive) the provider can
+# re-add com.apple.FinderInfo between `xattr -cr` and codesign, which then
+# refuses to sign ("resource fork, Finder information, or similar detritus");
+# strip and retry once, and fail the build rather than ship an unsigned app.
 if command -v codesign >/dev/null 2>&1; then
-    if codesign --force --options runtime --sign - "$APP_BUNDLE" >/dev/null 2>&1; then
-        echo "Ad-hoc signed app bundle (hardened runtime)."
-    else
-        echo "Warning: codesign failed; leaving unsigned app bundle."
+    sign_app() {
+        codesign --force --options runtime --sign - "$APP_BUNDLE" >/dev/null 2>&1
+    }
+    if ! sign_app; then
+        command -v xattr >/dev/null 2>&1 && { xattr -cr "$APP_BUNDLE" || true; }
+        if ! sign_app; then
+            codesign --force --options runtime --sign - "$APP_BUNDLE" >&2 || true
+            echo "Error: codesign failed; the app bundle is not signed." >&2
+            exit 1
+        fi
     fi
+    echo "Ad-hoc signed app bundle (hardened runtime)."
 fi
 
 echo "Built: $APP_BUNDLE"

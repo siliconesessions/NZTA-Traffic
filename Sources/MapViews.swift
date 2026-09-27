@@ -6,6 +6,26 @@ let trafficMapInitialRegion = MKCoordinateRegion(
     span: MKCoordinateSpan(latitudeDelta: 14.5, longitudeDelta: 16.5)
 )
 
+extension MKCoordinateRegion {
+    init(_ frame: MapFrame) {
+        self.init(
+            center: CLLocationCoordinate2D(latitude: frame.centerLatitude, longitude: frame.centerLongitude),
+            span: MKCoordinateSpan(latitudeDelta: frame.latitudeDelta, longitudeDelta: frame.longitudeDelta)
+        )
+    }
+}
+
+// The map can't be panned or zoomed away from New Zealand (the Chatham
+// Islands included; see NZMapArea). The bound's east edge (185°E) crosses the
+// antimeridian; MapKit clamps such a boundary correctly (checked against
+// MKMapView: a centre on the Chathams at -176.5° is kept, -170° is pulled
+// back to -175° and 150°E to 165°E).
+@MainActor let trafficMapCameraBounds = MapCameraBounds(
+    centerCoordinateBounds: MKCoordinateRegion(NZMapArea.cameraCenterBounds),
+    minimumDistance: 250,
+    maximumDistance: NZMapArea.maximumCameraDistance
+)
+
 enum TrafficMapLayer: String, CaseIterable, Identifiable {
     case cameras = "Cameras"
     case events = "Road Events"
@@ -123,8 +143,10 @@ enum TrafficMapLayer: String, CaseIterable, Identifiable {
 // Draws whichever layer is selected. ContentView hands it only that layer's
 // data, already filtered (and, for the Flow and congestion lines, filtered
 // per leg and ordered worst on top — see flowMapSegments and
-// congestionDrawOrder); the other layers' arrays are empty.
-struct TrafficMapTabView: View {
+// congestionDrawOrder); the other layers' arrays are empty. `controls` (the
+// layer picker, counts and the layer's filters) floats over the top of the
+// map in Liquid Glass, with the error and status panels under it.
+struct TrafficMapTabView<Controls: View>: View {
     let cameras: [TrafficCamera]
     let events: [RoadEvent]
     let vmsSigns: [VMSSign]
@@ -143,11 +165,15 @@ struct TrafficMapTabView: View {
     let onCameraPreview: (TrafficCamera) -> Void
     // Reloads the data behind the currently selected map layer (per-layer Retry).
     var onRetry: ((TrafficMapLayer) -> Void)?
+    let controls: Controls
 
     @State private var selectedDetail: TrafficMapDetail?
     // The map's width in points, for placing the two directions of a road
     // side by side (see offsetPolyline).
     @State private var mapWidth: Double = 0
+    // The floating panels' height (padding included), which the map's top
+    // safe area and the legend are pushed down by.
+    @State private var topPanelsHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var features: [TrafficMapFeature] {
@@ -298,110 +324,140 @@ struct TrafficMapTabView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            .floatingPanel()
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(state.message)
         }
     }
 
+    // The panels float over the map rather than insetting it, so the map
+    // still draws under their glass; the map's safe area is padded by their
+    // height instead, so MapKit lays out its own controls (scale, compass,
+    // zoom) below them. The legend sits top-trailing under the panels: the
+    // bottom-leading corner holds the Apple Maps logo and Legal link, which
+    // must stay visible.
     var body: some View {
-        VStack(spacing: 0) {
-            if let errorMessage {
-                ErrorBanner(
-                    message: errorMessage,
-                    onRetry: onRetry.map { handler in { handler(selectedLayer) } }
-                )
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+        mapView
+            .safeAreaPadding(.top, topPanelsHeight)
+            .overlay(alignment: .top) {
+                floatingPanels
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        topPanelsHeight = height
+                    }
             }
+            .overlay(alignment: .topTrailing) {
+                if hasMapContent {
+                    MapLegend(layer: selectedLayer)
+                        .padding(.top, topPanelsHeight)
+                        .padding(.trailing, 12)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .sheet(item: $selectedDetail) { detail in
+                TrafficMapDetailView(detail: detail)
+            }
+    }
 
-            ZStack(alignment: .topLeading) {
-                Map(position: $position) {
-                    if selectedLayer == .flow {
-                        // Each leg drawn on its own, coloured by its flow, in
-                        // draw order (No Data at the bottom, Congested on
-                        // top). The journey-level route casing is gone: its
-                        // geometry is exactly the legs', and drawn as one line
-                        // it joined the parts with straight chords.
-                        let style = StrokeStyle(lineWidth: flowLineWidth, lineCap: .round, lineJoin: .round)
-                        ForEach(flowSegments) { segment in
-                            MapPolyline(coordinates: sideBySide(segment.coordinates, lineWidth: flowLineWidth))
-                                .stroke(segment.flowKind.color, style: style)
-                        }
-                    } else if selectedLayer == .congestion {
-                        let style = StrokeStyle(lineWidth: congestionLineWidth, lineCap: .round, lineJoin: .round)
-                        ForEach(congestion) { segment in
-                            MapPolyline(coordinates: sideBySide(segment.polyline, lineWidth: congestionLineWidth))
-                                .stroke(segment.level.color, style: style)
-                        }
-                    } else {
-                        ForEach(mapItems) { item in
-                            switch item {
-                            case .single(let feature):
-                                // The marker is a circle, so its centre is the spot.
-                                Annotation(feature.title, coordinate: feature.coordinate, anchor: .center) {
-                                    TrafficMapMarker(feature: feature) {
-                                        select(feature)
-                                    }
-                                }
-                            case .cluster(_, let coordinate, let members):
-                                // The bubble shows the count; a title under it
-                                // would repeat it.
-                                Annotation(
-                                    "\(members.count) \(selectedLayer.clusterNoun)",
-                                    coordinate: coordinate,
-                                    anchor: .center
-                                ) {
-                                    TrafficMapClusterMarker(
-                                        count: members.count,
-                                        noun: selectedLayer.clusterNoun,
-                                        tint: clusterTint(members),
-                                        sizeScale: zoomScale
-                                    ) {
-                                        zoomIn(toCluster: members)
-                                    }
-                                }
-                                .annotationTitles(.hidden)
-                            }
-                        }
-                    }
-                }
-                .mapStyle(.standard)
-                .mapControls {
-                    MapCompass()
-                    MapScaleView()
-                }
-                .onMapCameraChange(frequency: .onEnd) { context in
-                    visibleSpan = context.region.span
-                }
-                .onGeometryChange(for: Double.self) { geometry in
-                    Double(geometry.size.width)
-                } action: { width in
-                    mapWidth = width
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .topTrailing) {
-                    if hasMapContent {
-                        MapLegend(layer: selectedLayer)
-                            .padding(16)
-                            .allowsHitTesting(false)
-                    }
+    // The layer controls, then any error and the loading / empty status,
+    // stacked over the top of the map. One GlassEffectContainer, so the
+    // panels' glass is rendered (and blends) as a group.
+    private var floatingPanels: some View {
+        GlassEffectContainer(spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                controls
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .floatingPanel()
+
+                if let errorMessage {
+                    ErrorBanner(
+                        message: errorMessage,
+                        onRetry: onRetry.map { handler in { handler(selectedLayer) } }
+                    )
+                    .background(.background, in: RoundedRectangle(cornerRadius: 8))
                 }
 
                 mapStatusOverlay
-                    .padding(16)
                     .allowsHitTesting(false)
             }
         }
+        .padding(12)
+    }
+
+    private var mapView: some View {
+        Map(position: $position, bounds: trafficMapCameraBounds) {
+            mapContent
+        }
+        // Muted, with no points of interest, so the base map's own roads and
+        // shop pins don't compete with the layer's colours.
+        .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
+        .mapControls {
+            MapZoomStepper()
+            MapCompass()
+            MapScaleView()
+        }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            visibleSpan = context.region.span
+        }
+        .onGeometryChange(for: Double.self) { geometry in
+            Double(geometry.size.width)
+        } action: { width in
+            mapWidth = width
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(item: $selectedDetail) { detail in
-            TrafficMapDetailView(detail: detail)
+    }
+
+    @MapContentBuilder
+    private var mapContent: some MapContent {
+        if selectedLayer == .flow {
+            // Each leg drawn on its own, coloured by its flow, in draw order
+            // (No Data at the bottom, Congested on top). The journey-level
+            // route casing is gone: its geometry is exactly the legs', and
+            // drawn as one line it joined the parts with straight chords.
+            let style = StrokeStyle(lineWidth: flowLineWidth, lineCap: .round, lineJoin: .round)
+            ForEach(flowSegments) { segment in
+                MapPolyline(coordinates: sideBySide(segment.coordinates, lineWidth: flowLineWidth))
+                    .stroke(segment.flowKind.color, style: style)
+            }
+        } else if selectedLayer == .congestion {
+            let style = StrokeStyle(lineWidth: congestionLineWidth, lineCap: .round, lineJoin: .round)
+            ForEach(congestion) { segment in
+                MapPolyline(coordinates: sideBySide(segment.polyline, lineWidth: congestionLineWidth))
+                    .stroke(segment.level.color, style: style)
+            }
+        } else {
+            ForEach(mapItems) { item in
+                switch item {
+                case .single(let feature):
+                    // The marker is a circle, so its centre is the spot.
+                    Annotation(feature.title, coordinate: feature.coordinate, anchor: .center) {
+                        TrafficMapMarker(feature: feature) {
+                            select(feature)
+                        }
+                    }
+                case .cluster(_, let coordinate, let members):
+                    // The bubble shows the count; a title under it would
+                    // repeat it.
+                    Annotation(
+                        "\(members.count) \(selectedLayer.clusterNoun)",
+                        coordinate: coordinate,
+                        anchor: .center
+                    ) {
+                        TrafficMapClusterMarker(
+                            count: members.count,
+                            noun: selectedLayer.clusterNoun,
+                            tint: clusterTint(members),
+                            sizeScale: zoomScale
+                        ) {
+                            zoomIn(toCluster: members)
+                        }
+                    }
+                    .annotationTitles(.hidden)
+                }
+            }
         }
     }
 
@@ -801,12 +857,9 @@ private struct MapLegend: View {
                 }
             }
         }
-        .padding(8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Radii.card))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .floatingPanel(cornerRadius: Radii.card + 2)
         .accessibilityHidden(true)
     }
 

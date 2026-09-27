@@ -8,8 +8,6 @@
     <string>NZ Traffic</string>
     <key>CFBundleExecutable</key>
     <string>NZTraffic</string>
-    <key>CFBundleIconFile</key>
-    <string>NZTraffic</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.siliconesessions.nztraffic</string>
     <key>CFBundleInfoDictionaryVersion</key>

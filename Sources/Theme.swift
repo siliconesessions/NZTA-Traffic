@@ -15,6 +15,8 @@ enum Spacing {
 enum Radii {
     /// Corner radius shared by cards and badges.
     static let card: CGFloat = 8
+    /// Corner radius of panels floating over the map (see floatingPanel).
+    static let floatingPanel: CGFloat = 14
 }
 
 extension Color {
@@ -35,4 +37,14 @@ extension Color {
     // "closed now"; upcoming (Scheduled) and resolved events use these.
     static let eventUpcoming = Color.purple
     static let eventResolved = Color.gray
+}
+
+extension View {
+    /// Liquid Glass behind a small panel floating over content — the map's
+    /// layer controls, legend and status — so it matches the system map
+    /// controls and the toolbar beside it. Group neighbouring panels in a
+    /// GlassEffectContainer so their glass renders together.
+    func floatingPanel(cornerRadius: CGFloat = Radii.floatingPanel) -> some View {
+        glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+    }
 }

@@ -7,7 +7,8 @@ import Foundation
 // side-by-side offset for opposite directions, the EV and congestion layers
 // honouring Region / Highway / Search (B15), cluster emphasis (B7), blank TIM
 // boards (B18), grid arrow keys (B27), the region picker's restored selection
-// (B24) and the Travel Times caption (B6). Region outlines, congestion and
+// (B24), the Travel Times caption (B6), framing a region's results on the
+// map (C5) and the sidebar badges (C6). Region outlines, congestion and
 // journey records are trimmed from the 2026-09-26 snapshots.
 @MainActor
 func runViewLogicTests(_ t: TestRunner) async {
@@ -23,6 +24,8 @@ func runViewLogicTests(_ t: TestRunner) async {
     testGridFocus(t)
     testRegionSelection(t)
     testJourneyCaption(t)
+    testMapFrame(t)
+    testSectionBadge(t)
     await testStoreLayerFilters(t)
 }
 
@@ -399,4 +402,85 @@ private func testStoreLayerFilters(_ t: TestRunner) async {
         "and the region filter applies (the stub journey is in Canterbury)"
     )
     StubServer.reset()
+}
+
+// MARK: - Map framing (C5)
+
+private func testMapFrame(_ t: TestRunner) {
+    t.group("map framing and NZ bounds")
+
+    // Three Auckland cameras from the 2026-09-26 /cameras snapshot.
+    let auckland = [
+        CLLocationCoordinate2D(latitude: -36.90943, longitude: 174.73442),
+        CLLocationCoordinate2D(latitude: -36.87173, longitude: 174.71018),
+        CLLocationCoordinate2D(latitude: -36.871997, longitude: 174.704836)
+    ]
+    let frame = mapFrame(fitting: auckland)
+    t.check(frame != nil, "Auckland cameras produce a frame")
+    if let frame {
+        t.check(abs(frame.centerLatitude - -36.89058) < 1e-6, "frame is centred on the cameras' latitude")
+        t.check(abs(frame.centerLongitude - 174.719628) < 1e-6, "frame is centred on the cameras' longitude")
+        t.equal(frame.latitudeDelta, 0.08, "a tight cluster gets the minimum span")
+    }
+
+    // One point anywhere still frames at the minimum span.
+    let single = mapFrame(fitting: [auckland[0]])
+    t.equal(single?.latitudeDelta, 0.08, "a single point gets the minimum latitude span")
+    t.equal(single?.longitudeDelta, 0.08, "a single point gets the minimum longitude span")
+
+    // Far North to Bluff: the span covers both, padded 30%.
+    let country = mapFrame(fitting: [
+        CLLocationCoordinate2D(latitude: -34.43, longitude: 172.68),
+        CLLocationCoordinate2D(latitude: -46.60, longitude: 168.36)
+    ])
+    if let country {
+        t.check(abs(country.latitudeDelta - 12.17 * 1.3) < 1e-9, "north-south span is padded")
+        t.check(abs(country.longitudeDelta - 4.32 * 1.3) < 1e-9, "east-west span is padded")
+    } else {
+        t.check(false, "Far North to Bluff produces a frame")
+    }
+
+    // The Chathams (Waitangi, 176.56°W) frame with Christchurch across the
+    // antimeridian: a ~13° box centred east of the mainland, not a 350° one.
+    let chathams = CLLocationCoordinate2D(latitude: -43.95, longitude: -176.56)
+    let christchurch = CLLocationCoordinate2D(latitude: -43.53, longitude: 172.64)
+    if let across = mapFrame(fitting: [christchurch, chathams], padding: 1) {
+        t.check(abs(across.longitudeDelta - 10.8) < 1e-9, "the Chathams join the mainland across 180°")
+        t.check(abs(across.centerLongitude - 178.04) < 1e-9, "centre falls between Christchurch and the Chathams")
+    } else {
+        t.check(false, "Christchurch and the Chathams produce a frame")
+    }
+    if let east = mapFrame(fitting: [chathams]) {
+        t.check(abs(east.centerLongitude - -176.56) < 1e-9, "a Chathams-only frame keeps its western longitude")
+    } else {
+        t.check(false, "the Chathams alone produce a frame")
+    }
+
+    // A stray coordinate outside New Zealand (Sydney) doesn't widen the frame.
+    let withStray = mapFrame(fitting: auckland + [CLLocationCoordinate2D(latitude: -33.87, longitude: 151.21)])
+    t.equal(withStray, frame, "points outside NZ are ignored")
+    t.check(mapFrame(fitting: []) == nil, "no coordinates, no frame")
+    t.check(
+        mapFrame(fitting: [CLLocationCoordinate2D(latitude: .nan, longitude: 174.7)]) == nil,
+        "non-finite coordinates are ignored"
+    )
+
+    // The camera-centre bounds keep all of NZ, the Chathams included, in reach.
+    let bounds = NZMapArea.cameraCenterBounds
+    let west = bounds.centerLongitude - bounds.longitudeDelta / 2
+    let eastEdge = bounds.centerLongitude + bounds.longitudeDelta / 2
+    t.check(west <= 166.4 && eastEdge >= 360 - 176.56, "bounds span Fiordland to the Chathams")
+    let south = bounds.centerLatitude - bounds.latitudeDelta / 2
+    let north = bounds.centerLatitude + bounds.latitudeDelta / 2
+    t.check(south <= -47.3 && north >= -34.4, "bounds span Stewart Island to Cape Reinga")
+}
+
+private func testSectionBadge(_ t: TestRunner) {
+    t.group("sidebar section badges")
+    t.equal(sectionBadgeText(count: 313, isLoading: false, hasError: false), "313", "count when loaded")
+    t.equal(sectionBadgeText(count: 313, isLoading: true, hasError: true), "313", "last-good count stays, unmarked, while a retry loads")
+    t.equal(sectionBadgeText(count: 313, isLoading: false, hasError: true), "313 !", "stale count is marked after a failure")
+    t.equal(sectionBadgeText(count: 0, isLoading: false, hasError: true), "!", "failure with nothing to show")
+    t.equal(sectionBadgeText(count: 0, isLoading: true, hasError: true), nil, "no badge while a retry loads")
+    t.equal(sectionBadgeText(count: 0, isLoading: false, hasError: false), nil, "empty section has no badge")
 }
