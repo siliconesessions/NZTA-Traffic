@@ -1,0 +1,119 @@
+name: CI
+
+# Both build paths and the test suite, on every push and pull request. The app
+# needs the macOS 27 SDK (deployment target 27.0, Swift 6), so this runs on
+# GitHub's Xcode 27 image (macOS 27, arm64; label `xcode-27`, in preview as of
+# September 2026 — see github.com/actions/runner-images). When Xcode 27 reaches
+# the regular images, `macos-latest` (or `macos-27`) can replace it.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Newest Xcode 27.x on the image: a release if there is one, otherwise
+      # the newest beta. Fails with a clear message if the image has none.
+      - name: Select Xcode 27
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          candidates=(/Applications/Xcode_27*.app)
+          if [ "${#candidates[@]}" -eq 0 ]; then
+            echo "::error::No Xcode 27 found in /Applications on this runner. NZ Traffic needs the macOS 27 SDK; update runs-on to an image that has Xcode 27."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          releases=()
+          for app in "${candidates[@]}"; do
+            case "$app" in
+              *beta*|*Beta*|*RC*) ;;
+              *) releases+=("$app") ;;
+            esac
+          done
+          if [ "${#releases[@]}" -gt 0 ]; then
+            pool=("${releases[@]}")
+          else
+            pool=("${candidates[@]}")
+          fi
+          xcode="$(printf '%s\n' "${pool[@]}" | sort -V | tail -n 1)"
+          echo "Selecting $xcode"
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          echo "macOS SDK $sdk"
+          if [ "${sdk%%.*}" -lt 27 ]; then
+            echo "::error::$xcode has the macOS $sdk SDK; NZ Traffic needs macOS 27 or later."
+            exit 1
+          fi
+          sw_vers
+
+      # build_app.sh compiles Sources/*.swift (flat) and the Xcode target
+      # uses Sources/ as a file-system synchronized folder, so both pick up
+      # the same files only if Sources/ holds nothing but top-level .swift
+      # files (anything else would become an Xcode bundle resource, and a
+      # subfolder's sources would be missed by the shell build).
+      - name: Check Sources/ matches both build paths
+        run: |
+          set -euo pipefail
+          stray="$(find Sources -mindepth 1 \( -type d -o \! -name '*.swift' \) -print)"
+          if [ -n "$stray" ]; then
+            echo "::error::Sources/ must contain only top-level .swift files. Found:"
+            echo "$stray"
+            exit 1
+          fi
+          grep -q 'isa = PBXFileSystemSynchronizedRootGroup;' NZTraffic.xcodeproj/project.pbxproj
+          grep -q 'path = Sources;' NZTraffic.xcodeproj/project.pbxproj
+          # Every test file must be compiled by run_tests.sh.
+          for f in Tests/*.swift; do
+            if ! grep -q "$f" run_tests.sh; then
+              echo "::error::$f is not in run_tests.sh's swiftc invocation."
+              exit 1
+            fi
+          done
+
+      - name: Unit tests
+        run: ./run_tests.sh
+
+      - name: Shell build (build_app.sh)
+        run: ./build_app.sh
+
+      - name: Xcode Release build
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project NZTraffic.xcodeproj \
+            -scheme "NZ Traffic" \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            build 2>&1 | tee build/xcodebuild.log
+          # Fail on Swift warnings from our own sources.
+          if grep -E "^$PWD/Sources/.*: warning:" build/xcodebuild.log; then
+            echo "::error::Swift warnings in Sources/ (see above)."
+            exit 1
+          fi
+
+      - name: Check the shell-built bundle
+        run: |
+          set -euo pipefail
+          app="build/NZ Traffic.app"
+          codesign --verify --deep --strict "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime'
+          archs="$(lipo -archs "$app/Contents/MacOS/NZTraffic")"
+          echo "Architectures: $archs"
+          test "$archs" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$app/Contents/Info.plist")" = "27.0"

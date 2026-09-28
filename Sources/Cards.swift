@@ -7,55 +7,55 @@ struct JourneyCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(journey.displayName)
-                    .font(.headline)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(journey.displayName)
+                        .font(.headline)
 
-                Spacer()
+                    Spacer()
 
-                if let region = journey.regionName {
-                    Badge(text: region, tint: .black)
+                    if let region = journey.regionName {
+                        Badge(text: regionDisplayName(region), tint: .badgeNeutral)
+                    }
+
+                    Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
+                        // Length-weighted, so one slow leg can sit under an
+                        // overall "Free Flow"; the callout below names it.
+                        .help("Overall flow, weighted by each leg's length")
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
 
-                Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
+                WatchStarButton(subject: .journey(id: journey.id), name: "\(journey.displayName) journey")
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-
-            if let summary = summaryLine {
-                Text(summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
-            } else {
-                Spacer().frame(height: 10)
-            }
+            .padding(.bottom, 10)
 
             slowestLegCallout
 
-            if !journey.legs.isEmpty {
-                Divider()
-                ForEach(Array(journey.legs.enumerated()), id: \.offset) { index, leg in
-                    JourneyLegRow(leg: leg)
-                    if index < journey.legs.count - 1 {
-                        Divider()
-                    }
-                }
-            } else {
+            if journey.directions.isEmpty {
                 Text("No leg data available")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
+            } else {
+                // One section per direction: its totals, then its legs in
+                // travel order. (The feed interleaves the two directions.)
+                ForEach(journey.directions) { direction in
+                    Divider()
+                    JourneyDirectionHeader(summary: direction)
+                    ForEach(direction.legs) { leg in
+                        Divider()
+                        JourneyLegRow(leg: leg)
+                    }
+                }
             }
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        .overlay { CardBorder() }
+        .watchContextMenu(.journey(id: journey.id), highwayKeys: journey.highwayKeys)
     }
 
     // The journey's bottleneck. Only highlighted when it's genuinely slow or
@@ -75,14 +75,15 @@ struct JourneyCard: View {
                 Image(systemName: "tortoise.fill")
                     .font(.caption2)
                     .foregroundStyle(leg.flowKind.color)
+                    .accessibilityHidden(true)
                 Text("Slowest leg")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Text(leg.name ?? "Leg")
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
-                if let speed = leg.speed, speed > 0 {
-                    Text("\(Int(speed.rounded())) km/h")
+                if let speed = leg.speed, speed > 0, let speedText = formatWholeNumber(speed) {
+                    Text("\(speedText) km/h")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -91,27 +92,49 @@ struct JourneyCard: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
+            .accessibilityElement(children: .combine)
         }
     }
+}
 
-    private var summaryLine: String? {
-        var parts: [String] = []
-        if let current = journey.totalCurrentTime {
-            parts.append("Now \(formatTimeInterval(current))")
+extension JourneyDirection {
+    var systemImage: String {
+        switch self {
+        case .increasing:
+            return "arrow.up.right"
+        case .decreasing:
+            return "arrow.down.left"
+        case .unspecified:
+            return "arrow.left.and.right"
         }
-        if let free = journey.totalFreeFlowTime {
-            parts.append("Free flow \(formatTimeInterval(free))")
+    }
+}
+
+// A journey direction's heading row: "Northland Boundary → Waikato Boundary"
+// over its own now / free-flow / delay / length and live coverage.
+struct JourneyDirectionHeader: View {
+    let summary: JourneyDirectionSummary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: summary.direction.systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.label)
+                    .font(.subheadline.weight(.semibold))
+                Text(summary.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
-        if let delay = journey.congestionDelay, delay > 0 {
-            parts.append("Delay +\(formatTimeInterval(delay))")
-        }
-        if let avgSpeed = journey.averageSpeed {
-            parts.append("Avg \(Int(avgSpeed.rounded())) km/h")
-        }
-        if let length = journey.totalLength, length > 0 {
-            parts.append(String(format: "%.1f km total", length))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.03))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -120,20 +143,17 @@ struct JourneyLegRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // The flow is also in the detail line as text, so the dot's
+            // colour isn't the only cue; VoiceOver hears it once, there.
             Circle()
                 .fill(leg.flowKind.color)
                 .frame(width: 10, height: 10)
-                .accessibilityLabel("Traffic flow: \(leg.flowKind.label)")
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Image(systemName: directionIcon)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(leg.name ?? "Leg")
-                        .font(.subheadline)
-                        .lineLimit(1)
-                }
+                Text(leg.name ?? "Leg")
+                    .font(.subheadline)
+                    .lineLimit(1)
                 if let detail = detailLine {
                     Text(detail)
                         .font(.caption2)
@@ -145,16 +165,18 @@ struct JourneyLegRow: View {
             Spacer()
 
             HStack(spacing: 14) {
-                if let speed = leg.speed, speed > 0 {
+                if let speed = leg.speed, speed > 0, let speedText = formatWholeNumber(speed) {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(Int(speed.rounded()))")
+                        Text(speedText)
                             .font(.callout.monospacedDigit())
                         Text("km/h")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                if let timeText = currentTimeText {
+                if let issue = leg.dataIssue {
+                    dataIssueLabel(issue)
+                } else if let timeText = currentTimeText {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text(timeText)
                             .font(.callout.monospacedDigit().weight(.medium))
@@ -170,41 +192,52 @@ struct JourneyLegRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        // One VoiceOver stop per leg: name, flow and length, then speed and
+        // time.
+        .accessibilityElement(children: .combine)
     }
 
-    private var directionIcon: String {
-        switch leg.direction?.uppercased() {
-        case "I":
-            return "arrow.up.right"
-        case "D":
-            return "arrow.down.left"
-        default:
-            return "arrow.left.and.right"
+    // Stands in for the leg's time when NZTA's figures are implausible: the
+    // leg is left out of the direction totals, and the tooltip says why and
+    // what was reported.
+    private func dataIssueLabel(_ issue: JourneyLegDataIssue) -> some View {
+        var reported: [String] = []
+        if let seconds = leg.currentTimeSeconds {
+            reported.append(formatTimeInterval(seconds))
         }
+        if let freeText = freeFlowText {
+            reported.append("free flow \(freeText)")
+        }
+        let reportedText = reported.isEmpty ? "" : " NZTA reported \(reported.joined(separator: ", "))."
+        let explanation = "\(issue.explanation)\(reportedText) It's left out of the journey totals."
+        // Same two-line shape as the time it replaces, so columns stay aligned.
+        return VStack(alignment: .trailing, spacing: 1) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+            Text("data issue")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 56, alignment: .trailing)
+        .help(explanation)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Data issue. \(explanation)")
     }
 
     private var detailLine: String? {
         var parts: [String] = []
         // Surface the flow state as text so it isn't conveyed by the dot's
-        // colour alone (skipped for legs with no live flow data).
+        // colour alone (skipped for legs with no live flow data). Direction is
+        // left to the section heading the row sits under.
         if leg.flowKind != .noData {
             parts.append(leg.flowKind.label)
-        }
-        if let direction = leg.direction, !direction.isEmpty {
-            switch direction.uppercased() {
-            case "I":
-                parts.append("Increasing")
-            case "D":
-                parts.append("Decreasing")
-            default:
-                parts.append(direction)
-            }
         }
         if let length = leg.totalLength, length > 0 {
             parts.append(String(format: "%.1f km", length))
         }
-        if let limit = leg.effectiveSpeedLimit, limit > 0 {
-            parts.append("limit \(Int(limit.rounded())) km/h")
+        if let limit = leg.effectiveSpeedLimit, limit > 0, let limitText = formatWholeNumber(limit) {
+            parts.append("limit \(limitText) km/h")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -227,36 +260,24 @@ struct JourneyLegRow: View {
 struct CameraCard: View {
     let camera: TrafficCamera
     let cacheToken: Int
+    // Bumped when the cameras section refreshes; see CameraImage.
+    let imageGeneration: Int
     let onPreview: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onPreview) {
             VStack(alignment: .leading, spacing: 0) {
-                AsyncImage(
-                    url: camera.thumbnailURL(cacheToken: cacheToken),
-                    transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
-                ) { phase in
-                    ZStack {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.08))
-
-                        switch phase {
-                        case .empty:
-                            ProgressView()
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        case .failure:
-                            CameraPlaceholder(text: camera.isOnline ? "Image unavailable" : "Offline")
-                        @unknown default:
-                            CameraPlaceholder(text: "Image unavailable")
-                        }
-                    }
-                    .frame(height: 170)
-                    .clipped()
-                }
+                // The live frame, scaled to the card. The static thumbnail is
+                // only a labelled fallback: it's years old (see thumbUrl).
+                CameraImage(
+                    url: camera.liveImageURL(cacheToken: cacheToken),
+                    fallbackURL: camera.stillThumbnailURL,
+                    generation: imageGeneration,
+                    contentMode: .fill,
+                    failureText: camera.isOnline ? "Image unavailable" : "Offline"
+                )
+                .frame(height: 170)
+                .clipped()
                 .accessibilityLabel("\(camera.displayName) camera image")
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -281,10 +302,10 @@ struct CameraCard: View {
 
                     HStack(spacing: 8) {
                         if let region = camera.regionName {
-                            Badge(text: region, tint: .black)
+                            Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                         }
-                        if !camera.isOnline {
-                            Badge(text: camera.underMaintenance ? "Maintenance" : "Offline", tint: .red)
+                        if camera.statusKind != .online {
+                            Badge(text: camera.statusKind.label, tint: camera.statusKind.color)
                         }
                     }
                 }
@@ -292,12 +313,175 @@ struct CameraCard: View {
             }
             .background(.background)
             .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radii.card)
-                    .stroke(Color.cardStroke, lineWidth: 1)
-            )
+            .overlay { CardBorder() }
         }
         .buttonStyle(.plain)
+        // One VoiceOver stop: the camera's name, then its status and where
+        // it is.
+        .accessibilityLabel(camera.displayName)
+        .accessibilityValue(accessibilityDetails)
+        .accessibilityHint("Opens a larger view")
+        // Outside the card's button, so clicking the star doesn't open the
+        // preview.
+        .overlay(alignment: .topTrailing) {
+            WatchStarButton(subject: .camera(id: camera.id), name: camera.displayName, onImage: true)
+                .padding(8)
+        }
+        .watchContextMenu(.camera(id: camera.id), highwayKeys: camera.highwayKeys)
+    }
+
+    private var accessibilityDetails: String {
+        joinNonEmpty(
+            [camera.statusKind.label, camera.description, camera.routeLine, camera.regionName.map(regionDisplayName)],
+            separator: ". "
+        ) ?? ""
+    }
+}
+
+// A camera frame that refreshes in place. When `generation` changes (the
+// cameras section refreshed) it re-requests the same URL with a revalidating
+// load — the camera JPEGs send ETag/Last-Modified, so an unchanged frame is a
+// cheap 304 — and keeps the current frame on screen until the new one arrives,
+// so auto-refresh never flashes a spinner. A new URL (⌘R's `?t=` token) loads
+// fresh. Plain AsyncImage can do neither: it never reloads an unchanged URL,
+// and resetting its identity blanks the image while it reloads. When the live
+// frame can't load and nothing is showing yet, `fallbackURL` (the camera's
+// static thumbnail) is shown instead, marked "Not live".
+struct CameraImage: View {
+    let url: URL?
+    var fallbackURL: URL?
+    let generation: Int
+    var contentMode: ContentMode = .fill
+    var failureText = "Image unavailable"
+    @State private var image: NSImage?
+    @State private var isShowingFallback = false
+    @State private var didFail = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let userAgent = AppIdentity.userAgent()
+
+    private struct LoadKey: Equatable {
+        let url: URL?
+        let generation: Int
+    }
+
+    private enum LoadResult {
+        case loaded(NSImage)
+        case failed
+        case cancelled
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+
+            if let image {
+                // Filled to the frame it's given and cropped there, so a wide
+                // frame never makes the view (and the Not Live label's
+                // corner) bigger than the card shows.
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .clipped()
+            } else if didFail || (url == nil && fallbackURL == nil) {
+                CameraPlaceholder(text: failureText)
+            } else {
+                ProgressView()
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if isShowingFallback, image != nil {
+                NotLiveLabel()
+                    .padding(8)
+            }
+        }
+        .task(id: LoadKey(url: url, generation: generation)) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        if let url {
+            switch await fetch(url) {
+            case .loaded(let loaded):
+                show(loaded, isFallback: false)
+                return
+            case .cancelled:
+                return
+            case .failed:
+                break
+            }
+        }
+        // The live frame failed, or there isn't one. A frame already on
+        // screen stays; with nothing showing, try the static still.
+        guard image == nil else {
+            return
+        }
+        if let fallbackURL {
+            switch await fetch(fallbackURL) {
+            case .loaded(let loaded):
+                show(loaded, isFallback: true)
+                return
+            case .cancelled:
+                return
+            case .failed:
+                break
+            }
+        }
+        didFail = true
+    }
+
+    private func fetch(_ url: URL) async -> LoadResult {
+        // First load: whatever the URL cache allows. Reloads: always ask the
+        // server, sending the cached validators.
+        var request = URLRequest(
+            url: url,
+            cachePolicy: image == nil ? .useProtocolCachePolicy : .reloadRevalidatingCacheData
+        )
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled else {
+                return .cancelled
+            }
+            guard let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200..<300).contains(status),
+                  let loaded = NSImage(data: data) else {
+                return .failed
+            }
+            return .loaded(loaded)
+        } catch {
+            // Cancelled (scrolled away, or a newer load took over): keep
+            // whatever frame is showing.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                return .cancelled
+            }
+            return .failed
+        }
+    }
+
+    private func show(_ loaded: NSImage, isFallback: Bool) {
+        // Fade in the first frame only; later frames swap in place.
+        let animation: Animation? = reduceMotion || image != nil ? nil : .easeInOut(duration: 0.3)
+        withAnimation(animation) {
+            image = loaded
+            isShowingFallback = isFallback
+            didFail = false
+        }
+    }
+}
+
+// Marks a camera card showing the static thumbnail rather than a live frame.
+private struct NotLiveLabel: View {
+    var body: some View {
+        Label("Not live", systemImage: "clock.badge.exclamationmark")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.regularMaterial, in: Capsule())
+            .help("The live image couldn't load. This is an old still from NZTA, not the current view.")
     }
 }
 
@@ -318,8 +502,9 @@ struct CameraPlaceholder: View {
 struct CameraPreviewView: View {
     let camera: TrafficCamera
     let cacheToken: Int
+    // Follows the cameras section, so an open preview keeps updating.
+    let imageGeneration: Int
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // The legacy /camera/view/<id> page (camera.viewUrl) now 404s — trafficnz.info
     // redirects to journeys.nzta.govt.nz and the old view path is dead. Link to the
@@ -354,28 +539,11 @@ struct CameraPreviewView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            AsyncImage(
+            CameraImage(
                 url: camera.imageURL(cacheToken: cacheToken),
-                transaction: Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.3))
-            ) { phase in
-                ZStack {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-
-                    switch phase {
-                    case .empty:
-                        ProgressView()
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    case .failure:
-                        CameraPlaceholder(text: "Image unavailable")
-                    @unknown default:
-                        CameraPlaceholder(text: "Image unavailable")
-                    }
-                }
-            }
+                generation: imageGeneration,
+                contentMode: .fit
+            )
             .frame(minWidth: 760, minHeight: 470)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .accessibilityLabel("\(camera.displayName) camera image")
@@ -386,11 +554,19 @@ struct CameraPreviewView: View {
 
 struct RoadEventCard: View {
     let event: RoadEvent
+    @Environment(TrafficStore.self) private var store: TrafficStore?
+
+    private var isOnWatchedRoad: Bool {
+        guard let watchlist = store?.watchlist, !watchlist.isEmpty else {
+            return false
+        }
+        return watchlist.watches(event)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(impactColor)
+                .fill(event.displayTint)
                 .frame(width: 5)
 
             VStack(alignment: .leading, spacing: 11) {
@@ -402,12 +578,13 @@ struct RoadEventCard: View {
                     Spacer()
 
                     HStack(spacing: 6) {
+                        WatchedEventBadge(event: event)
                         Badge(
                             text: event.isPlanned ? "Planned" : "Incident",
                             tint: event.isPlanned ? .blue : .indigo
                         )
-                        if let impact = event.impact {
-                            Badge(text: impact, tint: impactColor)
+                        if let impactBadgeText {
+                            Badge(text: impactBadgeText, tint: event.displayTint)
                         }
                     }
                 }
@@ -443,6 +620,12 @@ struct RoadEventCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                if let restrictions = event.restrictions {
+                    Label("Restrictions: \(restrictions)", systemImage: "exclamationmark.octagon")
+                        .font(.callout.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Divider()
 
                 EventMetaGrid(event: event)
@@ -451,23 +634,46 @@ struct RoadEventCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        .overlay { CardBorder() }
+        // One VoiceOver stop per event instead of a dozen fragments: what
+        // and where in the label, the rest in the value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityValue(accessibilityDetails)
+        .watchContextMenu(.highwaysOnly, highwayKeys: event.highwayKeys)
     }
 
-    private var impactColor: Color {
-        if event.isClosure {
-            return .red
-        }
-        if event.hasDelays {
-            return .orange
-        }
-        if event.impact?.range(of: "caution", options: .caseInsensitive) != nil {
-            return .yellow
-        }
-        return .gray
+    // "Road Closed, Upcoming. Slip. Northbound. Kaikōura" — impact and
+    // lifecycle first, since that is what the card's colour says.
+    private var accessibilitySummary: String {
+        joinNonEmpty(
+            [
+                joinNonEmpty([event.impact, event.lifecycleLabel], separator: ", "),
+                event.displayTitle,
+                event.directionText,
+                event.locationArea
+            ],
+            separator: ". "
+        ) ?? event.displayTitle
+    }
+
+    private var accessibilityDetails: String {
+        var parts: [String?] = [
+            isOnWatchedRoad ? "On a road you watch" : nil,
+            event.isPlanned ? "Planned" : "Incident",
+            event.nearestLandmark.map { "Near \($0)" },
+            event.eventComments,
+            event.alternativeRouteText.map { "Alternative route: \($0)" },
+            event.restrictions.map { "Restrictions: \($0)" }
+        ]
+        parts += EventMetaGrid.items(for: event).map(\.text)
+        return joinNonEmpty(parts, separator: ". ") ?? ""
+    }
+
+    // "Road Closed", or "Upcoming · Road Closed" / "Resolved · Road Closed"
+    // for events not in force now, tinted by lifecycle (see displayTint).
+    private var impactBadgeText: String? {
+        joinNonEmpty([event.lifecycleLabel, event.impact], separator: " · ")
     }
 
     // Pick a directional glyph from the carriageway text; default to a
@@ -495,50 +701,73 @@ struct RoadEventCard: View {
 struct EventMetaGrid: View {
     let event: RoadEvent
 
+    struct Item: Hashable {
+        let text: String
+        let systemImage: String
+    }
+
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
-            if let eventType = event.eventType {
-                SmallMeta(text: eventType, systemImage: "tag")
-            }
-            if let started = startedText {
-                SmallMeta(text: started, systemImage: "clock")
-            }
-            if let updated = updatedText {
-                SmallMeta(text: updated, systemImage: "arrow.clockwise")
-            }
-            if let ends = endsText {
-                SmallMeta(text: ends, systemImage: "calendar")
-            }
-            if let island = event.eventIsland {
-                SmallMeta(text: island, systemImage: "map")
-            }
-            if let source = event.informationSource {
-                SmallMeta(text: "Source: \(source)", systemImage: "info.circle")
-            }
-            if let status = event.status {
-                SmallMeta(text: status, systemImage: "checkmark.circle")
+            ForEach(Self.items(for: event), id: \.self) { item in
+                SmallMeta(text: item.text, systemImage: item.systemImage)
             }
         }
     }
 
-    // Prefer a relative reading ("Started 2 days ago"); fall back to the
-    // absolute NZ date when the timestamp can't be parsed into a relative one.
-    private var startedText: String? {
-        if let relative = formatRelativeTrafficDate(event.startDate) {
-            return "Started \(relative)"
+    // The type, dates, island, source and — for a current event — its raw
+    // status. Shared with the card's VoiceOver value.
+    static func items(for event: RoadEvent) -> [Item] {
+        var items: [Item] = []
+        if let eventType = event.eventType {
+            items.append(Item(text: eventType, systemImage: "tag"))
         }
-        return formatTrafficDate(event.startDate).map { "Started: \($0)" }
+        if let started = startedText(event) {
+            items.append(Item(text: started, systemImage: "clock"))
+        }
+        if let updated = formatRelativeTrafficDate(event.eventModified).map({ "Updated \($0)" }) {
+            items.append(Item(text: updated, systemImage: "arrow.clockwise"))
+        }
+        if let ends = endsText(event) {
+            items.append(Item(text: ends, systemImage: "calendar"))
+        }
+        if let island = event.eventIsland {
+            items.append(Item(text: island, systemImage: "map"))
+        }
+        if let source = event.informationSource {
+            items.append(Item(text: "Source: \(source)", systemImage: "info.circle"))
+        }
+        // Upcoming/Resolved already lead the impact badge; only a current
+        // event's status (Active, or an unrecognised raw value) is shown here.
+        if event.isActive, let status = event.statusKind.label {
+            items.append(
+                Item(
+                    text: status,
+                    systemImage: event.statusKind == .active ? "dot.radiowaves.left.and.right" : "questionmark.circle"
+                )
+            )
+        }
+        return items
     }
 
-    private var updatedText: String? {
-        formatRelativeTrafficDate(event.eventModified).map { "Updated \($0)" }
+    // Tense follows the date: "Started 2 days ago", or for a scheduled event
+    // "Starts in 1 day · Sun 27 Sep, 8:00 pm". Falls back to the absolute NZ
+    // reading when the timestamp can't be parsed.
+    private static func startedText(_ event: RoadEvent) -> String? {
+        if let phrase = eventDatePhrase(event.startDate, past: "Started", future: "Starts") {
+            return phrase
+        }
+        return formatTrafficDate(event.startDate).map { "Start: \($0)" }
     }
 
-    // The API rarely sends `endDate`; when absent fall back to the planned
-    // resolution estimate so the card still carries a "when" cue.
-    private var endsText: String? {
-        if let relative = formatRelativeTrafficDate(event.endDate) {
-            return "Ends \(relative)"
+    // "Ends in 3 days" / "Ended 2 hours ago". An event NZTA still lists as in
+    // force past its end date (a lagging feed) "was due to end", so a
+    // "Road Closed" card never also says it ended. Most events carry
+    // `endDate`; the few that don't fall back to the planned resolution
+    // estimate so the card still has a "when" cue.
+    private static func endsText(_ event: RoadEvent) -> String? {
+        let pastVerb = event.isResolved ? "Ended" : "Was due to end"
+        if let phrase = eventDatePhrase(event.endDate, past: pastVerb, future: "Ends") {
+            return phrase
         }
         return formatTrafficDate(event.expectedResolution).map { "Expected: \($0)" }
     }
@@ -569,8 +798,11 @@ struct EVChargerCard: View {
 
                 Spacer()
 
+                if charger.isOutOfService {
+                    Badge(text: "Out of service", tint: .evOutOfService)
+                }
                 if let power = charger.powerSummary {
-                    Badge(text: power, tint: charger.isDC ? .purple : .teal)
+                    Badge(text: power, tint: charger.mapTint)
                 }
             }
             .padding(.horizontal, 16)
@@ -580,6 +812,9 @@ struct EVChargerCard: View {
             Divider()
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+                if let status = charger.statusSummary {
+                    SmallMeta(text: status, systemImage: charger.statusSymbol)
+                }
                 if let op = charger.operatorName {
                     SmallMeta(text: op, systemImage: "building.2")
                 }
@@ -589,7 +824,9 @@ struct EVChargerCard: View {
                 if let connectors = charger.connectorSummary {
                     SmallMeta(text: connectors, systemImage: "powerplug")
                 }
-                if let count = charger.connectorCount {
+                // The connector count is in the status line when the feed
+                // reports statuses.
+                if charger.statusSummary == nil, let count = charger.connectorCount {
                     SmallMeta(text: "\(count) connector\(count == 1 ? "" : "s")", systemImage: "number")
                 }
                 if let is24Hours = charger.is24Hours {
@@ -603,15 +840,15 @@ struct EVChargerCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        .overlay { CardBorder() }
+        .accessibilityElement(children: .combine)
     }
 }
 
 struct TIMCard: View {
     let sign: TIMSign
+    // Off in the Boards list, whose sections are already headed by region.
+    var showsRegion = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -624,8 +861,8 @@ struct TIMCard: View {
 
                 Spacer()
 
-                if let region = sign.regionName {
-                    Badge(text: region, tint: .black)
+                if showsRegion, let region = sign.regionName {
+                    Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                 }
             }
             .padding(.horizontal, 16)
@@ -634,18 +871,21 @@ struct TIMCard: View {
 
             Divider()
 
-            if sign.lines.isEmpty {
-                Text("No travel times available")
+            if sign.pages.isEmpty {
+                Text("Blank right now")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(16)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(sign.lines.enumerated()), id: \.offset) { index, line in
-                        TIMLineRow(line: line)
-                        if index < sign.lines.count - 1 {
+                // Each page the board rotates through: its route ("VIA SH20
+                // R12") over its destinations and times, or a text-only
+                // message.
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(sign.pages) { page in
+                        if page.id > 0 {
                             Divider()
                         }
+                        TIMPageView(page: page, isNote: page.isTextOnly && hasRows)
                     }
                 }
                 .padding(.vertical, 4)
@@ -653,29 +893,73 @@ struct TIMCard: View {
         }
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radii.card)
-                .stroke(Color.cardStroke, lineWidth: 1)
-        )
+        .overlay { CardBorder() }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var hasRows: Bool {
+        sign.pages.contains { !$0.rows.isEmpty }
     }
 }
 
-private struct TIMLineRow: View {
-    let line: TIMLine
+private struct TIMPageView: View {
+    let page: TIMBoardPage
+    // Text on a board that also shows times — e.g. a "VIA MOTORWAY" page
+    // qualifying them — reads as a note rather than a message.
+    var isNote = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isNote, let caption = page.caption {
+                Label(caption, systemImage: "info.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            } else if page.isTextOnly {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(page.header.enumerated()), id: \.offset) { _, text in
+                        Text(text)
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            } else {
+                if let caption = page.caption {
+                    Label(caption, systemImage: "arrow.triangle.turn.up.right.diamond")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 2)
+                }
+                ForEach(Array(page.rows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 {
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                    TIMRowView(row: row)
+                }
+            }
+        }
+    }
+}
+
+private struct TIMRowView: View {
+    let row: TIMBoardRow
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(line.destination ?? "—")
+            Text(row.destination)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
 
             Spacer()
 
-            if let time = line.timeText {
-                Text(time)
-                    .font(.callout.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
+            Text(row.timeText)
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.primary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -694,7 +978,7 @@ struct VMSCard: View {
                     .lineLimit(2)
                 Spacer()
                 if let region = sign.regionName {
-                    Text(region)
+                    Text(regionDisplayName(region))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(Color.white.opacity(0.58))
                 }
@@ -716,9 +1000,23 @@ struct VMSCard: View {
         .padding(18)
         .background(Color.vmsCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: Radii.card)
                 .stroke(Color.vmsCardBorder, lineWidth: 1)
+        }
+        // One VoiceOver stop: the sign, then its message in normal case (the
+        // upper-cased monospaced text can be read out letter by letter).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sign: \(sign.displayName)")
+        .accessibilityValue(
+            joinNonEmpty(
+                [
+                    sign.formattedMessage,
+                    sign.regionName.map(regionDisplayName),
+                    formatTrafficDate(sign.lastMessageUpdate ?? sign.lastUpdate).map { "Updated \($0)" }
+                ],
+                separator: ". "
+            ) ?? ""
         )
     }
 }

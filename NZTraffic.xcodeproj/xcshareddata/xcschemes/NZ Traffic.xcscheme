@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "1600"
+   LastUpgradeVersion = "2700"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "1A2B3C4D5E6F700000000080"
-               BuildableName = "NZTA Traffic.app"
-               BlueprintName = "NZTA Traffic"
-               ReferencedContainer = "container:NZTATraffic.xcodeproj">
+               BuildableName = "NZ Traffic.app"
+               BlueprintName = "NZ Traffic"
+               ReferencedContainer = "container:NZTraffic.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -45,9 +45,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "1A2B3C4D5E6F700000000080"
-            BuildableName = "NZTA Traffic.app"
-            BlueprintName = "NZTA Traffic"
-            ReferencedContainer = "container:NZTATraffic.xcodeproj">
+            BuildableName = "NZ Traffic.app"
+            BlueprintName = "NZ Traffic"
+            ReferencedContainer = "container:NZTraffic.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -62,9 +62,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "1A2B3C4D5E6F700000000080"
-            BuildableName = "NZTA Traffic.app"
-            BlueprintName = "NZTA Traffic"
-            ReferencedContainer = "container:NZTATraffic.xcodeproj">
+            BuildableName = "NZ Traffic.app"
+            BlueprintName = "NZ Traffic"
+            ReferencedContainer = "container:NZTraffic.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

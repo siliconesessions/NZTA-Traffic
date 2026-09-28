@@ -8,11 +8,14 @@ func runModelTests(_ t: TestRunner) {
     testWKTParsing(t)
     testVMSMessage(t)
     testTrafficDate(t)
+    testTrafficDateParsing(t)
     testCameraMatching(t)
     testEventFields(t)
     testRegions(t)
     testEVChargers(t)
+    testEVConnectorStatus(t)
     testTIMSigns(t)
+    testTIMBoardPages(t)
     testJourneyEnrichment(t)
     testCongestion(t)
     testCacheableSectionDecoding(t)
@@ -49,14 +52,20 @@ private func testDiagnosticsReport(_ t: TestRunner) {
     )
     t.check(text.contains("nzta.autoRefreshEnabled = true"), "report lists app preferences")
 
-    let defaults = UserDefaults(suiteName: "nzta.diagnostics.test")!
-    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
-    defaults.set(true, forKey: "nzta.autoRefreshEnabled")
-    defaults.set("ignored", forKey: "com.apple.unrelated.key")
-    let prefs = DiagnosticsReport.collectPreferences(from: defaults)
+    // An in-memory snapshot shaped like `UserDefaults.dictionaryRepresentation()`
+    // (Bools come back as NSNumber) — the tests never touch a real defaults
+    // domain on disk.
+    let snapshot: [String: Any] = [
+        "nzta.autoRefreshEnabled": NSNumber(value: true),
+        "nzta.refreshIntervalSeconds": NSNumber(value: 120),
+        "com.apple.unrelated.key": "ignored",
+        "NSGlobalDomainKey": "ignored"
+    ]
+    let prefs = DiagnosticsReport.collectPreferences(from: snapshot)
     t.equal(prefs["nzta.autoRefreshEnabled"], "1", "collects nzta.* preferences")
+    t.equal(prefs["nzta.refreshIntervalSeconds"], "120", "stringifies numeric preferences")
     t.check(prefs["com.apple.unrelated.key"] == nil, "ignores non-nzta preference keys")
-    defaults.removePersistentDomain(forName: "nzta.diagnostics.test")
+    t.equal(prefs.count, 2, "only nzta.* keys are collected")
 }
 
 // The offline cache stores each cacheable section's raw API response bytes and
@@ -181,10 +190,10 @@ private func testCongestion(_ t: TestRunner) {
     t.check(CongestionXMLParser.parse(Data("not xml <<".utf8)) == nil, "malformed XML -> nil")
 }
 
-// Journey-level route geometry (WKT MULTILINESTRING -> single overlay polyline)
-// and the "slowest leg" bottleneck (lowest flow among legs with live data).
+// Leg geometry (WKT LINESTRING -> drawable part) and the "slowest leg"
+// bottleneck (lowest flow among legs with live data).
 private func testJourneyEnrichment(_ t: TestRunner) {
-    t.group("journey route + slowest leg")
+    t.group("journey leg geometry + slowest leg")
     let json = #"""
     {
       "id": "j1",
@@ -199,12 +208,12 @@ private func testJourneyEnrichment(_ t: TestRunner) {
     """#
     guard let journey = decodeModel(TrafficJourney.self, json, t) else { return }
 
-    t.equal(journey.routePolylineLatitudes.count, 3, "route geometry yields 3 points")
-    t.equal(journey.routePolyline.count, 3, "routePolyline builds 3 coordinates")
-    if journey.routePolyline.count == 3 {
-        t.nearlyEqual(journey.routePolyline[0].latitude, -41.0, "route first latitude")
-        t.nearlyEqual(journey.routePolyline[2].longitude, 175.0, "route last longitude")
-    }
+    t.equal(journey.legs.first?.polylineParts.count, 1, "leg LINESTRING yields one part")
+    t.equal(journey.legs.first?.polylineParts.first?.coordinates.count, 2, "leg part builds 2 coordinates")
+    t.nearlyEqual(journey.legs.first?.polylineParts.first?.coordinates.first?.latitude, -41.0, "leg first latitude")
+    t.nearlyEqual(journey.legs[1].polylineParts.first?.coordinates.last?.longitude, 175.0, "leg last longitude")
+    t.check(journey.legs.first?.hasMapGeometry == true, "a leg with a LINESTRING has map geometry")
+    t.check(journey.legs.last?.hasMapGeometry == false, "a leg without geometry has none")
 
     let slowest = journey.slowestLeg
     t.equal(slowest?.name, "B to C", "slowest leg is the lowest-flow live leg")
@@ -219,7 +228,6 @@ private func testJourneyEnrichment(_ t: TestRunner) {
     """#
     guard let dead = decodeModel(TrafficJourney.self, deadJson, t) else { return }
     t.check(dead.slowestLeg == nil, "no live legs -> nil slowestLeg")
-    t.equal(dead.routePolyline.count, 2, "route still parses without live legs")
 }
 
 // TIM travel-time board decoding. The upstream shape is loose: `page` is a
@@ -334,6 +342,110 @@ private func testEVChargers(_ t: TestRunner) {
     t.equal(acCharger?.powerSummary, "AC", "powerSummary falls back to currentType when no power")
 }
 
+// TIM `center` lines (B5): each page keeps its route text with its rows, the
+// boilerplate is dropped, and an all-text board still shows. Shapes from the
+// rest/5 snapshots (signs 334, 344, 446, 1079).
+private func testTIMBoardPages(_ t: TestRunner) {
+    t.group("TIM board pages")
+    func board(_ page: String) -> TIMSign? {
+        decodeModel(
+            TIMSign.self,
+            #"{"id":1,"name":"Board","latitude":-36.9,"longitude":174.7,"region":{"id":2,"name":"Auckland"},"page":\#(page)}"#,
+            t
+        )
+    }
+
+    // 334: a VIA line over two rows; the double space is collapsed.
+    let via = board(#"{"line":[{"center":"VIA SH20  R12"},{"left":"SH1 GILLIES","right":21},{"left":"CITY CENTRE","right":25}],"pageTime":5}"#)
+    t.equal(via?.pages.count, 1, "one page")
+    t.equal(via?.pages.first?.header, ["VIA SH20 R12"], "the center line is the page's route text, whitespace collapsed")
+    t.equal(via?.pages.first?.rows.map(\.text), ["SH1 GILLIES 21 min", "CITY CENTRE 25 min"], "rows keep their order")
+    t.equal(via?.summary, "VIA SH20 R12 · SH1 GILLIES 21 min · CITY CENTRE 25 min", "the summary leads with the route")
+    t.check(via?.matches(region: "", highway: "", search: "r12") == true, "search finds the route text")
+
+    // 344: an all-text board is a message, not "no travel times".
+    let text = board(#"{"line":[{"center":"CITY CENTRE"},{"center":"VIA GRT NORTH"},{"center":"16 MINUTES"}],"pageTime":5}"#)
+    t.equal(text?.pages.first?.header, ["CITY CENTRE", "VIA GRT NORTH", "16 MINUTES"], "every text line is kept ('16 MINUTES' isn't boilerplate)")
+    t.check(text?.pages.first?.isTextOnly == true, "a page of text only")
+    t.check(text?.lines.isEmpty == true, "no destination rows")
+    t.check(text?.isBlank == false, "a text-only board isn't blank")
+    t.equal(text?.headline, "CITY CENTRE VIA GRT NORTH 16 MINUTES", "its headline is the message")
+
+    // 446: the rotating "ESTIMATED / MINUTES / VIA MOTORWAY" page keeps only
+    // the qualifier.
+    let rotating = board(#"[{"line":[{"left":"QUEENSTN","right":9},{"left":"DOMINION","right":12}],"pageTime":6},{"line":[{"center":"ESTIMATED"},{"center":"MINUTES"},{"center":"VIA MOTORWAY"}],"pageTime":1}]"#)
+    t.equal(rotating?.pages.count, 2, "both pages kept")
+    t.equal(rotating?.pages.last?.header, ["VIA MOTORWAY"], "boilerplate dropped, the qualifier kept")
+    t.equal(rotating?.lines.count, 2, "rows across pages")
+
+    // 1079: two PAPANUI rows told apart only by their pages' route text.
+    let papanui = board(#"[{"line":[{"center":"MAIN NORTH RD VIA"},{"left":"PAPANUI","right":10}],"pageTime":5},{"line":[{"center":"BEALEY AVE VIA"},{"left":"PAPANUI","right":17}],"pageTime":5}]"#)
+    t.equal(papanui?.pages.map(\.caption), ["MAIN NORTH RD VIA", "BEALEY AVE VIA"], "each page keeps its own route")
+    t.equal(papanui?.pages.map { $0.rows.map(\.text) }, [["PAPANUI 10 min"], ["PAPANUI 17 min"]], "and its own row")
+
+    // 1104: only blank center lines — nothing to show.
+    let empty = board(#"{"line":[{"center":""},{"center":" "},{"center":"ESTIMATED"}],"pageTime":5}"#)
+    t.check(empty?.pages.isEmpty == true, "blank and boilerplate lines leave no page")
+    t.check(empty?.isBlank == true, "so the board is blank")
+    t.check(empty?.headline == nil, "and has no headline")
+}
+
+// EV connector status (B4) from the real EV Roam strings: per-status counts,
+// out of service vs not reported, and power/DC from connectors that may work.
+private func testEVConnectorStatus(_ t: TestRunner) {
+    t.group("EV connector status")
+    func charger(_ currentType: String, _ connectors: String) -> EVCharger? {
+        decodeModel(
+            EVCharger.self,
+            #"{"type":"Feature","geometry":{"type":"Point","coordinates":[172.0,-43.4]},"properties":{"name":"Site","currentType":"\#(currentType)","connectorsList":"\#(connectors)"}}"#,
+            t
+        )
+    }
+
+    // Springfield: the AC unit works, both 50 kW DC units are down.
+    let springfield = charger("Mixed", "{AC, 22 kW, Type 2 Socketed, Status: Operative, Count:1},{DC, 50 kW, CHAdeMO, Status: Inoperative, Count:1},{DC, 50 kW, Type 2 CCS, Status: Inoperative, Count:1}")
+    t.equal(springfield?.connectors.operativeCount, 1, "one operative connector")
+    t.equal(springfield?.connectors.inoperativeCount, 2, "two inoperative")
+    t.equal(springfield?.availability, .available, "still available")
+    t.nearlyEqual(springfield?.maxPowerKW, 22, "max power ignores the dead DC units")
+    t.check(springfield?.isDC == false, "not badged DC fast")
+    t.equal(springfield?.powerSummary, "AC · 22 kW", "reads as AC, not Mixed · 50 kW")
+    t.equal(springfield?.statusSummary, "1 of 3 connectors working", "n of m working")
+
+    // Kaitaia: every connector down.
+    let kaitaia = charger("DC", "{DC, 25 kW, Type 2 CCS, Status: Inoperative, Count:1},{DC, 25 kW, CHAdeMO, Status: Inoperative, Count:1}")
+    t.equal(kaitaia?.availability, .outOfService, "all inoperative is out of service")
+    t.check(kaitaia?.isOutOfService == true, "isOutOfService")
+    t.equal(kaitaia?.powerSummary, "DC · 25 kW", "still says what it has")
+    t.equal(kaitaia?.statusSummary, "Out of service — 2 connectors down", "status text")
+
+    // Browns Bay: status not reported (Count:3 counts three connectors).
+    let brownsBay = charger("DC", "{DC, 160 kW, Type 2 CCS, Status: Unknown, Count:3},{DC, 160 kW, CHAdeMO, Status: Unknown, Count:1}")
+    t.equal(brownsBay?.availability, .unknown, "all Unknown is not out of service")
+    t.equal(brownsBay?.connectors.unknownCount, 4, "counts use Count:")
+    t.check(brownsBay?.isDC == true, "shown as DC")
+    t.equal(brownsBay?.statusSummary, "Status not reported", "status text")
+
+    // Rolleston: some down, the rest unreported — out of service.
+    let rolleston = charger("DC", "{DC, 25 kW, CHAdeMO, Status: Inoperative, Count:1},{DC, 25 kW, Type 2 CCS, Status: Inoperative, Count:1},{DC, 25 kW, CHAdeMO, Status: Unknown, Count:1},{DC, 25 kW, Type 2 CCS, Status: Unknown, Count:1}")
+    t.equal(rolleston?.availability, .outOfService, "nothing operative and some inoperative")
+
+    // Halswell: an unreported AC unit and dead DC units.
+    let halswell = charger("Mixed", "{AC, 22 kW, Type 2 Socketed, Status: Unknown, Count:2},{DC, 50 kW, CHAdeMO, Status: Inoperative, Count:1},{DC, 50 kW, Type 2 CCS, Status: Inoperative, Count:1}")
+    t.nearlyEqual(halswell?.maxPowerKW, 22, "the unreported AC unit sets the power")
+    t.check(halswell?.isDC == false, "the dead DC units don't make it DC")
+
+    let partial = charger("AC", "{AC, 22 kW, Type 2 Socketed, Status: Operative, Count:2},{AC, 22 kW, Type 2 Socketed, Status: Unknown, Count:1}")
+    t.equal(partial?.statusSummary, "2 of 3 connectors working (1 not reported)", "unreported connectors are called out")
+
+    // No status or count fields: one connector of unknown status.
+    let legacy = parseEVConnectors("{AC, 22 kW, Type 2 Socketed}")
+    t.equal(legacy.unknownCount, 1, "a group without a status is one Unknown connector")
+    t.equal(parseEVConnectors(nil).totalCount, 0, "no list, no connectors")
+    t.equal(charger("DC", "")?.availability, .notReported, "no connector list is not reported")
+    t.check(charger("DC", "")?.statusSummary == nil, "and has no status text")
+}
+
 // Canonical /regions/all payload decoding + the merge/dedupe that feeds the
 // region Picker.
 private func testRegions(_ t: TestRunner) {
@@ -404,12 +516,14 @@ private func testWKTParsing(_ t: TestRunner) {
     t.check(coordinateFromWKTGeometry(nil) == nil, "nil geometry -> nil")
     t.check(coordinateFromWKTGeometry("not wkt") == nil, "garbage geometry -> nil")
 
-    let line = parseWKTLineStringCoords("LINESTRING (174.0 -41.0, 175.0 -42.0)")
-    t.equal(line.latitudes.count, 2, "linestring yields 2 points")
-    t.equal(line.longitudes.count, 2, "linestring longitudes count")
-    if line.latitudes.count == 2 {
-        t.nearlyEqual(line.latitudes[0], -41.0, "first latitude")
-        t.nearlyEqual(line.longitudes[1], 175.0, "second longitude")
+    let parts = parseWKTParts("LINESTRING (174.0 -41.0, 175.0 -42.0)")
+    t.equal(parts.count, 1, "linestring yields one part")
+    let line = parts.first
+    t.equal(line?.latitudes.count, 2, "linestring yields 2 points")
+    t.equal(line?.longitudes.count, 2, "linestring longitudes count")
+    if line?.count == 2 {
+        t.nearlyEqual(line?.latitudes[0], -41.0, "first latitude")
+        t.nearlyEqual(line?.longitudes[1], 175.0, "second longitude")
     }
 }
 
@@ -431,6 +545,38 @@ private func testTrafficDate(_ t: TestRunner) {
     t.check(display?.contains("15 Jun") == true, "ISO date formats to NZ day/month (got \(display ?? "nil"))")
     t.equal(formatTrafficDate(nil), nil, "nil -> nil")
     t.equal(formatTrafficDate("garbage"), "garbage", "unparseable string returned as-is")
+}
+
+// The three timestamp shapes the live feeds use (fractional ISO, whole-second
+// ISO, and NZ-local "dd/MM/yyyy HH:mm") must parse to the exact instant. Pins
+// the Swift 6 move from ISO8601DateFormatter to Date.ISO8601FormatStyle.
+private func testTrafficDateParsing(_ t: TestRunner) {
+    t.group("parseTrafficDate")
+    func epoch(_ raw: String) -> Double? {
+        parseTrafficDate(raw)?.timeIntervalSince1970
+    }
+    t.nearlyEqual(epoch("2026-06-15T00:00:00+12:00"), 1_781_438_400, "whole-second ISO with NZST offset")
+    t.nearlyEqual(epoch("2026-09-26T17:29:14.757+12:00"), 1_790_400_554.757, "fractional-second ISO keeps milliseconds")
+    t.nearlyEqual(epoch("2026-10-02T17:30:00+13:00"), 1_790_915_400, "whole-second ISO with NZDT offset")
+    t.nearlyEqual(epoch("2026-06-15T00:00:00Z"), 1_781_481_600, "UTC 'Z' designator")
+    t.nearlyEqual(epoch("02/10/2026 17:30"), 1_790_915_400, "NZ-local dd/MM/yyyy HH:mm is read as Pacific/Auckland (NZDT)")
+    t.equal(epoch("2026-06-15"), nil, "date-only string is rejected")
+    t.equal(epoch("2026-06-15T00:00:00"), nil, "ISO without an offset is rejected")
+    t.equal(epoch("garbage"), nil, "garbage is rejected")
+
+    t.group("formatRelativeTrafficDate")
+    let base = Date(timeIntervalSince1970: 1_781_438_400)
+    t.equal(
+        formatRelativeTrafficDate("2026-06-15T00:00:00+12:00", relativeTo: base.addingTimeInterval(90)),
+        "1 minute ago",
+        "past instant uses full units (and RelativeDateTimeFormatter rounding)"
+    )
+    t.equal(
+        formatRelativeTrafficDate("2026-06-15T00:00:00+12:00", relativeTo: base.addingTimeInterval(-3 * 3600)),
+        "in 3 hours",
+        "future instant reads as 'in …'"
+    )
+    t.equal(formatRelativeTrafficDate("garbage"), nil, "unparseable -> nil so callers can fall back")
 }
 
 // Surfaced RoadEvent fields the app already downloads: planned flag,
