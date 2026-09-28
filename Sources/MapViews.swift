@@ -171,6 +171,9 @@ struct TrafficMapTabView<Controls: View>: View {
     // The map's width in points, for placing the two directions of a road
     // side by side (see offsetPolyline).
     @State private var mapWidth: Double = 0
+    // The side-by-side lines, worked out once per zoom rather than on every
+    // render (the Flow layer is ~25k points; see OffsetPolylineCache).
+    @State private var offsetLines = OffsetPolylineCache()
     // The floating panels' height (padding included), which the map's top
     // safe area and the legend are pushed down by.
     @State private var topPanelsHeight: CGFloat = 0
@@ -236,8 +239,9 @@ struct TrafficMapTabView<Controls: View>: View {
     // moved half a stroke to the left of its direction of travel, so both
     // show — as their carriageways do — and neither hides the other. The
     // input is already worst-on-top, which still decides any overlap left.
-    private func sideBySide(_ coordinates: [CLLocationCoordinate2D], lineWidth: CGFloat) -> [CLLocationCoordinate2D] {
-        offsetPolyline(
+    private func sideBySide(id: String, _ coordinates: [CLLocationCoordinate2D], lineWidth: CGFloat) -> [CLLocationCoordinate2D] {
+        offsetLines.offset(
+            id: id,
             coordinates,
             points: Double(lineWidth) / 2 + 0.5,
             degreesLongitudePerPoint: degreesLongitudePerPoint
@@ -435,13 +439,13 @@ struct TrafficMapTabView<Controls: View>: View {
             // drawn as one line it joined the parts with straight chords.
             ForEach(flowSegments) { segment in
                 let style = lineStroke(width: flowLineWidth, accessible: segment.flowKind.accessibleLineStyle)
-                MapPolyline(coordinates: sideBySide(segment.coordinates, lineWidth: style.lineWidth))
+                MapPolyline(coordinates: sideBySide(id: segment.id, segment.coordinates, lineWidth: style.lineWidth))
                     .stroke(segment.flowKind.color, style: style)
             }
         } else if selectedLayer == .congestion {
             ForEach(congestion) { segment in
                 let style = lineStroke(width: congestionLineWidth, accessible: segment.level.accessibleLineStyle)
-                MapPolyline(coordinates: sideBySide(segment.polyline, lineWidth: style.lineWidth))
+                MapPolyline(coordinates: sideBySide(id: "congestion|\(segment.id)", segment.polyline, lineWidth: style.lineWidth))
                     .stroke(segment.level.color, style: style)
             }
         } else {
@@ -799,9 +803,15 @@ private enum TrafficMapDetail: Identifiable {
     }
 }
 
+// The glyph colour on a pin of this tint: black on the light fills
+// (yellow, green, cyan, mint, teal), where a white glyph fails contrast; white on
+// the rest.
+func mapPinGlyphColor(on tint: Color) -> Color {
+    [Color.yellow, .green, .cyan, .mint, .teal].contains(tint) ? .black : .white
+}
+
 // A pin's circle and glyph, shared by the map markers, a cluster's member
-// list and the legend. The glyph is black on yellow, where white fails
-// contrast.
+// list and the legend (see mapPinGlyphColor).
 private struct MapPinBadge: View {
     let systemImage: String
     let tint: Color
@@ -813,7 +823,7 @@ private struct MapPinBadge: View {
                 .fill(tint)
             Image(systemName: systemImage)
                 .font(.system(size: diameter * 0.5, weight: .bold))
-                .foregroundStyle(tint == .yellow ? Color.black : .white)
+                .foregroundStyle(mapPinGlyphColor(on: tint))
         }
         .frame(width: diameter, height: diameter)
         .accessibilityHidden(true)
@@ -850,9 +860,8 @@ private struct TrafficMapMarker: View {
         .accessibilityHint(feature.accessibilityHint)
     }
 
-    // Caution markers are yellow; a white glyph fails contrast on them.
     private var glyphColor: Color {
-        feature.tint == .yellow ? .black : .white
+        mapPinGlyphColor(on: feature.tint)
     }
 }
 
@@ -1151,5 +1160,57 @@ private struct TrafficMapMemberList: View {
             .accessibilityHint(feature.accessibilityHint)
         }
         .listStyle(.inset)
+    }
+}
+
+// Memo for TrafficMapTabView's side-by-side lines. The offset depends only on
+// a line's points, its stroke and the zoom, so each line is worked out once
+// per zoom instead of on every render — renders that include the loading and
+// error flips of every refresh. Keyed by the line's id plus a cheap
+// fingerprint of its points, so changed geometry under the same id is
+// recomputed. Not observed: filling it during `body` triggers nothing.
+@MainActor
+final class OffsetPolylineCache {
+    private struct Key: Hashable {
+        let id: String
+        let count: Int
+        let firstLatitude: Double
+        let firstLongitude: Double
+        let lastLatitude: Double
+        let lastLongitude: Double
+        let points: Double
+    }
+
+    private var entries: [Key: [CLLocationCoordinate2D]] = [:]
+    private var degreesLongitudePerPoint: Double?
+    // Every leg at a couple of stroke widths fits comfortably; past this
+    // (filters and data changing within one zoom) start over.
+    private let limit = 4_000
+
+    func offset(
+        id: String,
+        _ coordinates: [CLLocationCoordinate2D],
+        points: Double,
+        degreesLongitudePerPoint: Double
+    ) -> [CLLocationCoordinate2D] {
+        if self.degreesLongitudePerPoint != degreesLongitudePerPoint || entries.count >= limit {
+            entries.removeAll(keepingCapacity: true)
+            self.degreesLongitudePerPoint = degreesLongitudePerPoint
+        }
+        let key = Key(
+            id: id,
+            count: coordinates.count,
+            firstLatitude: coordinates.first?.latitude ?? 0,
+            firstLongitude: coordinates.first?.longitude ?? 0,
+            lastLatitude: coordinates.last?.latitude ?? 0,
+            lastLongitude: coordinates.last?.longitude ?? 0,
+            points: points
+        )
+        if let cached = entries[key] {
+            return cached
+        }
+        let result = offsetPolyline(coordinates, points: points, degreesLongitudePerPoint: degreesLongitudePerPoint)
+        entries[key] = result
+        return result
     }
 }

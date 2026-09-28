@@ -37,6 +37,10 @@ actor OfflineCache {
         case written
         /// Same bytes as the file already holds: only its date was refreshed.
         case unchanged
+        /// Changed bytes arriving within `minimumRewriteInterval` of the
+        /// section's last write: held in memory (and served by `read`) until
+        /// the interval has passed or `flush()` runs.
+        case deferred
         case failed
         /// No directory (previews): the cache is off.
         case disabled
@@ -47,6 +51,17 @@ actor OfflineCache {
     // Digest of what each section's file holds, as last read or written this
     // session. An identical refresh then skips rewriting the file.
     private var knownDigests: [DataSection: ContentDigest] = [:]
+    // Journeys (~1.5 MB) and events change on most ticks; rewriting them
+    // every refresh of a menu-bar app that runs for weeks adds up to
+    // gigabytes of SSD writes a day. A changed section is therefore written
+    // at most once per interval, the newest bytes waiting here meanwhile.
+    private let minimumRewriteInterval: TimeInterval
+    private var lastWrites: [DataSection: Date] = [:]
+    private var pending: [DataSection: (data: Data, digest: ContentDigest, at: Date)] = [:]
+    private let clock: @Sendable () -> Date
+
+    /// How often a changing section is rewritten at most (the app's value).
+    static let defaultRewriteInterval: TimeInterval = 600
 
     /// Application Support/NZTraffic/OfflineCache — the app's real cache.
     /// (Builds before the rename used …/NZTATraffic; LegacyMigration moves
@@ -64,8 +79,14 @@ actor OfflineCache {
             .appendingPathComponent("OfflineCache", isDirectory: true)
     }
 
-    init(directory: URL? = OfflineCache.defaultDirectory) {
+    init(
+        directory: URL? = OfflineCache.defaultDirectory,
+        minimumRewriteInterval: TimeInterval = OfflineCache.defaultRewriteInterval,
+        clock: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.directory = directory
+        self.minimumRewriteInterval = minimumRewriteInterval
+        self.clock = clock
         if let directory {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
@@ -74,24 +95,53 @@ actor OfflineCache {
     /// Saves a section's bytes. When they match what the file already holds
     /// (the usual case — most feeds rarely change between ticks) the file is
     /// not rewritten; only its modification date moves forward, so it still
-    /// records when the data was last confirmed current.
+    /// records when the data was last confirmed current. Changed bytes within
+    /// `minimumRewriteInterval` of the section's last write are deferred.
     @discardableResult
     func write(_ data: Data, digest: ContentDigest? = nil, section: DataSection) -> WriteResult {
         guard let url = fileURL(for: section) else {
             return .disabled
         }
         let digest = digest ?? ContentDigest(of: data)
+        let now = clock()
         let fileManager = FileManager.default
         if knownDigests[section] == digest, fileManager.fileExists(atPath: url.path) {
-            try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+            pending[section] = nil
+            try? fileManager.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
             return .unchanged
         }
+        if let last = lastWrites[section], now.timeIntervalSince(last) < minimumRewriteInterval,
+           fileManager.fileExists(atPath: url.path) {
+            pending[section] = (data, digest, now)
+            return .deferred
+        }
+        return writeFile(data, digest: digest, at: now, section: section)
+    }
+
+    /// Writes any deferred sections now (the app calls this when it goes
+    /// inactive and before it quits).
+    func flush() {
+        for (section, entry) in pending {
+            writeFile(entry.data, digest: entry.digest, at: entry.at, section: section)
+        }
+    }
+
+    @discardableResult
+    private func writeFile(_ data: Data, digest: ContentDigest, at date: Date, section: DataSection) -> WriteResult {
+        pending[section] = nil
+        guard let url = fileURL(for: section) else {
+            return .disabled
+        }
+        let fileManager = FileManager.default
         do {
             if let directory {
                 try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             }
             try data.write(to: url, options: .atomic)
+            // Dated by the cache's clock, like the confirmations above.
+            try? fileManager.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
             knownDigests[section] = digest
+            lastWrites[section] = clock()
             return .written
         } catch {
             knownDigests[section] = nil
@@ -100,6 +150,9 @@ actor OfflineCache {
     }
 
     func read(section: DataSection) -> Entry? {
+        if let entry = pending[section] {
+            return Entry(data: entry.data, digest: entry.digest, savedAt: entry.at)
+        }
         guard let url = fileURL(for: section),
               let data = try? Data(contentsOf: url) else {
             return nil
@@ -110,7 +163,10 @@ actor OfflineCache {
     }
 
     func savedAt(section: DataSection) -> Date? {
-        fileURL(for: section).flatMap(modificationDate(of:))
+        if let entry = pending[section] {
+            return entry.at
+        }
+        return fileURL(for: section).flatMap(modificationDate(of:))
     }
 
     /// The cached files that exist, in section order (Export Diagnostics).
@@ -130,6 +186,8 @@ actor OfflineCache {
     @discardableResult
     func removeAll() -> Bool {
         knownDigests.removeAll()
+        pending.removeAll()
+        lastWrites.removeAll()
         guard directory != nil else {
             return true
         }

@@ -171,12 +171,12 @@ func sortedHighwayKeys<S: Sequence<String>>(_ keys: S) -> [String] {
 /// the next. The first refresh only records a baseline — a closure already in
 /// force when the app starts isn't news — and so does a watch added later:
 /// the baseline is every active closure, watched or not, so closures already
-/// on a newly watched highway don't all announce themselves. Each closure is
+/// on a newly watched highway don't all announce themselves. The baseline
+/// accumulates every active closure seen this session, so each closure is
 /// reported at most once per session, even if it drops out of the feed and
 /// comes back.
 struct WatchedClosureTracker: Sendable {
     private(set) var baseline: Set<String>?
-    private var reported: Set<String> = []
 
     var hasBaseline: Bool {
         baseline != nil
@@ -187,19 +187,16 @@ struct WatchedClosureTracker: Sendable {
     mutating func newWatchedClosures(in events: [RoadEvent], watchlist: Watchlist) -> [RoadEvent] {
         let active = events.filter(\.isActiveClosure)
         let activeIDs = Set(active.map(\.id))
-        defer { baseline = activeIDs }
+        defer { baseline = (baseline ?? []).union(activeIDs) }
         guard let baseline, !watchlist.isEmpty else {
             return []
         }
         var seen = Set<String>()
-        let fresh = active.filter { event in
+        return active.filter { event in
             !baseline.contains(event.id)
-                && !reported.contains(event.id)
                 && watchlist.watches(event)
                 && seen.insert(event.id).inserted
         }
-        reported.formUnion(seen)
-        return fresh
     }
 }
 

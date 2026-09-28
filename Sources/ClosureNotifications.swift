@@ -21,15 +21,18 @@ final class AppNavigator {
     /// A tab the main window should switch to; ContentView takes it and
     /// clears it.
     var requestedTab: TrafficTab?
-    /// Opens (or brings forward) the main window. ContentView and the menu
-    /// bar hand over their `openWindow` action when they appear.
+    /// Opens (or brings forward) the main window. ContentView hands over its
+    /// `openWindow` action when it appears.
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
     func show(_ tab: TrafficTab) {
         requestedTab = tab
         if let openMainWindow {
             openMainWindow()
-        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == SceneID.main }) {
+        } else if let window = NSApp.windows.first(where: {
+            // SwiftUI suffixes a Window scene's id ("main-AppWindow-1").
+            $0.identifier?.rawValue.hasPrefix(SceneID.main) == true
+        }) {
             window.makeKeyAndOrderFront(nil)
         }
         NSApp.activate()

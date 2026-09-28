@@ -483,4 +483,7 @@ private func testSectionBadge(_ t: TestRunner) {
     t.equal(sectionBadgeText(count: 0, isLoading: false, hasError: true), "!", "failure with nothing to show")
     t.equal(sectionBadgeText(count: 0, isLoading: true, hasError: true), nil, "no badge while a retry loads")
     t.equal(sectionBadgeText(count: 0, isLoading: false, hasError: false), nil, "empty section has no badge")
+    t.equal(sectionBadgeAccessibilityLabel(count: 313, isLoading: false, hasError: true), "313, last update failed", "VoiceOver hears what the mark means")
+    t.equal(sectionBadgeAccessibilityLabel(count: 0, isLoading: false, hasError: true), "Last update failed", "as does a lone mark")
+    t.equal(sectionBadgeAccessibilityLabel(count: 313, isLoading: false, hasError: false), "313", "a plain count reads as itself")
 }

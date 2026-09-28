@@ -326,15 +326,17 @@ extension ContentView {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .environment(\.watchingFilterHasNothingToShow, watchingFilterHasNothingToShow)
     }
 
     private func sectionBadge(count: Int, section: DataSection) -> Text? {
-        sectionBadgeText(
-            count: count,
-            isLoading: store.isLoading(section),
-            hasError: store.errors[section] != nil
-        )
-        .map { Text($0) }
+        let isLoading = store.isLoading(section)
+        let hasError = store.displayedError(for: section) != nil
+        guard let text = sectionBadgeText(count: count, isLoading: isLoading, hasError: hasError) else {
+            return nil
+        }
+        let label = sectionBadgeAccessibilityLabel(count: count, isLoading: isLoading, hasError: hasError) ?? text
+        return Text(text).accessibilityLabel(label)
     }
 
     private var camerasTab: some View {
@@ -344,7 +346,7 @@ extension ContentView {
             CamerasTabView(
                 cameras: scopedCameras(),
                 isLoading: store.isLoading(.cameras),
-                errorMessage: store.errors[.cameras],
+                errorMessage: store.displayedError(for: .cameras),
                 cacheToken: store.imageCacheToken,
                 imageGeneration: store.cameraImageGeneration,
                 hasActiveFilters: hasActiveFilters(.cameras),
@@ -362,7 +364,7 @@ extension ContentView {
             RoadEventsTabView(
                 events: scopedEvents(),
                 isLoading: store.isLoading(.events),
-                errorMessage: store.errors[.events],
+                errorMessage: store.displayedError(for: .events),
                 hasActiveFilters: hasActiveFilters(.events),
                 onClearFilters: clearAllFilters,
                 onRetry: { Task { await store.reload(.events) } }
@@ -378,7 +380,7 @@ extension ContentView {
             VMSTabView(
                 signs: signs,
                 isLoading: store.isLoading(.vms),
-                errorMessage: store.errors[.vms],
+                errorMessage: store.displayedError(for: .vms),
                 hideEmpty: hideEmptyVMS,
                 hiddenBlankCount: hideEmptyVMS ? sharedVMSSigns().count - signs.count : 0,
                 hasActiveFilters: hasActiveFilters(.vms),
@@ -432,7 +434,7 @@ extension ContentView {
             listing: timBoardListing(shown, regionOrder: store.canonicalRegions),
             hiddenBlankCount: matching.count - shown.count,
             isLoading: store.isLoading(.timSigns),
-            errorMessage: store.errors[.timSigns],
+            errorMessage: store.displayedError(for: .timSigns),
             hasActiveFilters: hasActiveFilters(.timSigns),
             onClearFilters: clearAllFilters,
             onShowBlank: { hideBlankTIMSigns = false },
@@ -449,7 +451,7 @@ extension ContentView {
                 totalCount: all.count,
                 hiddenWithoutLiveData: noDataHidden,
                 isLoading: store.isLoading(.journeys),
-                errorMessage: store.errors[.journeys],
+                errorMessage: store.displayedError(for: .journeys),
                 hasActiveFilters: hasActiveFilters(.flow),
                 onClearFilters: clearAllFilters,
                 onShowAll: showAllJourneys,
@@ -513,19 +515,19 @@ extension ContentView {
     private var mapLayerErrorMessage: String? {
         switch mapSelectedLayer {
         case .cameras:
-            return store.errors[.cameras]
+            return store.displayedError(for: .cameras)
         case .events:
-            return store.errors[.events]
+            return store.displayedError(for: .events)
         case .vms:
-            return store.errors[.vms]
+            return store.displayedError(for: .vms)
         case .flow:
-            return store.errors[.journeys]
+            return store.displayedError(for: .journeys)
         case .timSigns:
-            return store.errors[.timSigns]
+            return store.displayedError(for: .timSigns)
         case .evChargers:
             return store.evChargersError
         case .congestion:
-            return store.errors[.congestion]
+            return store.displayedError(for: .congestion)
         }
     }
 
@@ -746,9 +748,11 @@ extension ContentView {
             let mapped = items.filter { $0.mapCoordinate != nil }.count
             return MapCounts(mapped: mapped, total: items.count)
         case .congestion:
-            let total = store.congestion.filter {
-                $0.matches(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
-            }.count
+            let total = store.congestionMatchCount(
+                region: selectedRegion,
+                highway: debouncedHighway,
+                search: debouncedSearch
+            )
             return MapCounts(mapped: scopedCongestion().count, total: total)
         }
     }
@@ -812,6 +816,14 @@ extension ContentView {
         case .about:
             return nil
         }
+    }
+
+    // The tabs the Watching chip filters, with nothing on the watchlist.
+    private var watchingFilterHasNothingToShow: Bool {
+        guard watchingOnly, store.watchlist.isEmpty else {
+            return false
+        }
+        return [.cameras, .events, .travelTimes].contains(selectedTab)
     }
 
     // What a section's chips hide beyond its defaults, e.g. "Hidden: Offline,

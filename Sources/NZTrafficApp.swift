@@ -75,7 +75,7 @@ struct NZTrafficApp: App {
         }
 
         MenuBarExtra("NZ Traffic", systemImage: "car.fill") {
-            MenuBarContent(store: store, navigator: navigator)
+            MenuBarContent(store: store)
         }
     }
 }
@@ -189,7 +189,6 @@ struct NZTrafficCommands: Commands {
 // timer ("5 minutes ago" would freeze).
 struct MenuBarContent: View {
     let store: TrafficStore
-    let navigator: AppNavigator
     @Environment(\.openWindow) private var openWindow
     @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
 
@@ -222,13 +221,6 @@ struct MenuBarContent: View {
             // Brings the main window forward, or reopens it if it was closed.
             openWindow(id: SceneID.main)
             NSApp.activate()
-        }
-        .onAppear {
-            // Lets a notification click reopen the window too.
-            if navigator.openMainWindow == nil {
-                let openWindow = openWindow
-                navigator.openMainWindow = { openWindow(id: SceneID.main) }
-            }
         }
         Divider()
         Button("Quit NZ Traffic") {

@@ -53,6 +53,15 @@ struct GlobalFilterToolbar: ViewModifier {
             .onChange(of: searchFilter) {
                 scheduleDebounce()
             }
+            // On the content rather than the picker: a toolbar item in the
+            // overflow menu may not be installed, and a restored region NZTA
+            // no longer lists must still fall back to All Regions.
+            .onChange(of: store.allRegions, initial: true) {
+                normalizeRegion()
+            }
+            .onChange(of: store.canonicalRegions) {
+                normalizeRegion()
+            }
             .onChange(of: clearRequest) {
                 debounceTask?.cancel()
                 highwayFilter = ""
@@ -136,12 +145,6 @@ struct GlobalFilterToolbar: ViewModifier {
         .labelsHidden()
         .fixedSize()
         .help("Region")
-        .onChange(of: store.allRegions, initial: true) {
-            normalizeRegion()
-        }
-        .onChange(of: store.canonicalRegions) {
-            normalizeRegion()
-        }
     }
 
     private func normalizeRegion() {
@@ -278,7 +281,7 @@ struct RefreshStatusLabel: View {
                             .foregroundStyle(.orange)
                             .help("Data may be stale — refresh to update")
                     }
-                    Text("Updated \(lastUpdatedText)")
+                    Text(statusText)
                         .foregroundStyle(isStale ? Color.orange : .secondary)
                 }
             }
@@ -288,10 +291,11 @@ struct RefreshStatusLabel: View {
         }
     }
 
-    private var lastUpdatedText: String {
+    private var statusText: String {
         guard let lastUpdated = store.lastUpdated else {
-            return "not yet"
+            // No live fetch has succeeded yet this launch.
+            return store.savedSections.isEmpty ? "Not updated yet" : "Showing saved data"
         }
-        return lastUpdated.formatted(.relative(presentation: .named))
+        return "Updated \(lastUpdated.formatted(.relative(presentation: .named)))"
     }
 }

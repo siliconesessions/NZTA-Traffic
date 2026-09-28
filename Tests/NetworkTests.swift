@@ -183,7 +183,13 @@ private func testOfflineCacheWrites(_ t: TestRunner) async {
     let touched = await cache.savedAt(section: .cameras) ?? .distantPast
     t.check(touched > backdated.addingTimeInterval(60), "…but its date records that they were confirmed now")
 
-    t.equal(await cache.write(Data(StubFixtures.camerasLive.utf8), section: .cameras), .written, "changed bytes are written")
+    let live = Data(StubFixtures.camerasLive.utf8)
+    t.equal(await cache.write(live, section: .cameras), .deferred, "changed bytes soon after a write are held back")
+    t.equal(try? Data(contentsOf: file), bytes, "the file keeps the older bytes meanwhile")
+    t.equal(await cache.read(section: .cameras)?.data, live, "but reads serve the newest bytes")
+    await cache.flush()
+    t.equal(try? Data(contentsOf: file), live, "flushing writes them")
+    t.equal(await cache.write(live, section: .cameras), .unchanged, "after which they count as saved")
 
     // A fresh cache instance learns the file's digest when it reads it.
     let reopened = OfflineCache(directory: folder)
@@ -208,6 +214,39 @@ private func testOfflineCacheWrites(_ t: TestRunner) async {
 
     let disabled = OfflineCache(directory: nil)
     t.equal(await disabled.write(bytes, section: .cameras), .disabled, "a cache without a folder does nothing")
+
+    await testOfflineCacheRewriteInterval(t)
+}
+
+@MainActor
+private func testOfflineCacheRewriteInterval(_ t: TestRunner) async {
+    t.group("offline cache rewrites a changing section at most every 10 minutes")
+    let folder = makeTemporaryFolder()
+    defer { removeTemporaryFolder(folder) }
+    let clock = TestClock(Date(timeIntervalSince1970: 1_790_000_000))
+    let cache = OfflineCache(directory: folder, clock: { clock.now })
+    let file = folder.appendingPathComponent("journeys.json")
+    let first = Data("[1]".utf8)
+    let second = Data("[2]".utf8)
+    let third = Data("[3]".utf8)
+
+    t.equal(await cache.write(first, section: .journeys), .written, "the first write of a session writes")
+    let written = await cache.savedAt(section: .journeys) ?? .distantPast
+    t.check(abs(written.timeIntervalSince(clock.now)) < 1, "dated by the injected clock, not the wall clock")
+    clock.advance(by: 120)
+    t.equal(await cache.write(second, section: .journeys), .deferred, "a change two minutes later waits")
+    t.equal(try? Data(contentsOf: file), first, "so the file isn't rewritten")
+    let pendingDate = await cache.savedAt(section: .journeys) ?? .distantPast
+    t.check(abs(pendingDate.timeIntervalSince(clock.now)) < 1, "the held bytes are dated when they arrived")
+    clock.advance(by: 120)
+    t.equal(await cache.write(first, section: .journeys), .unchanged, "going back to the saved bytes just confirms the file")
+    t.equal(await cache.read(section: .journeys)?.data, first, "and drops the held change")
+    clock.advance(by: 600)
+    t.equal(await cache.write(third, section: .journeys), .written, "once the interval has passed a change is written")
+    t.equal(try? Data(contentsOf: file), third, "straight to disk")
+    let immediate = OfflineCache(directory: folder, minimumRewriteInterval: 0, clock: { clock.now })
+    await immediate.write(first, section: .journeys)
+    t.equal(await immediate.write(second, section: .journeys), .written, "a zero interval writes every change")
 }
 
 extension Result where Failure == Error {

@@ -113,5 +113,7 @@ jobs:
           app="build/NZ Traffic.app"
           codesign --verify --deep --strict "$app"
           codesign --display --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime'
-          lipo -archs "$app/Contents/MacOS/NZTraffic"
+          archs="$(lipo -archs "$app/Contents/MacOS/NZTraffic")"
+          echo "Architectures: $archs"
+          test "$archs" = arm64
           test "$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$app/Contents/Info.plist")" = "27.0"

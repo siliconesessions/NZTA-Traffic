@@ -90,9 +90,10 @@ open "build/NZ Traffic.app"
 Compiles `Sources/*.swift` with `swiftc` from the selected Xcode (`xcrun --sdk macosx`) — Swift 6 language mode, `-O` whole-module, debug info — compiles the Icon Composer icon (`Resources/AppIcon.icon`) with `actool`, and ad-hoc signs `build/NZ Traffic.app` with the hardened runtime, next to `build/NZ Traffic.app.dSYM`. Module caches go under `$TMPDIR`. Options:
 
 ```sh
-MACOSX_DEPLOYMENT_TARGET=27.0 ./build_app.sh   # minimum macOS (also stamped into LSMinimumSystemVersion)
-ARCHS="arm64 x86_64" ./build_app.sh            # a lipo'd multi-architecture binary
+MACOSX_DEPLOYMENT_TARGET=27.1 ./build_app.sh   # raise the minimum macOS (also stamped into LSMinimumSystemVersion)
 ```
+
+Builds are Apple silicon (`arm64`) only: macOS 27 doesn't run on Intel Macs. The script still accepts a space-separated `ARCHS` list for a lipo'd binary, but that isn't a supported configuration.
 
 ### Tests
 

@@ -484,7 +484,7 @@ enum TrafficAPIError: LocalizedError, Equatable {
         case .decoding(let message, let prefix):
             return "Unable to read NZTA API JSON: \(message). Response began with: \(prefix)"
         case .offline:
-            return "No internet connection. Showing the last data received; NZ Traffic reloads when you’re back online."
+            return "No internet connection. NZ Traffic reloads when you’re back online."
         }
     }
 }

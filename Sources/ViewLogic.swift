@@ -770,3 +770,13 @@ func sectionBadgeText(count: Int, isLoading: Bool, hasError: Bool) -> String? {
     }
     return nil
 }
+
+/// What VoiceOver reads for a sidebar badge: "313, last update failed"
+/// rather than "313 exclamation mark".
+func sectionBadgeAccessibilityLabel(count: Int, isLoading: Bool, hasError: Bool) -> String? {
+    let failed = hasError && !isLoading
+    if count > 0 {
+        return failed ? "\(count), last update failed" : "\(count)"
+    }
+    return failed ? "Last update failed" : nil
+}

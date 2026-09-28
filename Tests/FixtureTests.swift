@@ -344,6 +344,10 @@ private func testFixtureTIM(_ t: TestRunner) {
     t.equal(sign["334"]?.pages.first?.rows.map(\.text), ["SH1 GILLIES 21 min", "CITY CENTRE 25 min"], "numeric times read as minutes")
     t.equal(sign["334"]?.headline, "SH1 GILLIES 21 min", "headline is the first row")
     t.equal(sign["334"]?.highwayKeys, ["20A"], "SH20A")
+    // The live feed has sent a destination with a stray separator.
+    t.equal(collapsedTIMText("EAST TAMAK|"), "EAST TAMAK", "a trailing '|' is dropped")
+    t.equal(collapsedTIMText(" | VIA  SH1 "), "VIA SH1", "as is a leading one, with the spacing collapsed")
+    t.equal(collapsedTIMText("|"), nil, "a bare separator is no text")
 
     // 343: no `page` at all (257 of 270 live boards).
     t.equal(sign["343"]?.pages.count, 0, "no page → no pages")

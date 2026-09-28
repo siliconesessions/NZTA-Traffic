@@ -136,6 +136,10 @@ private func testClosureTracker(_ t: TestRunner) {
     // It clears, then comes back: still not reported again this session.
     _ = tracker.newWatchedClosures(in: [existing], watchlist: watchlist)
     t.check(tracker.newWatchedClosures(in: [existing, fresh], watchlist: watchlist).isEmpty, "never twice for one closure")
+    // Nor is a closure that was already in force at launch (baseline, never
+    // reported) when it drops out and comes back.
+    _ = tracker.newWatchedClosures(in: [fresh], watchlist: watchlist)
+    t.check(tracker.newWatchedClosures(in: [existing, fresh], watchlist: watchlist).isEmpty, "a returning baseline closure isn't news")
 
     // Watching SH16 now doesn't announce the SH16 closure already in force.
     _ = tracker.newWatchedClosures(in: [existing, elsewhere], watchlist: watchlist)

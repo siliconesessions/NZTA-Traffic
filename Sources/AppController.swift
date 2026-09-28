@@ -39,6 +39,13 @@ final class AppController {
         startDockBadgeUpdates()
         startWatchlist()
         startLaunchLoad()
+        let store = store
+        AppDelegate.prepareForTermination = {
+            await store.flushOfflineCache()
+        }
+        // The store assumes an active app with a window on screen until told
+        // otherwise; a hidden or login launch should back off straight away.
+        scheduleActivityUpdate()
     }
 
     // Before the launch load, so its first live events fetch already sees
@@ -77,7 +84,8 @@ final class AppController {
     // died in between leaves it behind.
     private func startLaunchLoad() {
         let key = LaunchGuard.unfinishedLaunchKey
-        let discard = LaunchGuard.shouldDiscardSavedData(previousLaunchUnfinished: defaults.bool(forKey: key))
+        // Still set means the previous launch died before its first refresh.
+        let discard = defaults.bool(forKey: key)
         defaults.set(true, forKey: key)
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -144,6 +152,23 @@ final class AppController {
             NSWindow.didMiniaturizeNotification,
             NSWindow.didDeminiaturizeNotification
         ]
+        // Going to the background is a good moment to write saved-data
+        // updates the offline cache has been holding back.
+        observers.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let store = self?.store else {
+                    return
+                }
+                Task {
+                    await store.flushOfflineCache()
+                }
+            }
+        })
+
         for name in activityNotifications {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -190,8 +215,25 @@ final class AppController {
 // Closing the main window must not quit the app: the menu-bar extra, the Dock
 // badge and auto-refresh carry on without it, and the menu bar's
 // "Open NZ Traffic" brings the window back.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Work to finish before quitting (AppController flushes the offline
+    /// cache's deferred writes); the quit waits for it.
+    static var prepareForTermination: (@MainActor () async -> Void)?
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let prepare = Self.prepareForTermination else {
+            return .terminateNow
+        }
+        Self.prepareForTermination = nil
+        Task {
+            await prepare()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

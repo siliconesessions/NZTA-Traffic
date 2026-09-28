@@ -463,7 +463,8 @@ private struct CongestionGroupView: View {
                         .accessibilityHidden(true)
                     Text(segment.name ?? segment.displayName)
                         .font(.callout)
-                        .lineLimit(1)
+                        // Two lines, so long names survive large text sizes.
+                        .lineLimit(2)
                     Spacer(minLength: 8)
                     Text(segment.level.label)
                         .font(.callout.weight(segment.level.severityRank >= 2 ? .semibold : .regular))
@@ -563,7 +564,7 @@ struct TravelTimeBoardsView: View {
                 spacing: Self.gridSpacing
             ) {
                 ForEach(group.boards) { sign in
-                    TIMCard(sign: sign)
+                    TIMCard(sign: sign, showsRegion: false)
                         .keyboardFocusable(id: sign.id, focus: $focusedID)
                 }
             }

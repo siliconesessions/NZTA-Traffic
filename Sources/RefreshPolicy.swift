@@ -122,6 +122,13 @@ enum AutoRefreshPolicy {
         isAppActive || hasVisibleWindow ? clamp(base) : backgroundInterval(for: base)
     }
 
+    /// Timer tolerance for an auto-refresh wait: 10% of the interval, capped
+    /// at 30 s (a 60 s foreground tick gets 6 s; the 15-minute background
+    /// cadence 30 s), so the system can coalesce the wakeup.
+    static func sleepTolerance(forInterval interval: Int) -> Int {
+        min(max(interval / 10, 1), 30)
+    }
+
     /// Seconds to wait before the next automatic refresh, counted from the
     /// start of the last refresh of any kind (so a manual refresh pushes the
     /// next tick back). Zero when one is due now or none has run yet.
@@ -188,10 +195,6 @@ enum AutoRefreshPolicy {
 /// copy is discarded instead of being shown again.
 enum LaunchGuard {
     static let unfinishedLaunchKey = "nzta.launch.unfinished"
-
-    static func shouldDiscardSavedData(previousLaunchUnfinished: Bool) -> Bool {
-        previousLaunchUnfinished
-    }
 }
 
 /// What the freshness banner under the header needs to know about one
@@ -335,10 +338,6 @@ final class SingleFlight<Key: Hashable & Sendable, Value: Sendable> {
 
     func isRunning(_ key: Key) -> Bool {
         inFlight[key] != nil
-    }
-
-    var runningKeys: Set<Key> {
-        Set(inFlight.keys)
     }
 
     /// Runs `operation` for `key`, or joins the run already in flight. The

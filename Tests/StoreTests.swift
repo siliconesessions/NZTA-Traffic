@@ -16,6 +16,7 @@ func runStoreTests(_ t: TestRunner) async {
     await testEmptyFeedIsNotAFailure(t)
     await testClearOfflineCache(t)
     await testLaunchAfterUnfinishedLaunch(t)
+    await testLiveOnlySuccessDoesNotStampUpdated(t)
     await testAutoRefreshCadence(t)
     await testStoreDiagnostics(t)
     await testWatchedClosureNotifications(t)
@@ -226,6 +227,8 @@ private func testOfflineAndReconnect(_ t: TestRunner) async {
     t.check(store.errors[.cameras]?.contains("No internet connection") == true, "each section says it's offline")
     t.check(store.evChargersError?.contains("No internet connection") == true, "so does the EV layer")
     t.check(store.freshnessBanner == .offline(since: store.savedDates.values.min()), "the offline banner dates the oldest saved copy")
+    t.equal(store.displayedError(for: .cameras), nil, "a tab with data leaves the offline notice to the banner")
+    t.check(store.displayedError(for: .timSigns)?.contains("No internet connection") == true, "an empty one still says it's offline")
 
     store.networkStatusChanged(isOnline: true)
     t.check(await waitUntil { StubServer.requestCount("/cameras/all") == 1 }, "coming back online reloads by itself")
@@ -278,8 +281,11 @@ private func testUnchangedFeedIsNotRepublished(_ t: TestRunner) async {
     await store.loadAllData()
     t.check(changed.fired, "new bytes are applied")
     t.equal(store.cameras.count, 3, "with the new data")
+    // A change this soon after the last write is held back until a flush.
+    t.equal(await fixture.cache.read(section: .cameras)?.data, Data(StubFixtures.camerasLive.utf8), "the file isn't rewritten straight away")
+    await store.flushOfflineCache()
     let saved = await fixture.cache.read(section: .cameras)
-    t.equal(saved?.data, Data(StubFixtures.cameras.utf8), "and written to the cache")
+    t.equal(saved?.data, Data(StubFixtures.cameras.utf8), "but is written to the cache on a flush")
 }
 
 @MainActor
@@ -324,10 +330,28 @@ private func testClearOfflineCache(_ t: TestRunner) async {
 }
 
 @MainActor
+private func testLiveOnlySuccessDoesNotStampUpdated(_ t: TestRunner) async {
+    t.group("store: \"Updated\" follows the sections the banner covers")
+    StubServer.reset()
+    StubFixtures.failAllEndpoints(.cannotConnectToHost)
+    StubServer.route("/signs/tim/all", .json(StubFixtures.tim))
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+    await store.loadAllData()
+    _ = await waitForIdle(store)
+    t.check(!store.timSigns.isEmpty, "the TIM boards loaded")
+    t.equal(store.lastUpdated, nil, "but a live-only section alone doesn't count as an update")
+    t.equal(store.failedSections.contains(.cameras), true, "while the cacheable sections failed")
+    StubFixtures.routeAllEndpoints()
+    await store.loadAllData()
+    _ = await waitForIdle(store)
+    t.check(store.lastUpdated != nil, "a cacheable section's success does")
+}
+
+@MainActor
 private func testLaunchAfterUnfinishedLaunch(_ t: TestRunner) async {
     t.group("store: launch after a launch that never finished")
-    t.check(LaunchGuard.shouldDiscardSavedData(previousLaunchUnfinished: true), "an unfinished previous launch discards the saved copy")
-    t.check(!LaunchGuard.shouldDiscardSavedData(previousLaunchUnfinished: false), "a normal previous launch keeps it")
     t.check(LaunchGuard.unfinishedLaunchKey.hasPrefix("nzta."), "the flag lives with the app's other preferences")
 
     StubServer.reset()

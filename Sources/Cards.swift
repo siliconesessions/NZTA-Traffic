@@ -18,6 +18,9 @@ struct JourneyCard: View {
                     }
 
                     Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
+                        // Length-weighted, so one slow leg can sit under an
+                        // overall "Free Flow"; the callout below names it.
+                        .help("Overall flow, weighted by each leg's length")
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
@@ -756,11 +759,14 @@ struct EventMetaGrid: View {
         return formatTrafficDate(event.startDate).map { "Start: \($0)" }
     }
 
-    // "Ends in 3 days" / "Ended 2 hours ago". Most events carry `endDate`; the
-    // few that don't fall back to the planned resolution estimate so the card
-    // still has a "when" cue.
+    // "Ends in 3 days" / "Ended 2 hours ago". An event NZTA still lists as in
+    // force past its end date (a lagging feed) "was due to end", so a
+    // "Road Closed" card never also says it ended. Most events carry
+    // `endDate`; the few that don't fall back to the planned resolution
+    // estimate so the card still has a "when" cue.
     private static func endsText(_ event: RoadEvent) -> String? {
-        if let phrase = eventDatePhrase(event.endDate, past: "Ended", future: "Ends") {
+        let pastVerb = event.isResolved ? "Ended" : "Was due to end"
+        if let phrase = eventDatePhrase(event.endDate, past: pastVerb, future: "Ends") {
             return phrase
         }
         return formatTrafficDate(event.expectedResolution).map { "Expected: \($0)" }
@@ -841,6 +847,8 @@ struct EVChargerCard: View {
 
 struct TIMCard: View {
     let sign: TIMSign
+    // Off in the Boards list, whose sections are already headed by region.
+    var showsRegion = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -853,7 +861,7 @@ struct TIMCard: View {
 
                 Spacer()
 
-                if let region = sign.regionName {
+                if showsRegion, let region = sign.regionName {
                     Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                 }
             }

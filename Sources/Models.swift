@@ -1033,12 +1033,12 @@ func formatVMSMessage(_ message: String?) -> String {
     return cleanText(formatted) ?? "No message"
 }
 
-// ISO 8601 parse strategies for the API's `2026-09-26T17:29:14.757+12:00`
-// (fractional) and `…T17:29:00+12:00` (whole-second) timestamps. These are
-// Sendable value types, so unlike ISO8601DateFormatter they are safe as
-// globals under Swift 6 strict concurrency. Parsing matches the previous
-// ISO8601DateFormatter chain on every timestamp in the live feeds.
-private let isoFractionalDateStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+// ISO 8601 parse strategy for the API's `2026-09-26T17:29:14.757+12:00`
+// (fractional) and `…T17:29:00+12:00` (whole-second) timestamps: the default
+// style parses both, keeping the fraction. A Sendable value type, so unlike
+// ISO8601DateFormatter it is safe as a global under Swift 6 strict
+// concurrency. Parsing matches the previous ISO8601DateFormatter chain on
+// every timestamp in the live feeds.
 private let isoDateStyle = Date.ISO8601FormatStyle()
 
 // NZTA timestamps are New Zealand local time. Pin both the parse and the
@@ -1079,8 +1079,7 @@ private let nzWeekdayDateFormatter: DateFormatter = {
 
 // Internal (not private) so the test runner can pin the exact instants.
 func parseTrafficDate(_ rawValue: String) -> Date? {
-    (try? isoFractionalDateStyle.parse(rawValue))
-        ?? (try? isoDateStyle.parse(rawValue))
+    (try? isoDateStyle.parse(rawValue))
         ?? nzInputDateFormatter.date(from: rawValue)
 }
 
@@ -1312,8 +1311,9 @@ func highwayKeySet(structured: [String?], text: [String?]) -> Set<String> {
 
 // The Highway filter's input, parsed once per filter pass rather than once
 // per item. A query that names a highway ("SH1", "sh 1", "State Highway 1",
-// "01N", "1") matches by key. A bare "SH" / "State Highway" (e.g. mid-typing)
-// matches anything on a state highway. Anything else (e.g. the "CNC" corridor
+// "01N", "1") matches by key. A bare "SH" / "State Highway" — or any start
+// of one while it's being typed ("S", "Sta", "State H", "Hw") — matches
+// anything on a state highway, so the list doesn't empty out mid-word. Anything else (e.g. the "CNC" corridor
 // code) falls back to a whole-word match on the item's route text, so "art"
 // finds the "ART" route but not "Arthurs Pass".
 struct HighwayQuery: Hashable, Sendable {
@@ -1321,12 +1321,13 @@ struct HighwayQuery: Hashable, Sendable {
     let key: String?
     let isHighwayPrefixOnly: Bool
 
-    private static let highwayPrefixes: Set<String> = ["SH", "STATE", "STATEHIGHWAY", "HIGHWAY", "HWY"]
+    private static let highwayWords = ["SH", "STATEHIGHWAY", "HIGHWAY", "HWY"]
 
     init(_ raw: String) {
         text = foldedForSearch(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         key = text.isEmpty ? nil : canonicalHighwayKey(text)
-        isHighwayPrefixOnly = Self.highwayPrefixes.contains(compactHighwayToken(text))
+        let token = compactHighwayToken(text)
+        isHighwayPrefixOnly = !token.isEmpty && Self.highwayWords.contains { $0.hasPrefix(token) }
     }
 
     var isEmpty: Bool {
@@ -1998,8 +1999,7 @@ func formatTimeInterval(_ interval: TimeInterval) -> String {
     guard interval.isFinite, interval > 0 else {
         return "0m"
     }
-    // Clamp before converting so an absurd upstream value can't overflow Int.
-    let totalMinutes = Int(min(interval / 60, 1_000_000).rounded())
+    let totalMinutes = roundedMinutes(interval)
     guard totalMinutes > 0 else {
         return "<1m"
     }
@@ -2009,6 +2009,15 @@ func formatTimeInterval(_ interval: TimeInterval) -> String {
         return "\(minutes)m"
     }
     return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+}
+
+// Whole minutes as formatTimeInterval shows them (0 for anything unusable).
+func roundedMinutes(_ interval: TimeInterval) -> Int {
+    guard interval.isFinite, interval > 0 else {
+        return 0
+    }
+    // Clamp before converting so an absurd upstream value can't overflow Int.
+    return Int(min(interval / 60, 1_000_000).rounded())
 }
 
 private func decodeFirstRegion<K>(container: KeyedDecodingContainer<K>, key: K) -> Region? where K: CodingKey {
@@ -2269,9 +2278,12 @@ struct JourneyDirectionSummary: Identifiable {
         if let currentTime, let freeFlowTime {
             parts.append("Now \(formatTimeInterval(currentTime))")
             parts.append("free flow \(formatTimeInterval(freeFlowTime))")
-            // Under half a minute rounds to nothing worth showing.
-            if let delay, delay >= 30 {
-                parts.append("delay +\(formatTimeInterval(delay))")
+            // The difference of the two times as shown, so the line adds up
+            // ("Now 48m · free flow 41m · delay +7m", not "+8m").
+            let delayMinutes = roundedMinutes(currentTime) - roundedMinutes(freeFlowTime)
+            // Under half a minute of real delay is nothing worth showing.
+            if let delay, delay >= 30, delayMinutes > 0 {
+                parts.append("delay +\(formatTimeInterval(TimeInterval(delayMinutes * 60)))")
             }
         } else {
             parts.append(dataIssueLegCount > 0 ? "No reliable live times" : "No live times")
@@ -2646,7 +2658,7 @@ struct TIMLine: Decodable, Identifiable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let destinationValue = cleanText(container.decodeLossyString(forKey: .left))
+        let destinationValue = collapsedTIMText(container.decodeLossyString(forKey: .left))
         // Prefer the numeric reading so we can append "min"; fall back to the
         // raw string when `right` is already a units-bearing string.
         let timeValue: String?
@@ -2678,12 +2690,15 @@ struct TIMLine: Decodable, Identifiable, Hashable {
     }
 }
 
-// Trimmed, with runs of whitespace collapsed to one space; nil when empty.
-private func collapsedTIMText(_ raw: String?) -> String? {
+// Trimmed, with runs of whitespace collapsed to one space and any stray
+// "|" separators at either end dropped (the feed has sent "EAST TAMAK|");
+// nil when empty.
+func collapsedTIMText(_ raw: String?) -> String? {
     guard let text = cleanText(raw) else {
         return nil
     }
     let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        .trimmingCharacters(in: CharacterSet(charactersIn: "|").union(.whitespaces))
     return collapsed.isEmpty ? nil : collapsed
 }
 

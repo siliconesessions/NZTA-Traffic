@@ -93,9 +93,14 @@ else
     mv "$ARCH_BUILD_DIR/$EXECUTABLE_NAME.dwarf" "$DSYM_BUNDLE/Contents/Resources/DWARF/$EXECUTABLE_NAME"
 fi
 rm -rf "$ARCH_BUILD_DIR"
+# The dSYM now holds the debug info; drop the executable's debug map (STABS
+# entries naming this machine's build paths) so it isn't shipped. The UUID
+# is unchanged, so the dSYM still matches.
+strip -S "$MACOS_DIR/$EXECUTABLE_NAME"
 
-# Info.plist is the single source of truth for the version numbers. Stamp
-# LSMinimumSystemVersion from the same MIN_MACOS the binary was built for, so a
+# Info.plist is the single source of truth for the version numbers. Its
+# LSMinimumSystemVersion is $(MACOSX_DEPLOYMENT_TARGET), which Xcode expands;
+# stamp it here from the same MIN_MACOS the binary was built for, so a
 # MACOSX_DEPLOYMENT_TARGET override can't produce a bundle whose plist and
 # Mach-O minimum OS disagree.
 cp "$INFO_PLIST" "$CONTENTS_DIR/Info.plist"

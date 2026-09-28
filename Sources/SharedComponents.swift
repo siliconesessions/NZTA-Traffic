@@ -536,7 +536,14 @@ struct HiddenItemsHint {
 // Native empty state that explains when filters are the reason a section is
 // empty and offers a one-tap way to clear them — or, when nothing is being
 // filtered, what the section's defaults are hiding and how to show it.
+extension EnvironmentValues {
+    /// The Watching chip is on for the visible tab but nothing is watched
+    /// yet, so it hides everything (set by ContentView).
+    @Entry var watchingFilterHasNothingToShow = false
+}
+
 struct FilterableEmptyState: View {
+    @Environment(\.watchingFilterHasNothingToShow) private var watchingNothing
     let systemImage: String
     let title: String
     // The shared filters or this section's chips are hiding something.
@@ -548,7 +555,9 @@ struct FilterableEmptyState: View {
         ContentUnavailableView {
             Label(title, systemImage: systemImage)
         } description: {
-            if hasActiveFilters {
+            if hasActiveFilters && watchingNothing {
+                Text("Watching is on, but you aren't watching anything yet. Watch a highway, camera or journey, or clear the filters.")
+            } else if hasActiveFilters {
                 Text("Active filters may be hiding results.")
             } else if let hiddenByDefault {
                 Text(hiddenByDefault.message)

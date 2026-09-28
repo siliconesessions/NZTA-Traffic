@@ -302,6 +302,11 @@ private func testHighwayQueryFallback(_ t: TestRunner) {
     t.check(HighwayQuery("SH").isHighwayPrefixOnly, "bare SH is a prefix-only query")
     t.check(HighwayQuery("State Highway").isHighwayPrefixOnly, "bare State Highway is a prefix-only query")
     t.check(!HighwayQuery("cnc").isHighwayPrefixOnly, "cnc is a text query")
+    for partial in ["s", "Sta", "State", "State H", "state high", "Hw", "High"] {
+        t.check(HighwayQuery(partial).isHighwayPrefixOnly, "'\(partial)' is still being typed, so it's prefix-only")
+    }
+    t.check(!HighwayQuery("Stat Hwy").isHighwayPrefixOnly, "a token that no highway word starts with is text")
+    t.check(!HighwayQuery("art").isHighwayPrefixOnly, "art stays a text query")
     t.check(containsWholeWords("cnc", in: "cnc cna sh74 belfast"), "whole word at the start")
     t.check(containsWholeWords("belfast", in: "cnc cna sh74 belfast"), "whole word at the end")
     t.check(containsWholeWords("upper hbr", in: "east along upper hbr mwy"), "multi-word phrase")

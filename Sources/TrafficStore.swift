@@ -156,6 +156,7 @@ final class TrafficStore {
     @ObservationIgnored private var journeyCache: [FilterKey: [TrafficJourney]] = [:]
     @ObservationIgnored private var timCache: [FilterKey: [TIMSign]] = [:]
     @ObservationIgnored private var congestionCache: [FilterKey: [CongestionSegment]] = [:]
+    @ObservationIgnored private var congestionMatchCounts: [FilterKey: Int] = [:]
     @ObservationIgnored private var evChargerCache: [FilterKey: [EVCharger]] = [:]
     // The Flow map's per-leg selection also depends on the flow chips.
     private struct FlowSegmentKey: Hashable {
@@ -217,6 +218,16 @@ final class TrafficStore {
         )
     }
 
+    /// The error a section's tab shows. Offline, a section that still has
+    /// data shows none: the offline banner already says so, and Retry can't
+    /// work until the connection is back.
+    func displayedError(for section: DataSection) -> String? {
+        if !isOnline, hasData(section) {
+            return nil
+        }
+        return errors[section]
+    }
+
     private func hasData(_ section: DataSection) -> Bool {
         switch section {
         case .cameras:
@@ -232,10 +243,6 @@ final class TrafficStore {
         case .congestion:
             return !congestion.isEmpty
         }
-    }
-
-    var isServingSavedData: Bool {
-        !savedSections.isEmpty
     }
 
     // NWPathMonitor reports reachability changes on a background queue; hop back
@@ -494,6 +501,12 @@ final class TrafficStore {
     /// cached camera images, then reloads everything (an escape hatch should a
     /// bad cached copy ever cause trouble). Data already on screen stays until
     /// the reload replaces it.
+    /// Writes saved-data updates the offline cache is holding back (it
+    /// rewrites a changing section at most every 10 minutes).
+    func flushOfflineCache() async {
+        await cache.flush()
+    }
+
     func clearOfflineCache() async {
         await cache.removeAll()
         imageCache?.removeAllCachedResponses()
@@ -658,7 +671,12 @@ final class TrafficStore {
         }
         let now = clock()
         lastLiveSuccess[section] = now
-        lastUpdated = now
+        // "Updated …" speaks for the sections the freshness banner covers, so
+        // a live-only section (TIM, congestion) succeeding alone can't claim
+        // an update while the banner says NZTA couldn't be reached.
+        if section.isCacheable {
+            lastUpdated = now
+        }
         if section == .cameras {
             camerasRefreshed(at: now)
         }
@@ -861,8 +879,8 @@ final class TrafficStore {
         guard autoRefresh.isEnabled else {
             return
         }
-        autoRefreshTask = Task {
-            await self.runAutoRefreshLoop()
+        autoRefreshTask = Task { [weak self] in
+            await Self.runAutoRefreshLoop { [weak self] in self }
         }
     }
 
@@ -870,31 +888,51 @@ final class TrafficStore {
     // counted from the start of the last refresh, so switching apps or
     // changing a setting never postpones a refresh indefinitely, and a manual
     // refresh pushes the next tick back. Cancelling the loop never cancels a
-    // refresh in progress (loads run in their own tasks).
-    private func runAutoRefreshLoop() async {
-        if let launchTask {
+    // refresh in progress (loads run in their own tasks). The loop re-acquires
+    // the store on each tick rather than holding it, so it never keeps a
+    // discarded store (and its NWPathMonitor) alive; the App's store lives as
+    // long as the app anyway.
+    private static func runAutoRefreshLoop(_ store: @MainActor () -> TrafficStore?) async {
+        if let launchTask = store()?.launchTask {
             await launchTask.value
         }
         while !Task.isCancelled {
-            guard let interval = effectiveAutoRefreshInterval else {
+            guard let (delay, interval) = store()?.nextAutoRefreshDelay() else {
                 return
             }
-            let delay = AutoRefreshPolicy.delayUntilNextRefresh(
-                lastAttempt: lastRefreshAttempt,
-                now: self.clock(),
-                interval: interval
-            )
             if delay > 0 {
                 do {
-                    try await Task.sleep(for: .seconds(delay))
+                    // A little tolerance lets the system coalesce the wakeup
+                    // with other timers; the loop re-checks after waking.
+                    try await Task.sleep(
+                        for: .seconds(delay),
+                        tolerance: .seconds(AutoRefreshPolicy.sleepTolerance(forInterval: interval))
+                    )
                 } catch {
                     return
                 }
                 // Re-check: a manual refresh may have moved the next tick.
                 continue
             }
-            await loadAllData()
+            guard let current = store() else {
+                return
+            }
+            await current.loadAllData()
         }
+    }
+
+    // The wait before the next automatic refresh and the interval in force,
+    // or nil when auto-refresh is off.
+    private func nextAutoRefreshDelay() -> (TimeInterval, Int)? {
+        guard let interval = effectiveAutoRefreshInterval else {
+            return nil
+        }
+        let delay = AutoRefreshPolicy.delayUntilNextRefresh(
+            lastAttempt: lastRefreshAttempt,
+            now: clock(),
+            interval: interval
+        )
+        return (delay, interval)
     }
 
     // MARK: - Diagnostics
@@ -1007,7 +1045,7 @@ final class TrafficStore {
                 }
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
-        cameraCache[key] = result
+        Self.memoize(result, for: key, in: &cameraCache)
         return result
     }
 
@@ -1025,7 +1063,7 @@ final class TrafficStore {
                     && event.matches(region: region, highway: highwayQuery, search: search)
             }
             .sorted(by: roadEventSortsBefore)
-        eventCache[key] = result
+        Self.memoize(result, for: key, in: &eventCache)
         return result
     }
 
@@ -1038,7 +1076,7 @@ final class TrafficStore {
         let result = vmsSigns
             .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        vmsCache[key] = result
+        Self.memoize(result, for: key, in: &vmsCache)
         return result
     }
 
@@ -1059,7 +1097,7 @@ final class TrafficStore {
                 }
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
-        journeyCache[key] = result
+        Self.memoize(result, for: key, in: &journeyCache)
         return result
     }
 
@@ -1073,7 +1111,7 @@ final class TrafficStore {
         let result = timSigns
             .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
             .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
-        timCache[key] = result
+        Self.memoize(result, for: key, in: &timCache)
         return result
     }
 
@@ -1138,7 +1176,7 @@ final class TrafficStore {
             for: filteredJourneys(region: region, highway: highway, search: search),
             allowedKinds: flows
         )
-        flowSegmentCache[key] = result
+        Self.memoize(result, for: key, in: &flowSegmentCache)
         return result
     }
 
@@ -1159,8 +1197,20 @@ final class TrafficStore {
         let result = congestionDrawOrder(
             congestion.filter { $0.matches(region: region, highway: highwayQuery, search: search) }
         )
-        congestionCache[key] = result
+        Self.memoize(result, for: key, in: &congestionCache)
         return result
+    }
+
+    /// Segments passing the filters, drawable or not (the map's "n of m").
+    func congestionMatchCount(region: String, highway: String, search: String) -> Int {
+        let key = FilterKey(region: region, highway: highway, search: search)
+        if let cached = congestionMatchCounts[key] {
+            return cached
+        }
+        let highwayQuery = HighwayQuery(highway)
+        let count = congestion.count { $0.matches(region: region, highway: highwayQuery, search: search) }
+        Self.memoize(count, for: key, in: &congestionMatchCounts)
+        return count
     }
 
     // EV chargers by region (placed by location, see evChargerRegion),
@@ -1178,7 +1228,7 @@ final class TrafficStore {
                     && charger.matches(highway: highwayQuery, search: search)
             }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-        evChargerCache[key] = result
+        Self.memoize(result, for: key, in: &evChargerCache)
         return result
     }
 
@@ -1211,6 +1261,18 @@ final class TrafficStore {
     }
 
     // Only the changed section's memo is stale.
+    // Each distinct (debounced) filter adds a memo entry holding a whole
+    // filtered array, and sections whose feed rarely changes keep theirs for
+    // hours; start over past a few dozen entries so memory stays bounded.
+    private static let memoLimit = 24
+
+    private static func memoize<Key: Hashable, Value>(_ value: Value, for key: Key, in memo: inout [Key: Value]) {
+        if memo.count >= memoLimit {
+            memo.removeAll(keepingCapacity: true)
+        }
+        memo[key] = value
+    }
+
     private func invalidateFilterCache(for section: DataSection) {
         switch section {
         case .cameras:
@@ -1226,6 +1288,7 @@ final class TrafficStore {
             timCache.removeAll(keepingCapacity: true)
         case .congestion:
             congestionCache.removeAll(keepingCapacity: true)
+            congestionMatchCounts.removeAll(keepingCapacity: true)
         }
     }
 

@@ -19,9 +19,12 @@ struct WelcomeView: View {
                 Label("⌘R refreshes the data. Open Help (⌘?) any time.", systemImage: "arrow.clockwise")
             }
             .font(.callout)
+            // Let each hint wrap inside the fixed-width sheet rather than truncate.
+            .fixedSize(horizontal: false, vertical: true)
 
             Toggle("Refresh data automatically (every 2 minutes — change it in Settings)", isOn: $enableAutoRefresh)
                 .toggleStyle(.checkbox)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()

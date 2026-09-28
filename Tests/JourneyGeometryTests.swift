@@ -145,6 +145,14 @@ private func testJourneyDirections(_ t: TestRunner) {
         "I card line"
     )
 
+    // The delay is the difference of the times as shown: 48m 20s (48m)
+    // against 40m 45s (41m) is +7m, not the raw 7m 35s rounded to +8m.
+    guard let rounding = journeyFixture(legs: [
+        legJSON("A to B", direction: "I", sequence: 0, length: 40, time: "00:48:20", freeFlow: 2445, speed: 50)
+    ], t) else { return }
+    let roundingLine = rounding.directions.first?.detailText ?? ""
+    t.check(roundingLine.hasPrefix("Now 48m · free flow 41m · delay +7m"), "the direction line adds up (got \(roundingLine))")
+
     // A leg with a current time but no free-flow time can't be compared, so it
     // stays out of BOTH sums rather than inflating "now" alone.
     guard let mixed = journeyFixture(legs: [
