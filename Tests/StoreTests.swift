@@ -18,6 +18,8 @@ func runStoreTests(_ t: TestRunner) async {
     await testLaunchAfterUnfinishedLaunch(t)
     await testAutoRefreshCadence(t)
     await testStoreDiagnostics(t)
+    await testWatchedClosureNotifications(t)
+    await testWatchingFilter(t)
 }
 
 private struct StoreFixture {
@@ -368,4 +370,79 @@ private func testStoreDiagnostics(_ t: TestRunner) async {
     t.check(text.contains("falling back to rest/4 for /signs/tim/all"), "the rest/4 fallback is reported")
     t.check(text.contains("Auto-refresh: off"), "the refresh state")
     t.check(text.contains("nzta.autoRefreshEnabled = 1"), "the injected preferences")
+}
+
+// D4: the store reports closures new on watched roads after live events
+// fetches only — never the launch's first live fetch (the baseline) and never
+// saved data.
+@MainActor
+private func testWatchedClosureNotifications(_ t: TestRunner) async {
+    t.group("store: closures on watched roads")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    // First live fetch: only the delay. Then the SH94 closure appears.
+    StubServer.route(
+        "/events/all/10",
+        .json(StubFixtures.eventsWithoutClosure),
+        .json(StubFixtures.events)
+    )
+    let fixture = await makeStore(seedCache: true)
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+    var watchlist = Watchlist()
+    watchlist.watchHighway("SH94")
+    store.setWatchlist(watchlist)
+    var reported: [[String]] = []
+    store.onNewWatchedClosures = { closures, _ in
+        reported.append(closures.map(\.id))
+    }
+
+    await store.start().value
+    t.check(store.events.contains { $0.id == "560046" }, "the first live events fetch landed")
+    t.check(reported.isEmpty, "neither the saved closure nor the first live fetch notifies")
+    await store.loadAllData()
+    t.equal(reported, [["561700"]], "the SH94 closure that appeared since is reported")
+    t.equal(store.watchedActiveClosureCount, 1, "and counted as on a watched road")
+    await store.loadAllData()
+    t.equal(reported.count, 1, "an unchanged feed reports nothing more")
+    t.check(await waitForIdle(store), "settles")
+}
+
+@MainActor
+private func testWatchingFilter(_ t: TestRunner) async {
+    t.group("store: watching filter")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+    await store.loadAllData()
+    t.check(await waitForIdle(store), "loaded")
+    let allStatuses = Set(CameraStatusKind.allCases)
+    t.equal(store.scopedCameras(region: "", highway: "", search: "", statuses: allStatuses, watchingOnly: true).count, 0, "nothing watched, nothing shown")
+    store.updateWatchlist { $0.setWatching(cameraID: "812", true) }
+    t.equal(
+        store.scopedCameras(region: "", highway: "", search: "", statuses: allStatuses, watchingOnly: true).map(\.id),
+        ["812"],
+        "a watched camera"
+    )
+    store.updateWatchlist { $0.watchHighway("SH20") }
+    t.equal(
+        store.scopedCameras(region: "", highway: "", search: "", statuses: allStatuses, watchingOnly: true).count,
+        2,
+        "plus the cameras on a watched highway"
+    )
+    let impacts = Set(EventImpactKind.allCases)
+    let watchedEvents = store.scopedEvents(
+        region: "", highway: "", search: "", impacts: impacts, showPlanned: true, showUnplanned: true,
+        showResolved: false, island: .all, watchingOnly: true
+    )
+    t.check(watchedEvents.isEmpty, "no events on SH20")
+    store.updateWatchlist { $0.setWatching(journeyID: "87", true) }
+    t.equal(
+        store.scopedJourneys(region: "", highway: "", search: "", flows: Set(FlowKind.allCases), watchingOnly: true).map(\.id),
+        ["87"],
+        "a watched journey"
+    )
+    t.equal(store.scopedCameras(region: "", highway: "", search: "", statuses: allStatuses).count, 2, "the filter off shows everything")
 }

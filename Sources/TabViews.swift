@@ -468,3 +468,139 @@ private struct CongestionGroupView: View {
         }
     }
 }
+
+// Travel Times › Boards: NZTA's roadside travel-time (TIM) boards as they
+// read now, grouped by region north to south. Boards showing nothing are set
+// apart in a collapsed list rather than filling the grid with empty cards.
+struct TravelTimeBoardsView: View {
+    let listing: TIMBoardListing
+    // Blank boards matching the shared filters that "Hide blank boards" hides.
+    var hiddenBlankCount = 0
+    let isLoading: Bool
+    let errorMessage: String?
+    let hasActiveFilters: Bool
+    let onClearFilters: () -> Void
+    var onShowBlank: (() -> Void)?
+    var onRetry: (() -> Void)?
+    @AppStorage("nzta.travelTimes.showBlankBoards") private var showsBlankBoards = false
+    @FocusState private var focusedID: String?
+    @State private var columns = 1
+
+    private nonisolated static let minimumCardWidth: CGFloat = 300
+    private nonisolated static let gridSpacing: CGFloat = 16
+
+    private var isEmpty: Bool {
+        listing.groups.isEmpty && listing.blank.isEmpty
+    }
+
+    private var blankBoardsHint: HiddenItemsHint? {
+        guard hiddenBlankCount > 0, let onShowBlank else {
+            return nil
+        }
+        let noun = hiddenBlankCount == 1 ? "board is" : "boards are"
+        return HiddenItemsHint(
+            message: "\(hiddenBlankCount) \(noun) blank right now.",
+            actionTitle: "Show Blank Boards",
+            action: onShowBlank
+        )
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let errorMessage {
+                        ErrorBanner(message: errorMessage, onRetry: onRetry)
+                    }
+
+                    if isLoading && isEmpty {
+                        LoadingView(title: "Loading travel-time boards...")
+                    } else if isEmpty {
+                        FilterableEmptyState(
+                            systemImage: "clock",
+                            title: "No travel-time boards to show",
+                            hasActiveFilters: hasActiveFilters,
+                            onClearFilters: onClearFilters,
+                            hiddenByDefault: blankBoardsHint
+                        )
+                    } else {
+                        StatsRow(stats: [
+                            StatItem(title: "Boards Showing Times", value: "\(listing.showingCount)", tint: .cyan),
+                            StatItem(title: "Blank Right Now", value: "\(listing.blank.count + hiddenBlankCount)", tint: .gray)
+                        ])
+
+                        ForEach(listing.groups) { group in
+                            regionSection(group)
+                        }
+
+                        if !listing.blank.isEmpty {
+                            blankBoards
+                        }
+                    }
+                }
+                .padding(24)
+            }
+            .onChange(of: focusedID) { _, newValue in
+                keepFocusVisible(newValue, proxy: proxy)
+            }
+        }
+    }
+
+    private func regionSection(_ group: TIMBoardGroup) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(group.region)
+                .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: Self.minimumCardWidth), spacing: Self.gridSpacing, alignment: .top)],
+                spacing: Self.gridSpacing
+            ) {
+                ForEach(group.boards) { sign in
+                    TIMCard(sign: sign)
+                        .keyboardFocusable(id: sign.id, focus: $focusedID)
+                }
+            }
+            .onGeometryChange(for: Int.self) { geometry in
+                adaptiveGridColumnCount(
+                    width: geometry.size.width,
+                    minimum: Self.minimumCardWidth,
+                    spacing: Self.gridSpacing
+                )
+            } action: { count in
+                columns = count
+            }
+            .keyboardNavigation(over: group.boards.map(\.id), columns: columns, focus: $focusedID)
+        }
+    }
+
+    // Names only: there's nothing on them to read.
+    private var blankBoards: some View {
+        DisclosureGroup(isExpanded: $showsBlankBoards) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(listing.blank) { sign in
+                    HStack(spacing: 8) {
+                        Text(sign.displayName)
+                            .font(.callout)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        if let region = sign.regionName {
+                            Text(region)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            Text("\(listing.blank.count) blank \(listing.blank.count == 1 ? "board" : "boards")")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card))
+        .overlay { CardBorder() }
+    }
+}

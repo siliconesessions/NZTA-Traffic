@@ -37,6 +37,9 @@ extension Color {
     // "closed now"; upcoming (Scheduled) and resolved events use these.
     static let eventUpcoming = Color.purple
     static let eventResolved = Color.gray
+
+    /// EV chargers with no working connector (map pin, legend, card badge).
+    static let evOutOfService = Color.gray
 }
 
 extension View {

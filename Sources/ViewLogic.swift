@@ -7,8 +7,9 @@ import Foundation
 // directions, placing EV chargers in a region, map pin glyphs and which
 // member tints a map cluster (the clustering itself is in
 // MapClustering.swift), grid keyboard navigation, the region picker's
-// restored selection and the Travel Times "hidden journeys" caption. Kept
-// out of the SwiftUI files so run_tests.sh can compile and test it.
+// restored selection, the Travel Times "hidden journeys" caption and its
+// travel-time board list. Kept out of the SwiftUI files so run_tests.sh can
+// compile and test it.
 
 // MARK: - Flow and congestion layers
 
@@ -418,10 +419,10 @@ extension TrafficCamera {
 }
 
 extension TIMSign {
-    /// Shows no destination/time lines right now. Many boards blank
-    /// overnight, and a blank board has nothing to read on the map.
+    /// Shows nothing right now — no destination/time rows and no text. Many
+    /// boards blank overnight, and a blank board has nothing to read.
     var isBlank: Bool {
-        lines.isEmpty
+        pages.isEmpty
     }
 }
 
@@ -484,6 +485,39 @@ enum MapPinSymbol {
     static let timTimes = "clock.fill"
     static let evDC = "bolt.fill"
     static let evAC = "powerplug.fill"
+    static let evOutOfService = "bolt.slash.fill"
+}
+
+extension EVCharger {
+    /// Out of service first (its glyph says so, not just its grey), then DC
+    /// fast or AC.
+    var mapSymbol: String {
+        if isOutOfService {
+            return MapPinSymbol.evOutOfService
+        }
+        return isDC ? MapPinSymbol.evDC : MapPinSymbol.evAC
+    }
+
+    /// DC fast > AC > out of service, for colouring a cluster: a cluster
+    /// is only grey when every charger in it is down.
+    var mapEmphasis: Int {
+        if isOutOfService {
+            return 0
+        }
+        return isDC ? 2 : 1
+    }
+
+    /// The card's status line glyph.
+    var statusSymbol: String {
+        switch availability {
+        case .available:
+            return connectors.inoperativeCount > 0 ? "exclamationmark.circle" : "checkmark.circle"
+        case .outOfService:
+            return "xmark.octagon"
+        case .unknown, .notReported:
+            return "questionmark.circle"
+        }
+    }
 }
 
 // MARK: - Grid keyboard navigation
@@ -554,6 +588,66 @@ func normalizedRegionSelection(_ selection: String, available: [String], listIsC
 }
 
 // MARK: - Travel Times
+
+/// One region's travel-time boards in the Travel Times tab's board list.
+struct TIMBoardGroup: Identifiable, Equatable {
+    let region: String
+    let boards: [TIMSign]
+
+    var id: String {
+        region
+    }
+}
+
+/// The board list: boards showing something, grouped by region, and the
+/// blank ones set apart so they don't crowd out the boards with times.
+struct TIMBoardListing: Equatable {
+    let groups: [TIMBoardGroup]
+    let blank: [TIMSign]
+
+    var showingCount: Int {
+        groups.reduce(0) { $0 + $1.boards.count }
+    }
+}
+
+/// Groups boards (already filtered and sorted by the store) by region, in
+/// `regionOrder` — the canonical north-to-south order from /regions/all —
+/// then any other region alphabetically, and boards with no region last.
+/// Order within a region is kept.
+func timBoardListing(_ signs: [TIMSign], regionOrder: [String]) -> TIMBoardListing {
+    let otherRegion = "Other"
+    var rank: [String: Int] = [:]
+    for (index, name) in regionOrder.enumerated() where rank[name.lowercased()] == nil {
+        rank[name.lowercased()] = index
+    }
+    var boardsByRegion: [String: [TIMSign]] = [:]
+    var displayName: [String: String] = [:]
+    var blank: [TIMSign] = []
+    for sign in signs {
+        guard !sign.isBlank else {
+            blank.append(sign)
+            continue
+        }
+        let name = cleanText(sign.regionName) ?? otherRegion
+        let key = name.lowercased()
+        boardsByRegion[key, default: []].append(sign)
+        if displayName[key] == nil {
+            displayName[key] = name
+        }
+    }
+    let orderedKeys = boardsByRegion.keys.sorted { lhs, rhs in
+        let lhsRank = lhs == otherRegion.lowercased() ? Int.max : rank[lhs] ?? Int.max - 1
+        let rhsRank = rhs == otherRegion.lowercased() ? Int.max : rank[rhs] ?? Int.max - 1
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+        return lhs < rhs
+    }
+    let groups = orderedKeys.map { key in
+        TIMBoardGroup(region: displayName[key] ?? key, boards: boardsByRegion[key] ?? [])
+    }
+    return TIMBoardListing(groups: groups, blank: blank)
+}
 
 /// The Travel Times caption when the flow filters hide journeys, e.g.
 /// "Showing 9 of 131 journeys · 122 with no live data are hidden". nil when

@@ -222,6 +222,13 @@ enum StubFixtures {
     ]}}
     """#
 
+    // `events` minus the SH94 closure: the active delay only.
+    static let eventsWithoutClosure = #"""
+    {"response":{"roadevent":[
+    {"id":560046,"eventDescription":"Resurfacing","eventType":"Area Warning","impact":"Delays","status":"Active","planned":true,"eventIsland":"South Island","direction":"Both Directions","locationArea":"SH 88 Port Chalmers, between Wickliffe Terrace and Station Road","eventComments":"Temporary traffic signals in place at all times.","expectedResolution":"Until further notice","startDate":"2026-09-14T18:00:00+12:00","endDate":"2099-10-01T00:00:00+13:00","eventModified":"2026-09-25T08:48:55.300+12:00","geometry":"MULTILINESTRING ((170.60882 -45.82017, 170.61807 -45.81806))","region":{"id":13,"name":"Otago"},"way":{"id":1101,"name":"088"}}
+    ]}}
+    """#
+
     static let vms = #"""
     {"response":{"vms":[
     {"id":1,"name":"SH59 Acheron T2 - Southbound","description":"SH59 Acheron T2 - Southbound","direction":"Southbound","currentMessage":"CLEARWAY[nl]NOT[nl]OPERATING","lastMessageUpdate":"2026-09-26T14:00:14.720+12:00","lastUpdate":"2026-09-26T17:29:14.757+12:00","latitude":-41.091524,"longitude":174.86814,"region":{"id":9,"name":"Wellington"},"way":{"id":1221,"name":"059"}}

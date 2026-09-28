@@ -18,6 +18,9 @@ struct NZTrafficApp: App {
     // activity, and the Dock badge.
     @State private var store: TrafficStore
     @State private var controller: AppController
+    // Tab requests for the main window (a notification click opens Road
+    // Events), shared with ContentView and the menu bar.
+    @State private var navigator: AppNavigator
 
     init() {
         // Carry preferences and the offline cache over from the pre-rename
@@ -37,9 +40,11 @@ struct NZTrafficApp: App {
         // `App` is @MainActor-isolated, so its init can build the
         // main-actor-isolated TrafficStore directly.
         let store = TrafficStore()
-        let controller = AppController(store: store)
+        let navigator = AppNavigator()
+        let controller = AppController(store: store, navigator: navigator)
         _store = State(initialValue: store)
         _controller = State(initialValue: controller)
+        _navigator = State(initialValue: navigator)
         // Xcode previews must not load live data (see PreviewSupport.swift).
         if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] != "1" {
             controller.start()
@@ -51,6 +56,7 @@ struct NZTrafficApp: App {
         // brings back the same one, and refreshing never depends on it.
         Window(AppIdentity.productName, id: SceneID.main) {
             ContentView(store: store)
+                .environment(navigator)
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1180, height: 780)
@@ -69,7 +75,7 @@ struct NZTrafficApp: App {
         }
 
         MenuBarExtra("NZ Traffic", systemImage: "car.fill") {
-            MenuBarContent(store: store)
+            MenuBarContent(store: store, navigator: navigator)
         }
     }
 }
@@ -178,6 +184,7 @@ struct NZTrafficCommands: Commands {
 // timer ("5 minutes ago" would freeze).
 struct MenuBarContent: View {
     let store: TrafficStore
+    let navigator: AppNavigator
     @Environment(\.openWindow) private var openWindow
     @AppStorage("nzta.showResolvedEvents") private var showResolvedEvents = false
 
@@ -192,6 +199,9 @@ struct MenuBarContent: View {
         Text("Cameras: \(store.cameras.count) (\(onlineCameras) online)")
         Text("Road events: \(store.visibleEventCount(showResolved: showResolvedEvents))")
         Text(activeClosuresText)
+        if !store.watchlist.isEmpty {
+            Text("On roads you watch: \(store.watchedActiveClosureCount)")
+        }
         Text("VMS signs: \(store.vmsSigns.count)")
         Text("Travel times: \(store.journeys.count)")
         Text(updatedText)
@@ -207,6 +217,13 @@ struct MenuBarContent: View {
             // Brings the main window forward, or reopens it if it was closed.
             openWindow(id: SceneID.main)
             NSApp.activate()
+        }
+        .onAppear {
+            // Lets a notification click reopen the window too.
+            if navigator.openMainWindow == nil {
+                let openWindow = openWindow
+                navigator.openMainWindow = { openWindow(id: SceneID.main) }
+            }
         }
         Divider()
         Button("Quit NZ Traffic") {

@@ -695,6 +695,9 @@ private enum TrafficMapFeature: Identifiable {
         case .tim(let sign, _):
             return sign.isBlank ? "Blank right now" : sign.headline ?? "Travel time sign"
         case .evCharger(let charger, _):
+            if charger.isOutOfService {
+                return joinNonEmpty(["Out of service", charger.powerSummary], separator: " · ") ?? "Out of service"
+            }
             return charger.powerSummary ?? "EV Charger"
         }
     }
@@ -712,7 +715,7 @@ private enum TrafficMapFeature: Identifiable {
         case .tim(let sign, _):
             return sign.isBlank ? MapPinSymbol.blank : MapPinSymbol.timTimes
         case .evCharger(let charger, _):
-            return charger.isDC ? MapPinSymbol.evDC : MapPinSymbol.evAC
+            return charger.mapSymbol
         }
     }
 
@@ -727,7 +730,7 @@ private enum TrafficMapFeature: Identifiable {
         case .tim(let sign, _):
             return sign.isBlank ? .gray : .cyan
         case .evCharger(let charger, _):
-            return charger.isDC ? .purple : .teal
+            return charger.mapTint
         }
     }
 
@@ -743,7 +746,7 @@ private enum TrafficMapFeature: Identifiable {
         case .tim(let sign, _):
             return sign.isBlank ? 0 : 1
         case .evCharger(let charger, _):
-            return charger.isDC ? 1 : 0
+            return charger.mapEmphasis
         }
     }
 
@@ -1024,7 +1027,8 @@ private struct MapLegend: View {
         case .evChargers:
             return [
                 Item(label: "DC fast", color: .purple, symbol: MapPinSymbol.evDC),
-                Item(label: "AC", color: .teal, symbol: MapPinSymbol.evAC)
+                Item(label: "AC", color: .teal, symbol: MapPinSymbol.evAC),
+                Item(label: "Out of service", color: .evOutOfService, symbol: MapPinSymbol.evOutOfService)
             ]
         case .congestion:
             return CongestionLevel.allCases

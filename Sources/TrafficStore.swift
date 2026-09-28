@@ -15,9 +15,11 @@ final class TrafficStore {
     // Auckland motorway congestion segments (traffic-conditions/rest/2, XML).
     // Live data refreshed each cycle and rendered as a colour-coded map layer.
     private(set) var congestion: [CongestionSegment] = []
-    // EV Roam public charging stations. Static reference data fetched once (like
-    // the canonical regions) rather than on every refresh, so it has its own
-    // loading/error state instead of being a per-refresh DataSection.
+    // EV Roam public charging stations. Reference data that changes about
+    // daily (connector status), so it is fetched on the first refresh and
+    // again once it is over an hour old (AutoRefreshPolicy.evChargerMaxAge)
+    // rather than every refresh. Not a per-refresh DataSection: it has its own
+    // loading/error state.
     private(set) var evChargers: [EVCharger] = []
     private(set) var isLoadingEVChargers = false
     private(set) var evChargersError: String?
@@ -65,6 +67,16 @@ final class TrafficStore {
     // When each section last fetched live data.
     private(set) var lastLiveSuccess: [DataSection: Date] = [:]
 
+    // The highways, cameras and journeys the user watches. The App loads it
+    // from and saves it to UserDefaults (`Watchlist.defaultsKey`); the cards'
+    // watch buttons and Settings edit it here.
+    private(set) var watchlist = Watchlist()
+    // Called on the main actor with the active closures on watched roads that
+    // are new since the previous successful live events fetch (see
+    // WatchedClosureTracker); the App posts the notifications.
+    @ObservationIgnored var onNewWatchedClosures: (@MainActor (_ closures: [RoadEvent], _ watchlist: Watchlist) -> Void)?
+    @ObservationIgnored private var closureTracker = WatchedClosureTracker()
+
     @ObservationIgnored private let service: TrafficAPIService
     @ObservationIgnored private let cache: OfflineCache
     // The URL cache camera images load through (Clear Offline Cache empties it).
@@ -107,6 +119,8 @@ final class TrafficStore {
     // `refreshIfStale` count from it.
     @ObservationIgnored private(set) var lastRefreshAttempt: Date?
     @ObservationIgnored private var launchTask: Task<Void, Never>?
+    // When the EV layer last loaded; it is re-fetched once this is over an hour old.
+    @ObservationIgnored private var evChargersLoadedAt: Date?
     @ObservationIgnored private var primeTask: Task<Void, Never>?
     @ObservationIgnored private var isLoadingRegions = false
 
@@ -296,6 +310,38 @@ final class TrafficStore {
         DockBadge.label(activeClosures: criticalAlertCount, isProvisional: eventsAreProvisional)
     }
 
+    /// Active closures on watched highways or journeys (the menu bar's
+    /// "On roads you watch" line).
+    var watchedActiveClosureCount: Int {
+        guard !watchlist.isEmpty else {
+            return 0
+        }
+        return events.filter { $0.isActiveClosure && watchlist.watches($0) }.count
+    }
+
+    // MARK: - Watchlist
+
+    func setWatchlist(_ newValue: Watchlist) {
+        if newValue != watchlist {
+            watchlist = newValue
+        }
+    }
+
+    func updateWatchlist(_ change: (inout Watchlist) -> Void) {
+        var copy = watchlist
+        change(&copy)
+        setWatchlist(copy)
+    }
+
+    // After a successful live events fetch (never saved data): the first
+    // records a baseline; later ones report closures new on watched roads.
+    private func liveEventsArrived() {
+        let fresh = closureTracker.newWatchedClosures(in: events, watchlist: watchlist)
+        if !fresh.isEmpty {
+            onNewWatchedClosures?(fresh, watchlist)
+        }
+    }
+
     /// Number of road events the user sees: Resolved events are left out
     /// unless "Show resolved" is on (sidebar badge, menu bar).
     func visibleEventCount(showResolved: Bool) -> Int {
@@ -405,7 +451,7 @@ final class TrafficStore {
                 await self.loadRegions()
             }
         }
-        if evChargers.isEmpty, !isLoadingEVChargers {
+        if evChargersAreDue, !isLoadingEVChargers {
             Task {
                 await self.loadEVChargers()
             }
@@ -419,17 +465,24 @@ final class TrafficStore {
         await loadSection(section)
     }
 
-    /// Force a re-fetch of the otherwise fetch-once EV charger layer, used by the
-    /// map's per-layer Retry after a failed initial load. Clearing the array lets
-    /// `loadEVChargers`' "already loaded" guard fall through and re-fetch.
+    /// Re-fetches the EV charger layer now, whatever its age — the map's
+    /// per-layer Retry. The markers already shown stay until it lands.
     func reloadEVChargers() async {
         guard !isLoadingEVChargers else {
             return
         }
-        evChargers = []
-        evChargersChanged()
         evChargersError = nil
-        await loadEVChargers()
+        await loadEVChargers(force: true)
+    }
+
+    // Never loaded, or loaded over an hour ago (connector status changes
+    // about daily upstream).
+    private var evChargersAreDue: Bool {
+        AutoRefreshPolicy.shouldRefetchEVChargers(
+            hasData: !evChargers.isEmpty,
+            loadedAt: evChargersLoadedAt,
+            now: Date()
+        )
     }
 
     /// Settings › Clear Offline Cache: deletes the saved section files and the
@@ -464,7 +517,7 @@ final class TrafficStore {
                 decodeCached: { await self.service.decodeCachedCameras($0) }
             )
         case .events:
-            return await loadCacheable(
+            let outcome = await loadCacheable(
                 .events,
                 keyPath: \.events,
                 fetch: { await self.service.fetchRoadEventsResult() },
@@ -473,6 +526,10 @@ final class TrafficStore {
                     await self.service.decodeCachedRoadEvents(data)?.filter { !$0.hasEnded(before: Date()) }
                 }
             )
+            if case .updated = outcome {
+                liveEventsArrived()
+            }
+            return outcome
         case .vms:
             return await loadCacheable(
                 .vms,
@@ -684,12 +741,13 @@ final class TrafficStore {
         lastCameraImageReload = Date()
     }
 
-    // EV charger locations are static, so fetch them only once (and retry on a
-    // later refresh only if the first attempt failed and left the list empty).
-    // A failure surfaces via `evChargersError` on the map's EV layer rather than
-    // wiping any previously loaded markers.
-    private func loadEVChargers() async {
-        guard evChargers.isEmpty, !isLoadingEVChargers else {
+    // EV chargers change slowly (locations rarely, connector status about
+    // daily), so they load on the first refresh and again on a refresh once
+    // they're over an hour old — or at once after a failed load left the list
+    // empty. A failure surfaces via `evChargersError` on the map's EV layer
+    // rather than wiping any previously loaded markers.
+    private func loadEVChargers(force: Bool = false) async {
+        guard force || evChargersAreDue, !isLoadingEVChargers else {
             return
         }
         guard isOnline else {
@@ -700,8 +758,13 @@ final class TrafficStore {
         defer { isLoadingEVChargers = false }
         switch await service.fetchEVChargersResult() {
         case .success(let fetched):
-            evChargers = fetched.value
-            evChargersChanged()
+            evChargersLoadedAt = Date()
+            // An empty list over markers already shown keeps them (as the
+            // live sections do).
+            if !fetched.value.isEmpty || evChargers.isEmpty, fetched.value != evChargers {
+                evChargers = fetched.value
+                evChargersChanged()
+            }
             droppedEVChargerCount = fetched.dropped
             evChargersError = nil
         case .failure(let error):
@@ -995,6 +1058,7 @@ final class TrafficStore {
         return result
     }
 
+    // By name in natural order ("2 …" before "12 …").
     func filteredTIMSigns(region: String, highway: String, search: String) -> [TIMSign] {
         let key = FilterKey(region: region, highway: highway, search: search)
         if let cached = timCache[key] {
@@ -1003,7 +1067,7 @@ final class TrafficStore {
         let highwayQuery = HighwayQuery(highway)
         let result = timSigns
             .filter { $0.matches(region: region, highway: highwayQuery, search: search) }
-            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         timCache[key] = result
         return result
     }
@@ -1011,9 +1075,17 @@ final class TrafficStore {
     // Fully-scoped slices: region/highway/search filtering (memoized above)
     // plus the per-section visibility flags the UI toggles. Keeping the whole
     // filter pipeline here matches "filtering lives in the store".
-    func scopedCameras(region: String, highway: String, search: String, statuses: Set<CameraStatusKind>) -> [TrafficCamera] {
+    // `watchingOnly` (the "Watching" chip) keeps what the watchlist covers;
+    // it is applied after the memoized slice, like the chips.
+    func scopedCameras(
+        region: String,
+        highway: String,
+        search: String,
+        statuses: Set<CameraStatusKind>,
+        watchingOnly: Bool = false
+    ) -> [TrafficCamera] {
         filteredCameras(region: region, highway: highway, search: search)
-            .filter { statuses.contains($0.statusKind) }
+            .filter { statuses.contains($0.statusKind) && (!watchingOnly || watchlist.watches($0)) }
     }
 
     func scopedEvents(
@@ -1024,12 +1096,14 @@ final class TrafficStore {
         showPlanned: Bool,
         showUnplanned: Bool,
         showResolved: Bool,
-        island: EventIslandFilter
+        island: EventIslandFilter,
+        watchingOnly: Bool = false
     ) -> [RoadEvent] {
         filteredEvents(region: region, highway: highway, search: search, showResolved: showResolved)
             .filter { impacts.contains($0.impactKind) }
             .filter { $0.isPlanned ? showPlanned : showUnplanned }
             .filter { island.matches($0.eventIsland) }
+            .filter { !watchingOnly || watchlist.watches($0) }
     }
 
     func scopedVMSSigns(region: String, highway: String, search: String, hideEmpty: Bool) -> [VMSSign] {
@@ -1037,9 +1111,15 @@ final class TrafficStore {
         return hideEmpty ? base.filter(\.hasDisplayMessage) : base
     }
 
-    func scopedJourneys(region: String, highway: String, search: String, flows: Set<FlowKind>) -> [TrafficJourney] {
+    func scopedJourneys(
+        region: String,
+        highway: String,
+        search: String,
+        flows: Set<FlowKind>,
+        watchingOnly: Bool = false
+    ) -> [TrafficJourney] {
         filteredJourneys(region: region, highway: highway, search: search)
-            .filter { flows.contains($0.overallFlowKind) }
+            .filter { flows.contains($0.overallFlowKind) && (!watchingOnly || watchlist.watches($0)) }
     }
 
     // The Flow map filters per leg rather than per journey (see

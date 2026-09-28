@@ -31,6 +31,17 @@ enum TrafficTab: String, CaseIterable, Identifiable {
     }
 }
 
+// The Travel Times tab shows either NZTA's highway journeys or the roadside
+// travel-time (TIM) boards.
+enum TravelTimesMode: String, CaseIterable, Identifiable {
+    case journeys = "Journeys"
+    case boards = "Boards"
+
+    var id: String {
+        rawValue
+    }
+}
+
 struct ContentView: View {
     @State private var store: TrafficStore
     @AppStorage(AutoRefreshPolicy.enabledKey) private var autoRefreshEnabled = false
@@ -54,6 +65,10 @@ struct ContentView: View {
     @AppStorage("nzta.flow.showCongested") private var showFlowCongested = true
     @AppStorage("nzta.flow.showNoData") private var showFlowNoData = false
     @AppStorage("nzta.map.hideBlankTIM") private var hideBlankTIMSigns = false
+    // The "Watching" chip (Cameras, Road Events, Travel Times and their map
+    // layers): only what the watchlist covers.
+    @AppStorage("nzta.filter.watchingOnly") private var watchingOnly = false
+    @SceneStorage("nzta.scene.travelTimesMode") private var travelTimesMode: TravelTimesMode = .journeys
     @SceneStorage("nzta.scene.selectedTab") private var selectedTab: TrafficTab = .cameras
     @SceneStorage("nzta.scene.region") private var selectedRegion = ""
     @State private var selectedCamera: TrafficCamera?
@@ -87,12 +102,16 @@ struct ContentView: View {
                 reframeMapForRegion()
             }
             .modifier(windowLifecycle)
+            // The cards' watch controls edit the store's watchlist.
+            .environment(store)
     }
 
-    // The launch refresh, the welcome sheet and the camera preview sheet.
+    // The launch refresh, tab requests from the App (a notification click),
+    // the welcome sheet and the camera preview sheet.
     private var windowLifecycle: some ViewModifier {
         ContentWindowLifecycle(
             store: store,
+            selectedTab: $selectedTab,
             selectedCamera: $selectedCamera,
             showWelcome: $showWelcome,
             hasSeenWelcome: hasSeenWelcome,
@@ -117,10 +136,13 @@ struct ContentView: View {
 // small for the type-checker.
 private struct ContentWindowLifecycle: ViewModifier {
     let store: TrafficStore
+    @Binding var selectedTab: TrafficTab
     @Binding var selectedCamera: TrafficCamera?
     @Binding var showWelcome: Bool
     let hasSeenWelcome: Bool
     let onFinishWelcome: (Bool) -> Void
+    @Environment(AppNavigator.self) private var navigator: AppNavigator?
+    @Environment(\.openWindow) private var openWindow
 
     // Data older than this is refreshed when the window (re)appears.
     private static let reopenRefreshAge: TimeInterval = 120
@@ -137,6 +159,13 @@ private struct ContentWindowLifecycle: ViewModifier {
                 if !hasSeenWelcome {
                     showWelcome = true
                 }
+                // Lets the App reopen this window (a notification click).
+                let openWindow = openWindow
+                navigator?.openMainWindow = { openWindow(id: SceneID.main) }
+                takeRequestedTab()
+            }
+            .onChange(of: navigator?.requestedTab) {
+                takeRequestedTab()
             }
             .sheet(item: $selectedCamera) { camera in
                 CameraPreviewView(
@@ -148,6 +177,14 @@ private struct ContentWindowLifecycle: ViewModifier {
             .sheet(isPresented: $showWelcome) {
                 WelcomeView(onFinish: onFinishWelcome)
             }
+    }
+
+    private func takeRequestedTab() {
+        guard let navigator, let tab = navigator.requestedTab else {
+            return
+        }
+        selectedTab = tab
+        navigator.requestedTab = nil
     }
 }
 
@@ -354,8 +391,57 @@ extension ContentView {
 
     private var travelTimesTab: some View {
         tabPage {
-            flowFilters
+            travelTimesFilters
         } content: {
+            switch travelTimesMode {
+            case .journeys:
+                journeysContent
+            case .boards:
+                boardsContent
+            }
+        }
+    }
+
+    // Journeys or Boards, then that view's own filters.
+    private var travelTimesFilters: some View {
+        HStack(spacing: 12) {
+            Picker("Show", selection: $travelTimesMode) {
+                ForEach(TravelTimesMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("NZTA's highway journeys, or the roadside travel-time boards")
+            Divider().frame(height: 16)
+            switch travelTimesMode {
+            case .journeys:
+                flowFilters
+                WatchingFilterChip(isOn: $watchingOnly)
+            case .boards:
+                BlankTIMToggleRow(hideBlank: $hideBlankTIMSigns)
+            }
+        }
+    }
+
+    private var boardsContent: some View {
+        let shown = scopedTIMSigns()
+        let matching = store.filteredTIMSigns(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch)
+        return TravelTimeBoardsView(
+            listing: timBoardListing(shown, regionOrder: store.canonicalRegions),
+            hiddenBlankCount: matching.count - shown.count,
+            isLoading: store.isLoading(.timSigns),
+            errorMessage: store.errors[.timSigns],
+            hasActiveFilters: hasActiveFilters(.timSigns),
+            onClearFilters: clearAllFilters,
+            onShowBlank: { hideBlankTIMSigns = false },
+            onRetry: { Task { await store.reload(.timSigns) } }
+        )
+    }
+
+    private var journeysContent: some View {
+        Group {
             let all = sharedJourneys()
             let noDataHidden = showFlowNoData ? 0 : all.filter { $0.overallFlowKind == .noData }.count
             TravelTimesTabView(
@@ -668,24 +754,30 @@ extension ContentView {
     }
 
     private var cameraStatusFilters: some View {
-        CameraStatusFilterRow(
-            showOnline: $showCameraOnline,
-            showOffline: $showCameraOffline,
-            showMaintenance: $showCameraMaintenance
-        )
+        HStack(spacing: 8) {
+            CameraStatusFilterRow(
+                showOnline: $showCameraOnline,
+                showOffline: $showCameraOffline,
+                showMaintenance: $showCameraMaintenance
+            )
+            WatchingFilterChip(isOn: $watchingOnly)
+        }
     }
 
     private var eventImpactFilters: some View {
-        EventImpactFilterRow(
-            showClosures: $showEventClosures,
-            showDelays: $showEventDelays,
-            showCaution: $showEventCaution,
-            showOther: $showEventOther,
-            showPlanned: $showEventPlanned,
-            showUnplanned: $showEventUnplanned,
-            showResolved: $showResolvedEvents,
-            island: $eventIslandFilter
-        )
+        HStack(spacing: 8) {
+            EventImpactFilterRow(
+                showClosures: $showEventClosures,
+                showDelays: $showEventDelays,
+                showCaution: $showEventCaution,
+                showOther: $showEventOther,
+                showPlanned: $showEventPlanned,
+                showUnplanned: $showEventUnplanned,
+                showResolved: $showResolvedEvents,
+                island: $eventIslandFilter
+            )
+            WatchingFilterChip(isOn: $watchingOnly)
+        }
     }
 
     // MARK: - Section (chip) filters
@@ -701,7 +793,7 @@ extension ContentView {
         case .vms:
             return .vms
         case .travelTimes:
-            return .flow
+            return travelTimesMode == .boards ? .timSigns : .flow
         case .trafficMap:
             switch mapSelectedLayer {
             case .cameras:
@@ -733,6 +825,7 @@ extension ContentView {
             if !showCameraOnline { hidden.append("Online") }
             if !showCameraOffline { hidden.append("Offline") }
             if !showCameraMaintenance { hidden.append("Maintenance") }
+            if watchingOnly { hidden.append("cameras you don't watch") }
         case .events:
             if !showEventClosures { hidden.append("Closures") }
             if !showEventDelays { hidden.append("Delays") }
@@ -741,11 +834,15 @@ extension ContentView {
             if !showEventPlanned { hidden.append("Planned") }
             if !showEventUnplanned { hidden.append("Incident") }
             if eventIslandFilter != .all { hidden.append("outside the \(eventIslandFilter.label)") }
+            if watchingOnly { hidden.append("roads you don't watch") }
         case .flow:
             if !showFlowFreeFlow { hidden.append("Free Flow") }
             if !showFlowModerate { hidden.append("Moderate") }
             if !showFlowSlow { hidden.append("Slow") }
             if !showFlowCongested { hidden.append("Congested") }
+            // The Flow map layer draws every leg; only the journey list
+            // applies the Watching chip.
+            if watchingOnly, selectedTab == .travelTimes { hidden.append("journeys you don't watch") }
         case .timSigns:
             if hideBlankTIMSigns { hidden.append("blank boards") }
         case .vms, nil:
@@ -761,6 +858,7 @@ extension ContentView {
             showCameraOnline = true
             showCameraOffline = true
             showCameraMaintenance = true
+            watchingOnly = false
         case .events:
             showEventClosures = true
             showEventDelays = true
@@ -769,11 +867,13 @@ extension ContentView {
             showEventPlanned = true
             showEventUnplanned = true
             eventIslandFilter = .all
+            watchingOnly = false
         case .flow:
             showFlowFreeFlow = true
             showFlowModerate = true
             showFlowSlow = true
             showFlowCongested = true
+            watchingOnly = false
         case .timSigns:
             hideBlankTIMSigns = false
         case .vms, nil:
@@ -801,7 +901,13 @@ extension ContentView {
     }
 
     private func scopedCameras() -> [TrafficCamera] {
-        store.scopedCameras(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, statuses: allowedCameraStatuses)
+        store.scopedCameras(
+            region: selectedRegion,
+            highway: debouncedHighway,
+            search: debouncedSearch,
+            statuses: allowedCameraStatuses,
+            watchingOnly: watchingOnly
+        )
     }
 
     private func scopedEvents() -> [RoadEvent] {
@@ -813,7 +919,8 @@ extension ContentView {
             showPlanned: showEventPlanned,
             showUnplanned: showEventUnplanned,
             showResolved: showResolvedEvents,
-            island: eventIslandFilter
+            island: eventIslandFilter,
+            watchingOnly: watchingOnly
         )
     }
 
@@ -842,7 +949,13 @@ extension ContentView {
     }
 
     private func scopedJourneys() -> [TrafficJourney] {
-        store.scopedJourneys(region: selectedRegion, highway: debouncedHighway, search: debouncedSearch, flows: allowedFlowKinds)
+        store.scopedJourneys(
+            region: selectedRegion,
+            highway: debouncedHighway,
+            search: debouncedSearch,
+            flows: allowedFlowKinds,
+            watchingOnly: watchingOnly
+        )
     }
 
     // The Flow map filters each leg on its own flow (see flowMapSegments).

@@ -8,18 +8,24 @@ import Observation
 // - feeds the store the `nzta.*` auto-refresh settings — whenever they change,
 //   from the toolbar's auto-refresh menu, Settings or the Welcome sheet — and the app's
 //   activity, so refreshing continues, more slowly, in the background;
-// - keeps the Dock badge in step with the active-closure count.
+// - keeps the Dock badge in step with the active-closure count;
+// - loads the watchlist into the store and saves it when it changes, and
+//   posts notifications for new closures on watched roads (the store finds
+//   them on its window-independent refreshes).
 @MainActor
 final class AppController {
     private let store: TrafficStore
     private let defaults: UserDefaults
+    private let notifier: ClosureNotifier
     private var observers: [NSObjectProtocol] = []
     private var badgeTask: Task<Void, Never>?
+    private var watchlistTask: Task<Void, Never>?
     private var isStarted = false
 
-    init(store: TrafficStore, defaults: UserDefaults = .standard) {
+    init(store: TrafficStore, navigator: AppNavigator, defaults: UserDefaults = .standard) {
         self.store = store
         self.defaults = defaults
+        notifier = ClosureNotifier(navigator: navigator, defaults: defaults)
     }
 
     func start() {
@@ -31,7 +37,39 @@ final class AppController {
         applyAutoRefreshSettings()
         observeSettingsAndActivity()
         startDockBadgeUpdates()
+        startWatchlist()
         startLaunchLoad()
+    }
+
+    // Before the launch load, so its first live events fetch already sees
+    // the watchlist (that fetch only records the notification baseline).
+    private func startWatchlist() {
+        notifier.install()
+        store.setWatchlist(Watchlist.decoded(from: defaults.data(forKey: Watchlist.defaultsKey)))
+        let notifier = notifier
+        store.onNewWatchedClosures = { closures, watchlist in
+            notifier.post(closures, watchlist: watchlist)
+        }
+        let store = store
+        let defaults = defaults
+        watchlistTask = Task {
+            for await watchlist in Observations({ store.watchlist }) {
+                Self.save(watchlist, to: defaults)
+            }
+        }
+    }
+
+    private static func save(_ watchlist: Watchlist, to defaults: UserDefaults) {
+        let key = Watchlist.defaultsKey
+        guard !watchlist.isEmpty else {
+            if defaults.object(forKey: key) != nil {
+                defaults.removeObject(forKey: key)
+            }
+            return
+        }
+        if let data = watchlist.encodedData(), data != defaults.data(forKey: key) {
+            defaults.set(data, forKey: key)
+        }
     }
 
     // The launch load, bracketed by LaunchGuard's flag: set now, cleared when

@@ -364,6 +364,16 @@ extension CameraStatusKind {
     }
 }
 
+extension EVCharger {
+    /// Grey when out of service, else purple for DC fast and teal for AC.
+    var mapTint: Color {
+        if isOutOfService {
+            return .evOutOfService
+        }
+        return isDC ? .purple : .teal
+    }
+}
+
 extension RoadEvent {
     /// Card stripe, impact badge and map pin colour: the impact colour for
     /// events in force now, purple for upcoming ones and grey for resolved
@@ -698,6 +708,7 @@ struct SettingsView: View {
                 Toggle("Hide VMS signs with no active message", isOn: $hideEmptyVMS)
                 Toggle("Show resolved road events", isOn: $showResolvedEvents)
             }
+            WatchlistSettingsSections(store: store)
             Section("Offline Cache") {
                 LabeledContent {
                     Button("Clear Offline Cache…") {
@@ -711,7 +722,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 420)
+        .frame(width: 500, height: 620)
         .confirmationDialog("Clear the offline cache?", isPresented: $isConfirmingClear) {
             Button("Clear and Reload", role: .destructive) {
                 clearOfflineCache()

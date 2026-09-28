@@ -92,3 +92,6 @@ The app requires internet access for live NZTA data and camera images. It uses t
 - Camera thumbnail grid with larger preview sheet.
 - Road event severity sorting, closure and delay stats, comments, routes, dates, and metadata.
 - VMS sign cards with source display-control tokens rendered as readable messages.
+- Travel Times shows NZTA's highway journeys or the roadside travel-time boards (with their "VIA …" route lines), grouped by region.
+- EV charger layer with per-connector status: out-of-service sites greyed out, "n of m connectors working" on each charger.
+- Watchlist of highways, cameras and journeys (star or Control-click a card), a Watching filter, and optional notifications for new closures on watched roads.

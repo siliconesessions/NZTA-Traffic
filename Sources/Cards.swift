@@ -7,22 +7,26 @@ struct JourneyCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(journey.displayName)
-                    .font(.headline)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(journey.displayName)
+                        .font(.headline)
 
-                Spacer()
+                    Spacer()
 
-                if let region = journey.regionName {
-                    Badge(text: region, tint: .badgeNeutral)
+                    if let region = journey.regionName {
+                        Badge(text: region, tint: .badgeNeutral)
+                    }
+
+                    Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
 
-                Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
+                WatchStarButton(subject: .journey(id: journey.id), name: "\(journey.displayName) journey")
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 10)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
 
             slowestLegCallout
 
@@ -48,6 +52,7 @@ struct JourneyCard: View {
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: Radii.card))
         .overlay { CardBorder() }
+        .watchContextMenu(.journey(id: journey.id), highwayKeys: journey.highwayKeys)
     }
 
     // The journey's bottleneck. Only highlighted when it's genuinely slow or
@@ -313,6 +318,13 @@ struct CameraCard: View {
         .accessibilityLabel(camera.displayName)
         .accessibilityValue(accessibilityDetails)
         .accessibilityHint("Opens a larger view")
+        // Outside the card's button, so clicking the star doesn't open the
+        // preview.
+        .overlay(alignment: .topTrailing) {
+            WatchStarButton(subject: .camera(id: camera.id), name: camera.displayName, onImage: true)
+                .padding(8)
+        }
+        .watchContextMenu(.camera(id: camera.id), highwayKeys: camera.highwayKeys)
     }
 
     private var accessibilityDetails: String {
@@ -539,6 +551,14 @@ struct CameraPreviewView: View {
 
 struct RoadEventCard: View {
     let event: RoadEvent
+    @Environment(TrafficStore.self) private var store: TrafficStore?
+
+    private var isOnWatchedRoad: Bool {
+        guard let watchlist = store?.watchlist, !watchlist.isEmpty else {
+            return false
+        }
+        return watchlist.watches(event)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -555,6 +575,7 @@ struct RoadEventCard: View {
                     Spacer()
 
                     HStack(spacing: 6) {
+                        WatchedEventBadge(event: event)
                         Badge(
                             text: event.isPlanned ? "Planned" : "Incident",
                             tint: event.isPlanned ? .blue : .indigo
@@ -616,6 +637,7 @@ struct RoadEventCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary)
         .accessibilityValue(accessibilityDetails)
+        .watchContextMenu(.highwaysOnly, highwayKeys: event.highwayKeys)
     }
 
     // "Road Closed, Upcoming. Slip. Northbound. Kaikōura" — impact and
@@ -634,6 +656,7 @@ struct RoadEventCard: View {
 
     private var accessibilityDetails: String {
         var parts: [String?] = [
+            isOnWatchedRoad ? "On a road you watch" : nil,
             event.isPlanned ? "Planned" : "Incident",
             event.nearestLandmark.map { "Near \($0)" },
             event.eventComments,
@@ -769,8 +792,11 @@ struct EVChargerCard: View {
 
                 Spacer()
 
+                if charger.isOutOfService {
+                    Badge(text: "Out of service", tint: .evOutOfService)
+                }
                 if let power = charger.powerSummary {
-                    Badge(text: power, tint: charger.isDC ? .purple : .teal)
+                    Badge(text: power, tint: charger.mapTint)
                 }
             }
             .padding(.horizontal, 16)
@@ -780,6 +806,9 @@ struct EVChargerCard: View {
             Divider()
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+                if let status = charger.statusSummary {
+                    SmallMeta(text: status, systemImage: charger.statusSymbol)
+                }
                 if let op = charger.operatorName {
                     SmallMeta(text: op, systemImage: "building.2")
                 }
@@ -789,7 +818,9 @@ struct EVChargerCard: View {
                 if let connectors = charger.connectorSummary {
                     SmallMeta(text: connectors, systemImage: "powerplug")
                 }
-                if let count = charger.connectorCount {
+                // The connector count is in the status line when the feed
+                // reports statuses.
+                if charger.statusSummary == nil, let count = charger.connectorCount {
                     SmallMeta(text: "\(count) connector\(count == 1 ? "" : "s")", systemImage: "number")
                 }
                 if let is24Hours = charger.is24Hours {
@@ -832,18 +863,21 @@ struct TIMCard: View {
 
             Divider()
 
-            if sign.lines.isEmpty {
-                Text("No travel times available")
+            if sign.pages.isEmpty {
+                Text("Blank right now")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(16)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(sign.lines.enumerated()), id: \.offset) { index, line in
-                        TIMLineRow(line: line)
-                        if index < sign.lines.count - 1 {
+                // Each page the board rotates through: its route ("VIA SH20
+                // R12") over its destinations and times, or a text-only
+                // message.
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(sign.pages) { page in
+                        if page.id > 0 {
                             Divider()
                         }
+                        TIMPageView(page: page, isNote: page.isTextOnly && hasRows)
                     }
                 }
                 .padding(.vertical, 4)
@@ -854,24 +888,70 @@ struct TIMCard: View {
         .overlay { CardBorder() }
         .accessibilityElement(children: .combine)
     }
+
+    private var hasRows: Bool {
+        sign.pages.contains { !$0.rows.isEmpty }
+    }
 }
 
-private struct TIMLineRow: View {
-    let line: TIMLine
+private struct TIMPageView: View {
+    let page: TIMBoardPage
+    // Text on a board that also shows times — e.g. a "VIA MOTORWAY" page
+    // qualifying them — reads as a note rather than a message.
+    var isNote = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isNote, let caption = page.caption {
+                Label(caption, systemImage: "info.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            } else if page.isTextOnly {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(page.header.enumerated()), id: \.offset) { _, text in
+                        Text(text)
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            } else {
+                if let caption = page.caption {
+                    Label(caption, systemImage: "arrow.triangle.turn.up.right.diamond")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 2)
+                }
+                ForEach(Array(page.rows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 {
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                    TIMRowView(row: row)
+                }
+            }
+        }
+    }
+}
+
+private struct TIMRowView: View {
+    let row: TIMBoardRow
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(line.destination ?? "—")
+            Text(row.destination)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
 
             Spacer()
 
-            if let time = line.timeText {
-                Text(time)
-                    .font(.callout.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
+            Text(row.timeText)
+                .font(.callout.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.primary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)

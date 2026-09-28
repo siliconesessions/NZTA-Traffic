@@ -2606,15 +2606,19 @@ struct JourneysResponse: Decodable {
 }
 
 // One line on a TIM travel-time board. The upstream `line` array mixes two
-// shapes: `left`(destination) + `right`(estimated time) pairs, and decorative
-// `center`-only lines ("ESTIMATED" / "VIA MOTORWAY"). `right` is an Int number
+// shapes: `left`(destination) + `right`(estimated time) pairs, and `center`
+// text lines — a route qualifier ("VIA SH20 R12", "BEALEY AVE VIA"), a whole
+// message on an all-text board ("CITY CENTRE" / "VIA GRT NORTH" / "16
+// MINUTES"), or boilerplate ("ESTIMATED" / "MINUTES"). `right` is an Int number
 // of minutes OR a pre-formatted string ("29 MINS", "3h 44m"), so it goes
-// through the lossy decoders rather than a raw decode. Center-only lines have
-// no destination/time and are dropped by `TIMSign`.
+// through the lossy decoders rather than a raw decode. `TIMSign` sorts the
+// lines into each page's header text and destination rows.
 struct TIMLine: Decodable, Identifiable, Hashable {
     let id: String
     let destination: String?
     let timeText: String?
+    // The `center` text, whitespace collapsed ("VIA SH20  R12" → "VIA SH20 R12").
+    let center: String?
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -2627,26 +2631,106 @@ struct TIMLine: Decodable, Identifiable, Hashable {
         } else {
             timeValue = cleanText(container.decodeLossyString(forKey: .right))
         }
+        let centerValue = collapsedTIMText(container.decodeLossyString(forKey: .center))
         destination = destinationValue
         timeText = timeValue
+        center = centerValue
         id = deterministicID(
             decodedId: nil,
-            fallback: [destinationValue, timeValue],
+            fallback: [destinationValue, timeValue, centerValue],
             typeTag: "timline"
         )
+    }
+
+    /// A destination → time row (as opposed to a `center` text line).
+    var isTravelRow: Bool {
+        destination != nil && timeText != nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case left
         case right
+        case center
     }
 }
 
-// One page of a TIM board. A board's `page` field is either a single page
-// object or a list of pages it rotates through; each page carries a `line`
-// array. Decoded via the flexible array helper so a lone object or a list both
-// work, and so does a lone `line` object.
-private struct TIMPage: Decodable {
+// Trimmed, with runs of whitespace collapsed to one space; nil when empty.
+private func collapsedTIMText(_ raw: String?) -> String? {
+    guard let text = cleanText(raw) else {
+        return nil
+    }
+    let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    return collapsed.isEmpty ? nil : collapsed
+}
+
+// Center lines that only label the board's format ("ESTIMATED" / "MINUTES"
+// on a page of their own); they carry no route information.
+private let timBoilerplateText: Set<String> = [
+    "ESTIMATED", "MINUTES", "MINS", "TRAVEL TIMES", "TRAVEL TIME",
+    "ESTIMATED TRAVEL TIMES", "ESTIMATED TRAVEL TIME"
+]
+
+func isTIMBoilerplate(_ text: String) -> Bool {
+    timBoilerplateText.contains(text.uppercased())
+}
+
+// One page a TIM board shows (boards rotate through up to a few): the
+// `center` text above its rows — typically the route the times are for
+// ("VIA SH20 R12") — and its destination → time rows. A page with header
+// text and no rows is a text-only message ("CITY CENTRE / VIA GRT NORTH /
+// 16 MINUTES").
+struct TIMBoardPage: Hashable, Identifiable, Sendable {
+    let id: Int
+    let header: [String]
+    let rows: [TIMBoardRow]
+
+    var isTextOnly: Bool {
+        rows.isEmpty && !header.isEmpty
+    }
+
+    /// The header as one caption, e.g. "VIA SH20 R12".
+    var caption: String? {
+        header.isEmpty ? nil : header.joined(separator: " · ")
+    }
+}
+
+struct TIMBoardRow: Hashable, Sendable {
+    let destination: String
+    let timeText: String
+
+    var text: String {
+        "\(destination) \(timeText)"
+    }
+}
+
+// Sorts each raw page's lines into header text and rows. Boilerplate and
+// blank center lines are dropped, as are lines with neither a destination and
+// time nor text, and then any page left with nothing to show.
+func timBoardPages(_ rawPages: [[TIMLine]]) -> [TIMBoardPage] {
+    var pages: [TIMBoardPage] = []
+    for lines in rawPages {
+        var header: [String] = []
+        var rows: [TIMBoardRow] = []
+        for line in lines {
+            if let destination = line.destination, let time = line.timeText {
+                rows.append(TIMBoardRow(destination: destination, timeText: time))
+            } else if let center = line.center, !isTIMBoilerplate(center) {
+                header.append(center)
+            }
+        }
+        guard !header.isEmpty || !rows.isEmpty else {
+            continue
+        }
+        pages.append(TIMBoardPage(id: pages.count, header: header, rows: rows))
+    }
+    return pages
+}
+
+// One page of a TIM board as it arrives. A board's `page` field is either a
+// single page object or a list of pages it rotates through; each page carries
+// a `line` array. Decoded via the flexible array helper so a lone object or a
+// list both work, and so does a lone `line` object.
+private struct TIMRawPage: Decodable {
     let line: [TIMLine]
 
     init(from decoder: Decoder) throws {
@@ -2662,8 +2746,9 @@ private struct TIMPage: Decodable {
 // A TIM (Traffic Information Monitor) roadside travel-time board from
 // /signs/tim/all — ~270 of them, every one carrying lat/lon. `page` may be a
 // single object OR a list of pages; `way.id` is int-or-string (handled by the
-// shared `Way` lossy decode). We flatten every page's lines and keep only the
-// destination → estimated-time pairs.
+// shared `Way` lossy decode). Each page keeps its route text (the `center`
+// lines) with its destination → time rows, so two "PAPANUI" rows on different
+// routes stay distinguishable.
 struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
     let id: String
     let rawId: String?
@@ -2675,7 +2760,7 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
     let region: Region?
     let journey: Journey?
     let way: Way?
-    let lines: [TIMLine]
+    let pages: [TIMBoardPage]
     let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
@@ -2689,10 +2774,8 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
         let regionValue = try? container.decodeIfPresent(Region.self, forKey: .region)
         let journeyValue = try? container.decodeIfPresent(Journey.self, forKey: .journey)
         let wayValue = try? container.decodeIfPresent(Way.self, forKey: .way)
-        let pages = container.decodeFlexibleArray(TIMPage.self, forKey: .page)
-        let travelLines = pages
-            .flatMap(\.line)
-            .filter { $0.destination != nil && $0.timeText != nil }
+        let rawPages = container.decodeFlexibleArray(TIMRawPage.self, forKey: .page)
+        let boardPages = timBoardPages(rawPages.map(\.line))
 
         rawId = decodedId
         id = deterministicID(
@@ -2710,7 +2793,7 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
         region = regionValue
         journey = journeyValue
         way = wayValue
-        lines = travelLines
+        pages = boardPages
         let validatedMap = validatedCoordinate(latitude: latitudeValue, longitude: longitudeValue)
         mapLatitude = validatedMap?.latitude
         mapLongitude = validatedMap?.longitude
@@ -2727,12 +2810,11 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
             wayValue?.name,
             nameValue
         ])
-        searchHaystack = searchableHaystack([
-            nameValue,
-            regionValue?.name,
-            journeyValue?.name,
-            wayValue?.name
-        ] + travelLines.map(\.destination))
+        searchHaystack = searchableHaystack(
+            [nameValue, regionValue?.name, journeyValue?.name, wayValue?.name]
+                + boardPages.flatMap(\.header)
+                + boardPages.flatMap { $0.rows.map(\.destination) }
+        )
     }
 
     var displayName: String {
@@ -2747,6 +2829,11 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
         way?.name
     }
 
+    /// Every destination → time row, across pages.
+    var lines: [TIMBoardRow] {
+        pages.flatMap(\.rows)
+    }
+
     var mapCoordinate: CLLocationCoordinate2D? {
         guard let mapLatitude, let mapLongitude else {
             return nil
@@ -2754,24 +2841,20 @@ struct TIMSign: Decodable, Identifiable, Hashable, TrafficFilterable {
         return CLLocationCoordinate2D(latitude: mapLatitude, longitude: mapLongitude)
     }
 
-    // Shortest reading — the first destination/time pair — for marker tooltips
-    // and the map status text.
+    // Shortest reading for marker tooltips and the map status text: the first
+    // destination/time pair, or a text-only board's message.
     var headline: String? {
-        guard let line = lines.first,
-              let destination = line.destination,
-              let time = line.timeText else {
-            return nil
+        if let row = lines.first {
+            return row.text
         }
-        return "\(destination) \(time)"
+        return pages.first?.header.joined(separator: " ")
     }
 
-    // All destination → time pairs joined for a compact one-line summary.
+    // Everything the board shows on one line, each page's route text before
+    // its rows: "VIA SH20 R12 · SH1 GILLIES 27 min · CITY CENTRE 32 min".
     var summary: String? {
-        let parts = lines.compactMap { line -> String? in
-            guard let destination = line.destination, let time = line.timeText else {
-                return nil
-            }
-            return "\(destination) \(time)"
+        let parts = pages.flatMap { page in
+            page.header + page.rows.map(\.text)
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -2837,9 +2920,8 @@ struct EVCharger: Decodable, Identifiable, Hashable {
     let longitude: Double?
     let mapLatitude: Double?
     let mapLongitude: Double?
-    let maxPowerKW: Double?
-    let connectorTypes: [String]
-    let hasDCConnector: Bool
+    // Parsed `connectorsList`: power, types and per-status connector counts.
+    let connectors: EVConnectorSummary
     let highwayKeys: Set<String>
     let highwayHaystack: String
     let searchHaystack: String
@@ -2894,9 +2976,7 @@ struct EVCharger: Decodable, Identifiable, Hashable {
         mapLongitude = validatedMap?.longitude
 
         let parsed = parseEVConnectors(connectorsListValue)
-        maxPowerKW = parsed.maxPowerKW
-        connectorTypes = parsed.connectorTypes
-        hasDCConnector = parsed.hasDCConnector
+        connectors = parsed
 
         // A charger isn't on a highway record; an address on a state highway
         // ("85379 State Highway 2") ties it to that highway.
@@ -2922,17 +3002,69 @@ struct EVCharger: Decodable, Identifiable, Hashable {
         name ?? "EV Charger"
     }
 
-    // Offers DC fast charging (the marker tint/legend and card badge): any
-    // DC connector group, or a site type of DC or "Mixed" — Mixed sites carry
-    // both AC and DC, but the word itself contains no "DC".
+    /// The highest advertised power among connectors that may work (see
+    /// `EVConnectorSummary`).
+    var maxPowerKW: Double? {
+        connectors.maxPowerKW
+    }
+
+    var connectorTypes: [String] {
+        connectors.connectorTypes
+    }
+
+    var hasDCConnector: Bool {
+        connectors.hasDCConnector
+    }
+
+    // Offers DC fast charging (the marker tint/legend and card badge): a DC
+    // connector group that may work. With no connector list, the site type
+    // decides: DC, or "Mixed" — Mixed sites carry both AC and DC, but the word
+    // itself contains no "DC". A Mixed site whose DC units are all down is
+    // not DC.
     var isDC: Bool {
-        if hasDCConnector {
-            return true
+        if connectors.totalCount > 0 {
+            return connectors.hasDCConnector
         }
         guard let type = currentType?.lowercased() else {
             return false
         }
         return type.contains("dc") || type == "mixed"
+    }
+
+    var availability: EVAvailability {
+        if connectors.operativeCount > 0 {
+            return .available
+        }
+        if connectors.inoperativeCount > 0 {
+            return .outOfService
+        }
+        return connectors.unknownCount > 0 ? .unknown : .notReported
+    }
+
+    var isOutOfService: Bool {
+        availability == .outOfService
+    }
+
+    /// "2 of 4 connectors working", "Out of service — 2 connectors down",
+    /// "Status not reported"; nil when the feed listed no connectors.
+    var statusSummary: String? {
+        let total = connectors.totalCount
+        let noun = total == 1 ? "connector" : "connectors"
+        switch availability {
+        case .available:
+            var text = "\(connectors.operativeCount) of \(total) \(noun) working"
+            if connectors.unknownCount > 0 {
+                text += " (\(connectors.unknownCount) not reported)"
+            }
+            return text
+        case .outOfService:
+            let down = connectors.inoperativeCount
+            return "Out of service — \(down) \(down == 1 ? "connector" : "connectors") down"
+        case .unknown:
+            return "Status not reported"
+        case .notReported:
+            return nil
+        }
     }
 
     var mapCoordinate: CLLocationCoordinate2D? {
@@ -2952,7 +3084,7 @@ struct EVCharger: Decodable, Identifiable, Hashable {
             // ("1e19 kW") must not trap; it just isn't shown.
             return value.rounded() == value ? formatWholeNumber(value) : String(format: "%.1f", value)
         }
-        switch (cleanText(currentType), kw) {
+        switch (currentTypeLabel, kw) {
         case let (type?, power?):
             return "\(type) · \(power) kW"
         case let (type?, nil):
@@ -2966,6 +3098,22 @@ struct EVCharger: Decodable, Identifiable, Hashable {
 
     var connectorSummary: String? {
         connectorTypes.isEmpty ? nil : connectorTypes.joined(separator: ", ")
+    }
+
+    // AC / DC / Mixed from the connectors that may work, so a Mixed site
+    // whose DC units are down reads "AC · 22 kW"; the feed's site type when
+    // it listed no connectors.
+    private var currentTypeLabel: String? {
+        switch (connectors.hasACConnector, connectors.hasDCConnector) {
+        case (true, true):
+            return "Mixed"
+        case (false, true):
+            return "DC"
+        case (true, false):
+            return "AC"
+        case (false, false):
+            return cleanText(currentType)
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -3007,56 +3155,157 @@ struct EVChargersPayload: Decodable {
     }
 }
 
-// The EV Roam feed packs every connector for a site into one string, e.g.
-// "{DC, 75 kW, CHAdeMO, Status: Operative, Count:1},{DC, 50 kW, Type 2 CCS, …}".
-// Pull out the highest advertised power (kW), the distinct connector types
-// (order-preserving, case-insensitively de-duplicated), and whether any group
-// is a DC connector (its first field is "DC").
-func parseEVConnectors(_ raw: String?) -> (maxPowerKW: Double?, connectorTypes: [String], hasDCConnector: Bool) {
+// A charging site's connectors as the EV Roam feed reports them, packed into
+// one string: "{DC, 75 kW, CHAdeMO, Status: Operative, Count:1},{AC, 22 kW,
+// Type 2 Socketed, Status: Inoperative, Count:2}". Each group's status is
+// Operative, Inoperative or Unknown (not reported — not the same as broken);
+// a group without one counts as Unknown, and without a count as 1 connector.
+// The headline power, the DC flag and the AC/DC/Mixed label describe the
+// groups that may work (Operative or Unknown), so a site whose DC units are
+// down isn't advertised as DC fast charging; a site with nothing that may
+// work falls back to every group, to still say what it has.
+struct EVConnectorSummary: Hashable, Sendable {
+    var maxPowerKW: Double?
+    // Distinct connector types (order-preserving, case-insensitively
+    // de-duplicated) across every group.
+    var connectorTypes: [String] = []
+    var hasDCConnector = false
+    var hasACConnector = false
+    var operativeCount = 0
+    var inoperativeCount = 0
+    var unknownCount = 0
+
+    var totalCount: Int {
+        operativeCount + inoperativeCount + unknownCount
+    }
+}
+
+enum EVConnectorStatus: Hashable, Sendable {
+    case operative
+    case inoperative
+    case unknown
+
+    init(raw: String?) {
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "operative", "operational", "available":
+            self = .operative
+        case "inoperative", "out of service", "faulted", "unavailable":
+            self = .inoperative
+        default:
+            self = .unknown
+        }
+    }
+}
+
+// Whether a site can be expected to charge, from its connectors' statuses.
+enum EVAvailability: Hashable, Sendable {
+    // At least one connector is Operative.
+    case available
+    // None is Operative and at least one is Inoperative (the rest, if any,
+    // Unknown): shown greyed out as "Out of service".
+    case outOfService
+    // Every connector's status is Unknown — not reported, which isn't the
+    // same as broken, so the site is shown normally.
+    case unknown
+    // The feed listed no connectors.
+    case notReported
+}
+
+private struct EVConnectorGroup {
+    var isDC = false
+    var isAC = false
+    var powerKW: Double?
+    var type: String?
+    var status = EVConnectorStatus.unknown
+    var count = 1
+}
+
+func parseEVConnectors(_ raw: String?) -> EVConnectorSummary {
     guard let raw = cleanText(raw) else {
-        return (nil, [], false)
+        return EVConnectorSummary()
     }
 
-    var maxPowerKW: Double?
-    var connectorTypes: [String] = []
-    var seenTypes = Set<String>()
-    var hasDCConnector = false
-
-    let groups = raw
+    var groups: [EVConnectorGroup] = []
+    let texts = raw
         .replacingOccurrences(of: "{", with: "")
         .components(separatedBy: "}")
-
-    for group in groups {
-        let fields = group
+    for text in texts {
+        let fields = text
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !fields.isEmpty else {
             continue
         }
+        groups.append(parseEVConnectorGroup(fields))
+    }
 
-        // Layout: currentType, "<n> kW", connectorType, "Status: …", "Count:…".
-        if fields[0].caseInsensitiveCompare("DC") == .orderedSame {
-            hasDCConnector = true
+    var summary = EVConnectorSummary()
+    var seenTypes = Set<String>()
+    for group in groups {
+        if let type = group.type, seenTypes.insert(type.lowercased()).inserted {
+            summary.connectorTypes.append(type)
         }
-        if fields.count >= 3 {
-            let connectorType = fields[2]
-            if !connectorType.isEmpty, seenTypes.insert(connectorType.lowercased()).inserted {
-                connectorTypes.append(connectorType)
+        switch group.status {
+        case .operative:
+            summary.operativeCount += group.count
+        case .inoperative:
+            summary.inoperativeCount += group.count
+        case .unknown:
+            summary.unknownCount += group.count
+        }
+    }
+
+    let mayWork = groups.filter { $0.status != .inoperative }
+    for group in mayWork.isEmpty ? groups : mayWork {
+        summary.hasDCConnector = summary.hasDCConnector || group.isDC
+        summary.hasACConnector = summary.hasACConnector || group.isAC
+        if let power = group.powerKW {
+            summary.maxPowerKW = max(summary.maxPowerKW ?? 0, power)
+        }
+    }
+    return summary
+}
+
+// Layout: currentType, "<n> kW", connectorType, "Status: …", "Count:…" —
+// read by content rather than position where it can be.
+private func parseEVConnectorGroup(_ fields: [String]) -> EVConnectorGroup {
+    var group = EVConnectorGroup()
+    let current = fields[0].uppercased()
+    group.isDC = current == "DC"
+    group.isAC = current == "AC"
+    if fields.count >= 3 {
+        let type = fields[2]
+        if !type.isEmpty, !type.lowercased().hasPrefix("status"), !type.lowercased().hasPrefix("count") {
+            group.type = type
+        }
+    }
+    for field in fields {
+        let lowered = field.lowercased()
+        if lowered.hasPrefix("status") {
+            group.status = EVConnectorStatus(raw: labelledValue(field))
+        } else if lowered.hasPrefix("count") {
+            if let count = labelledValue(field).flatMap({ Int($0) }), count > 0, count < 10_000 {
+                group.count = count
             }
-        }
-
-        for field in fields where field.range(of: "kw", options: .caseInsensitive) != nil {
+        } else if lowered.hasSuffix("kw") {
             let number = field
                 .replacingOccurrences(of: "kW", with: "", options: .caseInsensitive)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let value = Double(number), value.isFinite {
-                maxPowerKW = max(maxPowerKW ?? 0, value)
+                group.powerKW = max(group.powerKW ?? 0, value)
             }
         }
     }
+    return group
+}
 
-    return (maxPowerKW, connectorTypes, hasDCConnector)
+// "Status: Operative" → "Operative", "Count:3" → "3".
+private func labelledValue(_ field: String) -> String? {
+    guard let colon = field.firstIndex(of: ":") else {
+        return nil
+    }
+    return cleanText(String(field[field.index(after: colon)...]))
 }
 
 // MARK: - Lenient arrays
@@ -3361,7 +3610,14 @@ struct DiagnosticsReport {
     static func collectPreferences(from values: [String: Any]) -> [String: String] {
         var result: [String: String] = [:]
         for (key, value) in values where key.hasPrefix("nzta.") {
-            result[key] = String(describing: value)
+            if key == Watchlist.defaultsKey {
+                // Only how much is watched: which roads someone follows can
+                // say where they live or work.
+                let watchlist = Watchlist.decoded(from: value as? Data)
+                result[key] = "highways: \(watchlist.highways.count), cameras: \(watchlist.cameraIDs.count), journeys: \(watchlist.journeyIDs.count)"
+            } else {
+                result[key] = String(describing: value)
+            }
         }
         return result
     }

@@ -139,6 +139,20 @@ enum AutoRefreshPolicy {
         return now.timeIntervalSince(lastReload) >= cameraImageReloadSpacing
     }
 
+    /// The EV charger layer is re-fetched on a refresh once it is this old
+    /// (seconds): its connector status changes about daily upstream, but a
+    /// menu-bar app can stay open for weeks.
+    static let evChargerMaxAge: TimeInterval = 3600
+
+    /// Whether a refresh should (re)load the EV charger layer: nothing
+    /// loaded yet, or loaded over `evChargerMaxAge` ago.
+    static func shouldRefetchEVChargers(hasData: Bool, loadedAt: Date?, now: Date) -> Bool {
+        guard hasData, let loadedAt else {
+            return true
+        }
+        return now.timeIntervalSince(loadedAt) >= evChargerMaxAge
+    }
+
     /// Reload once connectivity comes back, but only if something on screen
     /// is unconfirmed — a failed fetch, or data replayed from the offline cache.
     static func shouldReloadOnReconnect(wasOnline: Bool, isOnline: Bool, hasUnconfirmedData: Bool) -> Bool {

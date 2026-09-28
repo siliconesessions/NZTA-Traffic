@@ -135,6 +135,22 @@ struct AppHelpView: View {
                     }
                 }
 
+                AboutSection(title: "Watchlist and Notifications") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        BulletText("Click the star on a camera or journey card to watch it. Control-click a camera, event or journey card to watch (or stop watching) the highways it's on. Settings lists everything you watch, and you can add a highway there.")
+                        BulletText("Watching a highway covers every camera, road event and journey on it, whichever way the feeds write it (SH1, State Highway 1, 01N).")
+                        BulletText("The Watching chip in the Cameras, Road Events and Travel Times filter bars shows only what you watch. Events on watched roads are marked Watching, and the menu bar counts the active closures on them.")
+                        BulletText("Turn on “Notify me about new closures on watched roads” in Settings to get a notification when a new road closure appears on a watched highway or journey. It's checked after every refresh, with the window open or closed; closures already in force when NZ Traffic starts aren't announced. Click a notification to open Road Events.")
+                    }
+                }
+
+                AboutSection(title: "Travel Times") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        BulletText("Journeys shows NZTA's highway journeys, one line per direction with its travel time, free-flow time and delay.")
+                        BulletText("Boards shows the roadside travel-time signs as they read now, grouped by region. A line such as “VIA SH20 R12” above the times is the route the times are for. Boards showing nothing are listed separately under blank boards.")
+                    }
+                }
+
                 AboutSection(title: "VMS Signs") {
                     VStack(alignment: .leading, spacing: 8) {
                         BulletText("VMS cards show the current sign message and the source update time when supplied.")
@@ -152,6 +168,7 @@ struct AppHelpView: View {
                         BulletText("Every pin has a glyph as well as a colour: closures, delays, caution, upcoming and resolved events, and online, offline and maintenance cameras each have their own. With Differentiate Without Colour on, Flow and Congestion lines are also drawn wider and more solid the worse the traffic.")
                         BulletText("Pins that would overlap are grouped at every zoom. A group shows how many items it holds, ringed in the colour (and marked with the glyph) of the most notable one — an events group is red only when it contains a closure. Click a group to zoom in; items at the same spot are listed to choose from instead. Control-click a group to list its items at any zoom.")
                         BulletText("Gray travel time sign pins are blank right now; Hide blank boards leaves them off the map.")
+                        BulletText("EV charger pins are purple for DC fast charging and teal for AC, counting only connectors that may be working. A gray pin with a crossed-out bolt is out of service: none of its connectors is reported working and at least one is reported down. Chargers whose status isn't reported are shown normally, marked Status not reported.")
                         BulletText("The Auckland Congestion layer is also listed as text, motorway by motorway, under Auckland Motorways at the top of Travel Times.")
                         BulletText("Mapped shows the number of filtered items with usable coordinates.")
                         BulletText("Off-map shows filtered items that cannot be placed on the map.")
