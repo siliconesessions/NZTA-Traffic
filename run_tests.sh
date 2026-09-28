@@ -6,9 +6,12 @@
 # and closure-notification logic (Watchlist.swift), and the API
 # client, offline cache and store (TrafficAPIService.swift, OfflineCache.swift,
 # TrafficStore.swift) against an in-process stub network and temporary cache
-# folders. No SwiftPM / XCTest — just swiftc, matching the project's build
-# approach. The SwiftUI/AppKit layer isn't compiled. Exits non-zero if any
-# test fails.
+# folders, plus real-payload fixtures (Tests/Fixtures, trimmed verbatim records
+# from the live feeds). No SwiftPM / XCTest — just swiftc, matching the
+# project's build approach. The SwiftUI/AppKit layer isn't compiled. The suite
+# runs three times — in the Mac's own time zone, UTC and America/Los_Angeles —
+# so date code that forgets to pin NZ time fails even on a Mac set to NZ time.
+# Exits non-zero if any run has a failing test.
 set -euo pipefail
 
 # Anchor every path on the script's own directory so it works from anywhere.
@@ -56,6 +59,8 @@ xcrun swiftc \
     Tests/ViewLogicTests.swift \
     Tests/MapClusteringTests.swift \
     Tests/WatchlistTests.swift \
+    Tests/TimeZoneTests.swift \
+    Tests/FixtureTests.swift \
     Tests/main.swift
 
 # Run with a throwaway home folder, so nothing the frameworks might persist
@@ -64,4 +69,18 @@ xcrun swiftc \
 TEST_HOME="$BUILD_DIR/test-home"
 rm -rf "$TEST_HOME"
 mkdir -p "$TEST_HOME"
-CFFIXED_USER_HOME="$PWD/$TEST_HOME" "./$OUT"
+export NZ_TRAFFIC_FIXTURES="$PWD/Tests/Fixtures"
+
+# An empty zone means the Mac's own. NZ_TRAFFIC_EXPECT_TZ lets the suite check
+# the zone really took effect.
+status=0
+for zone in "" UTC America/Los_Angeles; do
+    if [ -z "$zone" ]; then
+        echo "Running tests in the Mac's time zone..."
+        CFFIXED_USER_HOME="$PWD/$TEST_HOME" "./$OUT" || status=1
+    else
+        echo "Running tests with TZ=$zone..."
+        TZ="$zone" NZ_TRAFFIC_EXPECT_TZ="$zone" CFFIXED_USER_HOME="$PWD/$TEST_HOME" "./$OUT" || status=1
+    fi
+done
+exit "$status"

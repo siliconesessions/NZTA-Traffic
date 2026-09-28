@@ -58,7 +58,7 @@ ARCHS="arm64 x86_64" ./build_app.sh
 ./run_tests.sh
 ```
 
-Compiles `Sources/Models.swift` with the files in `Tests/` into a standalone executable (no XCTest) and runs it for the host architecture.
+Compiles the Foundation-level sources (models, refresh policy, API client, offline cache, store) with the files in `Tests/` into a standalone executable (no XCTest) and runs it for the host architecture — against an in-process stub network, temporary folders and trimmed real-payload fixtures in `Tests/Fixtures/`. The suite runs in the Mac's time zone, UTC and America/Los_Angeles, so NZ-time handling is checked wherever the Mac is set.
 
 ## Package DMG
 

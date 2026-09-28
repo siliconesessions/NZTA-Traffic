@@ -284,3 +284,25 @@ enum StubFixtures {
         }
     }
 }
+
+/// A settable "now" for the store (`TrafficStore(clock:)`): tests pin and step
+/// time instead of sleeping or depending on today's date.
+final class TestClock: Sendable {
+    private let current: Mutex<Date>
+
+    init(_ start: Date) {
+        current = Mutex(start)
+    }
+
+    var now: Date {
+        current.withLock { $0 }
+    }
+
+    func advance(by seconds: TimeInterval) {
+        current.withLock { $0 = $0.addingTimeInterval(seconds) }
+    }
+
+    func set(_ date: Date) {
+        current.withLock { $0 = date }
+    }
+}

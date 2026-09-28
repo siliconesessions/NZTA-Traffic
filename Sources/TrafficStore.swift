@@ -88,6 +88,9 @@ final class TrafficStore {
     @ObservationIgnored private let pathMonitor: NWPathMonitor?
     @ObservationIgnored private let monitorQueue = DispatchQueue(label: "nzta.reachability.monitor")
     @ObservationIgnored private let reconnectDelay: Duration
+    // "Now" for every time-dependent decision (ages, ended events, EV
+    // re-fetch, auto-refresh ticks); a fixed or stepped clock in tests.
+    @ObservationIgnored private let clock: @Sendable () -> Date
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
 
     // Single-flight loading: one in-flight load per section, and one refresh
@@ -167,22 +170,24 @@ final class TrafficStore {
     // Every dependency is injectable so SwiftUI previews and the tests run
     // against a stubbed URLSession, a disabled or temporary cache, no image
     // cache and no reachability monitor, instead of the live API and the
-    // user's real Application Support folder.
+    // user's real Application Support folder; `clock` pins "now".
     init(
         service: TrafficAPIService = TrafficAPIService(),
         cache: OfflineCache = OfflineCache(),
         imageCache: URLCache? = .shared,
         monitorsNetwork: Bool = true,
-        reconnectDelay: Duration = .seconds(2)
+        reconnectDelay: Duration = .seconds(2),
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.service = service
+        self.clock = clock
         self.cache = cache
         self.imageCache = imageCache
         self.reconnectDelay = reconnectDelay
         pathMonitor = monitorsNetwork ? NWPathMonitor() : nil
         // Images loaded at launch are already fresh; the first reload is due
         // on a later cameras refresh.
-        lastCameraImageReload = Date()
+        lastCameraImageReload = clock()
         startNetworkMonitoring()
     }
 
@@ -389,7 +394,7 @@ final class TrafficStore {
         if let launchTask {
             await launchTask.value
         }
-        if let lastRefreshAttempt, Date().timeIntervalSince(lastRefreshAttempt) <= maxAge {
+        if let lastRefreshAttempt, clock().timeIntervalSince(lastRefreshAttempt) <= maxAge {
             return
         }
         await loadAllData()
@@ -424,7 +429,7 @@ final class TrafficStore {
 
     private func runRefresh() async {
         isRefreshing = true
-        lastRefreshAttempt = Date()
+        lastRefreshAttempt = clock()
         loadingSections.formUnion(DataSection.refreshedTogether)
         startIndependentLoads()
 
@@ -481,7 +486,7 @@ final class TrafficStore {
         AutoRefreshPolicy.shouldRefetchEVChargers(
             hasData: !evChargers.isEmpty,
             loadedAt: evChargersLoadedAt,
-            now: Date()
+            now: clock()
         )
     }
 
@@ -523,7 +528,7 @@ final class TrafficStore {
                 fetch: { await self.service.fetchRoadEventsResult() },
                 decodeCached: { data in
                     // Don't replay events that have already ended as current.
-                    await self.service.decodeCachedRoadEvents(data)?.filter { !$0.hasEnded(before: Date()) }
+                    await self.service.decodeCachedRoadEvents(data)?.filter { !$0.hasEnded(before: self.clock()) }
                 }
             )
             if case .updated = outcome {
@@ -651,7 +656,7 @@ final class TrafficStore {
             savedSections.remove(section)
             savedDates[section] = nil
         }
-        let now = Date()
+        let now = clock()
         lastLiveSuccess[section] = now
         lastUpdated = now
         if section == .cameras {
@@ -712,7 +717,7 @@ final class TrafficStore {
     private func primeFromCache() async {
         await restoreFromCache(.cameras, keyPath: \.cameras) { await self.service.decodeCachedCameras($0) }
         await restoreFromCache(.events, keyPath: \.events) { data in
-            await self.service.decodeCachedRoadEvents(data)?.filter { !$0.hasEnded(before: Date()) }
+            await self.service.decodeCachedRoadEvents(data)?.filter { !$0.hasEnded(before: self.clock()) }
         }
         await restoreFromCache(.vms, keyPath: \.vmsSigns) { await self.service.decodeCachedVMSSigns($0) }
         await restoreFromCache(.journeys, keyPath: \.journeys) { await self.service.decodeCachedJourneys($0) }
@@ -737,8 +742,8 @@ final class TrafficStore {
             return
         }
         pendingImageBust = false
-        imageCacheToken = max(imageCacheToken + 1, Int(Date().timeIntervalSince1970))
-        lastCameraImageReload = Date()
+        imageCacheToken = max(imageCacheToken + 1, Int(clock().timeIntervalSince1970))
+        lastCameraImageReload = clock()
     }
 
     // EV chargers change slowly (locations rarely, connector status about
@@ -758,7 +763,7 @@ final class TrafficStore {
         defer { isLoadingEVChargers = false }
         switch await service.fetchEVChargersResult() {
         case .success(let fetched):
-            evChargersLoadedAt = Date()
+            evChargersLoadedAt = self.clock()
             // An empty list over markers already shown keeps them (as the
             // live sections do).
             if !fetched.value.isEmpty || evChargers.isEmpty, fetched.value != evChargers {
@@ -876,7 +881,7 @@ final class TrafficStore {
             }
             let delay = AutoRefreshPolicy.delayUntilNextRefresh(
                 lastAttempt: lastRefreshAttempt,
-                now: Date(),
+                now: self.clock(),
                 interval: interval
             )
             if delay > 0 {
@@ -930,13 +935,13 @@ final class TrafficStore {
         return DiagnosticsReport(
             appVersion: version,
             appBuild: build,
-            generatedAt: Date(),
+            generatedAt: clock(),
             lastUpdated: lastUpdated,
             isOnline: isOnline,
             sections: sections,
             preferences: preferences,
             system: DiagnosticsReport.systemDescription(),
-            freshness: freshnessBanner?.message(relativeTo: Date()),
+            freshness: freshnessBanner?.message(relativeTo: clock()),
             refresh: refreshDiagnostics(),
             cacheFiles: cacheFiles,
             apiFallbacks: service.versionFallback.legacyEndpoints

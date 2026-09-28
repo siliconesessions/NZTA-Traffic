@@ -20,6 +20,13 @@ func runStoreTests(_ t: TestRunner) async {
     await testStoreDiagnostics(t)
     await testWatchedClosureNotifications(t)
     await testWatchingFilter(t)
+    await testServerErrorFallsBackToSavedData(t)
+    await testPoisonedResponseKeepsData(t)
+    await testPrimeFillsOnlyEmptySections(t)
+    await testReloadClearsOnlyItsOwnError(t)
+    await testFilterMemoFollowsNewData(t)
+    await testCancelledRequestIsNotAnError(t)
+    await testInjectedClock(t)
 }
 
 private struct StoreFixture {
@@ -29,9 +36,10 @@ private struct StoreFixture {
 }
 
 // A store on the stub network with an empty temporary cache, optionally
-// seeded with saved (cached) copies of the four cacheable sections.
+// seeded with saved (cached) copies of the four cacheable sections, and
+// optionally on a test clock instead of the real time.
 @MainActor
-private func makeStore(seedCache: Bool = false) async -> StoreFixture {
+private func makeStore(seedCache: Bool = false, clock: TestClock? = nil) async -> StoreFixture {
     let folder = makeTemporaryFolder()
     let cache = OfflineCache(directory: folder)
     if seedCache {
@@ -40,12 +48,19 @@ private func makeStore(seedCache: Bool = false) async -> StoreFixture {
         await cache.write(Data(StubFixtures.vms.utf8), section: .vms)
         await cache.write(Data(StubFixtures.journeys.utf8), section: .journeys)
     }
+    let now: @Sendable () -> Date
+    if let clock {
+        now = { clock.now }
+    } else {
+        now = { Date() }
+    }
     let store = TrafficStore(
         service: makeStubService(),
         cache: OfflineCache(directory: folder),
         imageCache: nil,
         monitorsNetwork: false,
-        reconnectDelay: .zero
+        reconnectDelay: .zero,
+        clock: now
     )
     return StoreFixture(store: store, cache: cache, folder: folder)
 }
@@ -445,4 +460,184 @@ private func testWatchingFilter(_ t: TestRunner) async {
         "a watched journey"
     )
     t.equal(store.scopedCameras(region: "", highway: "", search: "", statuses: allStatuses).count, 2, "the filter off shows everything")
+}
+
+// MARK: - E4 seams: server errors, poisoned responses, priming, the memo, time
+
+@MainActor
+private func testServerErrorFallsBackToSavedData(_ t: TestRunner) async {
+    t.group("store: a 503 is retried, then served from the saved copy")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    StubServer.route("/cameras/all", .status(503))
+    let fixture = await makeStore(seedCache: true)
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.loadAllData()
+    t.check(await waitForIdle(store), "the refresh settles")
+    t.equal(StubServer.requestCount("/cameras/all"), 3, "a 5xx is tried three times (no real backoff sleeps)")
+    t.equal(store.cameras.count, 3, "the empty section falls back to the saved cameras")
+    t.check(store.savedSections.contains(.cameras), "marked as saved")
+    t.check(store.failedSections.contains(.cameras), "and as failed")
+    t.equal(store.errors[.cameras], "NZTA API returned HTTP 503.", "the error names the status")
+    t.check(store.errors[.events] == nil && store.events.count == 3, "the other sections load normally")
+    t.check(!store.savedSections.contains(.events), "from live data")
+}
+
+@MainActor
+private func testPoisonedResponseKeepsData(_ t: TestRunner) async {
+    t.group("store: a poisoned 200 keeps the data and the saved copy")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.loadAllData()
+    t.check(await waitForIdle(store), "the first refresh settles")
+    t.equal(store.cameras.count, 2, "live cameras shown")
+    let savedBytes = await fixture.cache.read(section: .cameras)?.data
+    t.equal(savedBytes, Data(StubFixtures.camerasLive.utf8), "and saved verbatim")
+
+    let poisoned: [(String, String)] = [
+        ("an HTML error page", "<html><body>Service Unavailable</body></html>"),
+        ("a renamed list key", #"{"response":{"cams":[{"id":1}]}}"#),
+        ("a list of unreadable entries", #"{"response":{"camera":[null,"x",7]}}"#),
+    ]
+    for (label, body) in poisoned {
+        StubServer.route("/cameras/all", .json(body))
+        await store.reload(.cameras)
+        t.equal(store.cameras.map(\.id), ["653", "812"], "\(label): the cameras on screen stay")
+        t.check(store.errors[.cameras]?.hasPrefix("Unable to read NZTA API JSON") == true, "\(label): reported as unreadable (got \(store.errors[.cameras] ?? "nil"))")
+        t.check(store.failedSections.contains(.cameras), "\(label): recorded as a failure")
+        t.check(!store.savedSections.contains(.cameras), "\(label): live data isn't swapped for the saved copy")
+        let afterBytes = await fixture.cache.read(section: .cameras)?.data
+        t.equal(afterBytes, savedBytes, "\(label): the saved copy isn't overwritten")
+    }
+    t.equal(StubServer.requestCount("/cameras/all"), 1 + poisoned.count, "an unreadable 200 isn't retried")
+}
+
+@MainActor
+private func testPrimeFillsOnlyEmptySections(_ t: TestRunner) async {
+    t.group("store: the launch prime fills only empty sections")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    // Live cameras arrive before the launch (e.g. a Retry), then the disk
+    // holds an older, different copy of cameras and events.
+    await store.reload(.cameras)
+    t.equal(store.cameras.count, 2, "live cameras loaded")
+    await fixture.cache.write(Data(StubFixtures.cameras.utf8), section: .cameras)
+    await fixture.cache.write(Data(StubFixtures.events.utf8), section: .events)
+    StubFixtures.failAllEndpoints(.cannotConnectToHost)
+
+    await store.start().value
+    t.check(await waitForIdle(store), "the launch settles")
+    t.equal(store.cameras.count, 2, "cameras already on screen aren't replaced by the saved copy")
+    t.check(!store.savedSections.contains(.cameras), "and aren't marked saved")
+    t.check(store.savedSections.contains(.events), "the empty events section is primed from disk")
+    t.equal(Set(store.events.map(\.id)), ["561700", "560046"], "without the event that already ended")
+}
+
+@MainActor
+private func testReloadClearsOnlyItsOwnError(_ t: TestRunner) async {
+    t.group("store: Retry clears only its own section's error")
+    StubServer.reset()
+    StubFixtures.failAllEndpoints(.cannotConnectToHost)
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.loadAllData()
+    t.check(await waitForIdle(store), "the failed refresh settles")
+    t.check(store.errors[.cameras] != nil && store.errors[.events] != nil && store.errors[.vms] != nil, "every section has an error")
+
+    StubServer.route("/cameras/all", .json(StubFixtures.camerasLive))
+    await store.reload(.cameras)
+    t.equal(store.errors[.cameras], nil, "the retried section's error clears")
+    t.equal(store.cameras.count, 2, "and its data arrives")
+    t.check(store.errors[.events] != nil && store.errors[.vms] != nil, "the other sections keep their errors")
+    t.check(store.failedSections == Set(DataSection.allCases).subtracting([.cameras]), "and stay failed")
+}
+
+@MainActor
+private func testFilterMemoFollowsNewData(_ t: TestRunner) async {
+    t.group("store: memoized filters follow new data")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    let fixture = await makeStore()
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.reload(.cameras)
+    t.equal(store.filteredCameras(region: "Canterbury", highway: "", search: "").count, 0, "no Canterbury camera live yet")
+    t.equal(store.filteredCameras(region: "", highway: "SH1", search: "").map(\.id), ["812"], "SH1 finds the Old SH1 camera")
+
+    // Same filter inputs, new data: the memo must not serve the old answer.
+    StubServer.route("/cameras/all", .json(StubFixtures.cameras))
+    await store.reload(.cameras)
+    t.equal(store.filteredCameras(region: "Canterbury", highway: "", search: "").map(\.id), ["831"], "the new Canterbury camera appears")
+    t.equal(store.filteredCameras(region: "", highway: "SH1", search: "").map(\.id), ["812", "831"], "and joins it under SH1")
+
+    // Unrelated sections loading don't disturb it.
+    await store.reload(.events)
+    t.equal(store.filteredCameras(region: "Canterbury", highway: "", search: "").map(\.id), ["831"], "an events load leaves the camera memo right")
+}
+
+@MainActor
+private func testCancelledRequestIsNotAnError(_ t: TestRunner) async {
+    t.group("store: a cancelled request is not an error")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    StubServer.route("/cameras/all", .failing(.cancelled))
+    let fixture = await makeStore(seedCache: true)
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.reload(.cameras)
+    t.equal(store.errors[.cameras], nil, "no error banner")
+    t.check(!store.failedSections.contains(.cameras), "not recorded as a failure")
+    t.check(store.cameras.isEmpty && !store.savedSections.contains(.cameras), "and no fallback to the saved copy")
+    t.equal(StubServer.requestCount("/cameras/all"), 1, "and not retried")
+    t.check(!store.isLoading(.cameras), "the loading flag clears")
+}
+
+@MainActor
+private func testInjectedClock(_ t: TestRunner) async {
+    t.group("store: time comes from the injected clock")
+    StubServer.reset()
+    StubFixtures.routeAllEndpoints()
+    guard let start = parseTrafficDate("2026-09-26T17:30:00+12:00") else {
+        t.check(false, "start date parses")
+        return
+    }
+    let clock = TestClock(start)
+    let fixture = await makeStore(clock: clock)
+    defer { removeTemporaryFolder(fixture.folder) }
+    let store = fixture.store
+
+    await store.loadAllData()
+    t.check(await waitForIdle(store), "the refresh settles")
+    t.equal(store.lastUpdated, start, "'Updated' is stamped from the clock")
+    t.equal(store.lastLiveSuccess[.cameras], start, "and so is each section's last success")
+
+    clock.advance(by: 60)
+    await store.refreshIfStale(maxAge: 120)
+    t.equal(StubServer.requestCount("/cameras/all"), 1, "a window reopened a minute later doesn't refresh")
+    clock.advance(by: 90)
+    await store.refreshIfStale(maxAge: 120)
+    t.equal(StubServer.requestCount("/cameras/all"), 2, "two and a half minutes later it does")
+
+    // Replaying saved events drops the ones that ended before "now": the
+    // delay ends 1 Oct 2099, so a clock in 2100 leaves only the open closure.
+    let later = await makeStore(seedCache: true, clock: TestClock(Date(timeIntervalSince1970: 4_102_444_800 + 86_400 * 30)))
+    defer { removeTemporaryFolder(later.folder) }
+    StubFixtures.failAllEndpoints(.cannotConnectToHost)
+    await later.store.start().value
+    t.check(await waitForIdle(later.store), "the later launch settles")
+    t.equal(later.store.events.map(\.id), ["561700"], "events that ended before the clock's now aren't replayed")
 }
