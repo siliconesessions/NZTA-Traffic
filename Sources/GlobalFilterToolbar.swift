@@ -93,7 +93,7 @@ struct GlobalFilterToolbar: ViewModifier {
 
     private var activeFilterSummary: String {
         var parts: [String] = []
-        if !selectedRegion.isEmpty { parts.append("Region: \(selectedRegion)") }
+        if !selectedRegion.isEmpty { parts.append("Region: \(regionDisplayName(selectedRegion))") }
         if !highwayFilter.isEmpty { parts.append("Highway: \(highwayFilter)") }
         if !searchFilter.isEmpty { parts.append("Search: \(searchFilter)") }
         if let scopedFilterSummary { parts.append(scopedFilterSummary) }
@@ -126,10 +126,10 @@ struct GlobalFilterToolbar: ViewModifier {
         Picker("Region", selection: $selectedRegion) {
             Text("All Regions").tag("")
             if !selectedRegion.isEmpty, !store.allRegions.contains(selectedRegion) {
-                Text(selectedRegion).tag(selectedRegion)
+                Text(regionDisplayName(selectedRegion)).tag(selectedRegion)
             }
             ForEach(store.allRegions, id: \.self) { region in
-                Text(region).tag(region)
+                Text(regionDisplayName(region)).tag(region)
             }
         }
         .pickerStyle(.menu)

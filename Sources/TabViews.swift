@@ -153,6 +153,13 @@ struct RoadEventsTabView: View {
                             StatItem(title: "Upcoming", value: "\(upcoming)", tint: .eventUpcoming)
                         ])
 
+                        // NZTA terms of use 3(c): say the feed is notable,
+                        // verified events only.
+                        Text(AppCredits.notableEventsNotice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
                         eventList(ids: eventIDs)
                     }
                 }
@@ -548,7 +555,7 @@ struct TravelTimeBoardsView: View {
 
     private func regionSection(_ group: TIMBoardGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(group.region)
+            Text(regionDisplayName(group.region))
                 .font(.title3.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
             LazyVGrid(
@@ -584,7 +591,7 @@ struct TravelTimeBoardsView: View {
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         if let region = sign.regionName {
-                            Text(region)
+                            Text(regionDisplayName(region))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

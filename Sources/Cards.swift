@@ -14,7 +14,7 @@ struct JourneyCard: View {
                     Spacer()
 
                     if let region = journey.regionName {
-                        Badge(text: region, tint: .badgeNeutral)
+                        Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                     }
 
                     Badge(text: journey.overallFlowKind.label, tint: journey.overallFlowKind.color)
@@ -299,7 +299,7 @@ struct CameraCard: View {
 
                     HStack(spacing: 8) {
                         if let region = camera.regionName {
-                            Badge(text: region, tint: .badgeNeutral)
+                            Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                         }
                         if camera.statusKind != .online {
                             Badge(text: camera.statusKind.label, tint: camera.statusKind.color)
@@ -329,7 +329,7 @@ struct CameraCard: View {
 
     private var accessibilityDetails: String {
         joinNonEmpty(
-            [camera.statusKind.label, camera.description, camera.routeLine, camera.regionName],
+            [camera.statusKind.label, camera.description, camera.routeLine, camera.regionName.map(regionDisplayName)],
             separator: ". "
         ) ?? ""
     }
@@ -854,7 +854,7 @@ struct TIMCard: View {
                 Spacer()
 
                 if let region = sign.regionName {
-                    Badge(text: region, tint: .badgeNeutral)
+                    Badge(text: regionDisplayName(region), tint: .badgeNeutral)
                 }
             }
             .padding(.horizontal, 16)
@@ -970,7 +970,7 @@ struct VMSCard: View {
                     .lineLimit(2)
                 Spacer()
                 if let region = sign.regionName {
-                    Text(region)
+                    Text(regionDisplayName(region))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(Color.white.opacity(0.58))
                 }
@@ -1004,7 +1004,7 @@ struct VMSCard: View {
             joinNonEmpty(
                 [
                     sign.formattedMessage,
-                    sign.regionName,
+                    sign.regionName.map(regionDisplayName),
                     formatTrafficDate(sign.lastMessageUpdate ?? sign.lastUpdate).map { "Updated \($0)" }
                 ],
                 separator: ". "

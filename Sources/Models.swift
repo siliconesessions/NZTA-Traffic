@@ -1154,6 +1154,25 @@ func matchesRegion(_ itemRegion: String?, selectedRegion: String) -> Bool {
     return (itemRegion ?? "").caseInsensitiveCompare(selected) == .orderedSame
 }
 
+/// The display form of an NZTA region name. The feeds and /regions/all spell
+/// some regions without their macron or apostrophe ("Manawatu-Whanganui",
+/// "Hawkes Bay", "Bay Of Plenty"); labels show the proper names. Display
+/// only: the raw name stays the picker tag, the filter key and the search
+/// text, so `matchesRegion` keeps comparing like with like.
+func regionDisplayName(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch trimmed.lowercased() {
+    case "manawatu-whanganui", "manawatu-wanganui", "manawatu whanganui":
+        return "Manawatū-Whanganui"
+    case "hawkes bay", "hawke's bay", "hawke\u{2019}s bay":
+        return "Hawke\u{2019}s Bay"
+    case "bay of plenty":
+        return "Bay of Plenty"
+    default:
+        return trimmed
+    }
+}
+
 /// Merges the canonical NZTA region names with any region names derived from
 /// the loaded feature data, de-duplicating case-insensitively (canonical
 /// casing wins because it is listed first) so the region Picker stays stable
@@ -1179,8 +1198,13 @@ func searchableHaystack(_ fields: [String?]) -> String {
 // Lowercased with diacritics removed, applied to both the haystacks and the
 // query, so "otaki" finds "Ōtaki" and "whangarei" finds "Whangārei" (the
 // feeds mix macron and plain spellings of the same place).
+// Apostrophes are dropped too, so "hawke's bay" (as the label reads) finds
+// the feeds' "Hawkes Bay".
 func foldedForSearch(_ text: String) -> String {
-    text.folding(options: .diacriticInsensitive, locale: nil).lowercased()
+    text.folding(options: .diacriticInsensitive, locale: nil)
+        .lowercased()
+        .replacingOccurrences(of: "'", with: "")
+        .replacingOccurrences(of: "\u{2019}", with: "")
 }
 
 func matchesNeedle(_ needle: String, in haystack: String) -> Bool {

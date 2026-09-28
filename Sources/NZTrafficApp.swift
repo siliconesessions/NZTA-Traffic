@@ -146,14 +146,19 @@ struct NZTrafficCommands: Commands {
     }
 
     private func showAboutPanel() {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? AppIdentity.fallbackVersion
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        let hosts = TrafficAPIService.dataHosts.formatted(.list(type: .and))
         let credits = """
-        A native macOS viewer for live New Zealand traffic cameras, road events, Variable Message Signs, and map layers.
+        A native macOS viewer for live New Zealand traffic cameras, road events, VMS signs, travel times and map layers.
 
-        Traffic and travel information is provided by NZ Transport Agency Waka Kotahi (NZTA) and participating regional councils, under CC BY 4.0. NZ Traffic is an independent viewer for that public data and is not affiliated with or endorsed by NZTA.
+        \(AppCredits.attribution)
 
-        The app fetches live data directly from the NZTA Traffic and Travel REST API v5 and uses Apple MapKit for map display. It does not include analytics, accounts, tracking, or an app-specific backend.
+        \(AppCredits.evAttribution)
+
+        \(AppCredits.notAffiliated)
+
+        Data is fetched directly from \(hosts); the map uses Apple MapKit. The last good data is saved in \(AppCredits.offlineCachePath) for offline use. No analytics, accounts, tracking or app backend.
         """
 
         var options: [NSApplication.AboutPanelOptionKey: Any] = [

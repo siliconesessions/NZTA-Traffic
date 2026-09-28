@@ -61,6 +61,7 @@ xcrun swiftc \
     Tests/WatchlistTests.swift \
     Tests/TimeZoneTests.swift \
     Tests/FixtureTests.swift \
+    Tests/CreditsTests.swift \
     Tests/main.swift
 
 # Run with a throwaway home folder, so nothing the frameworks might persist

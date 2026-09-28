@@ -695,7 +695,7 @@ extension ContentView {
     private var congestionNote: some View {
         if !selectedRegion.isEmpty, !matchesRegion("Auckland", selectedRegion: selectedRegion) {
             FilterBarNote(
-                text: "Auckland motorways only — nothing to show for \(selectedRegion).",
+                text: "Auckland motorways only — nothing to show for \(regionDisplayName(selectedRegion)).",
                 systemImage: "exclamationmark.triangle"
             )
         } else {

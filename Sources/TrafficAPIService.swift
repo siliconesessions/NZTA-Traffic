@@ -93,12 +93,12 @@ struct TrafficAPIService {
     // Static reference data on a different host than the traffic API, so it is
     // fetched as an absolute URL with no cache-busting token. resultRecordCount
     // covers the full ~636-feature dataset in a single page.
-    private let evChargersURL = "https://services.arcgis.com/CXBb7LAjgIIdcsPt/arcgis/rest/services/EV_Roam_charging_stations/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=geojson&resultRecordCount=2000"
+    static let evChargersURL = "https://services.arcgis.com/CXBb7LAjgIIdcsPt/arcgis/rest/services/EV_Roam_charging_stations/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=geojson&resultRecordCount=2000"
     // Auckland motorway congestion conditions. This is the one NZTA endpoint
     // that serves application/xml rather than JSON, so it is fetched as raw Data
     // and decoded with an XMLParser (CongestionXMLParser) instead of JSONDecoder.
     // No rest/4 fallback: it is a separate service and already fails soft.
-    private let congestionURL = "https://trafficnz.info/service/traffic-conditions/rest/2"
+    static let congestionURL = "https://trafficnz.info/service/traffic-conditions/rest/2"
 
     enum Path {
         static let cameras = "/cameras/all"
@@ -107,6 +107,44 @@ struct TrafficAPIService {
         static let journeys = "/journeys/all/10"
         static let tim = "/signs/tim/all"
         static let regions = "/regions/all/10"
+    }
+
+    /// One feed the app reads, as listed in About and Help: what it is, the
+    /// host it comes from, the URL (without query) and its format.
+    struct DataSource: Sendable, Hashable {
+        let title: String
+        let url: String
+        let format: String
+
+        /// The host the request goes to, e.g. "trafficnz.info".
+        var host: String {
+            URL(string: url)?.host() ?? url
+        }
+
+        /// The URL without scheme or query, for display.
+        var displayURL: String {
+            let noScheme = url.replacingOccurrences(of: "https://", with: "")
+            return noScheme.split(separator: "?", maxSplits: 1).first.map(String.init) ?? noScheme
+        }
+    }
+
+    /// Every feed the app fetches, built from the same constants the requests
+    /// use so the About and Help lists can't drift from the code.
+    static let dataSources: [DataSource] = [
+        DataSource(title: "Traffic cameras", url: baseURL + Path.cameras, format: "JSON"),
+        DataSource(title: "Road events", url: baseURL + Path.events, format: "JSON"),
+        DataSource(title: "Variable message signs", url: baseURL + Path.vms, format: "JSON"),
+        DataSource(title: "Travel times (journeys)", url: baseURL + Path.journeys, format: "JSON"),
+        DataSource(title: "Travel time signs (TIM)", url: baseURL + Path.tim, format: "JSON"),
+        DataSource(title: "Regions", url: baseURL + Path.regions, format: "JSON"),
+        DataSource(title: "Auckland motorway congestion", url: congestionURL, format: "XML"),
+        DataSource(title: "EV charging stations (EV Roam, hosted on ArcGIS Online)", url: evChargersURL, format: "GeoJSON")
+    ]
+
+    /// The distinct hosts the app contacts for traffic data, in list order.
+    static var dataHosts: [String] {
+        var seen: Set<String> = []
+        return dataSources.map(\.host).filter { seen.insert($0).inserted }
     }
 
     // The journeys endpoint computes for 14–17 s before its first byte, over
@@ -220,13 +258,13 @@ struct TrafficAPIService {
     }
 
     @concurrent nonisolated func fetchEVChargers() async throws -> LenientFetch<EVCharger> {
-        let data = try await requestData(evChargersURL, accept: "application/json")
+        let data = try await requestData(Self.evChargersURL, accept: "application/json")
         let payload = try decodePayload(EVChargersPayload.self, from: data)
         return (payload.features, payload.droppedCount)
     }
 
     @concurrent nonisolated func fetchCongestion() async throws -> SectionFetch<CongestionSegment> {
-        let data = try await requestData(congestionURL, accept: "application/xml")
+        let data = try await requestData(Self.congestionURL, accept: "application/xml")
         guard let segments = CongestionXMLParser.parse(data) else {
             let prefix = String(data: Data(data.prefix(180)), encoding: .utf8) ?? "unreadable response"
             throw TrafficAPIError.decoding("Unable to parse congestion XML", prefix)

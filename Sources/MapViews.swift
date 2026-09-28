@@ -672,13 +672,13 @@ private enum TrafficMapFeature: Identifiable {
     var subtitle: String? {
         switch self {
         case .camera(let camera, _):
-            return camera.routeLine ?? camera.regionName
+            return camera.routeLine ?? camera.regionName.map(regionDisplayName)
         case .event(let event, _):
-            return event.locationArea ?? event.locations ?? event.regionName
+            return event.locationArea ?? event.locations ?? event.regionName.map(regionDisplayName)
         case .vms(let sign, _):
-            return joinNonEmpty([sign.journey?.name ?? sign.way?.name, sign.direction], separator: " - ") ?? sign.regionName
+            return joinNonEmpty([sign.journey?.name ?? sign.way?.name, sign.direction], separator: " - ") ?? sign.regionName.map(regionDisplayName)
         case .tim(let sign, _):
-            return sign.summary ?? sign.regionName
+            return sign.summary ?? sign.regionName.map(regionDisplayName)
         case .evCharger(let charger, _):
             return charger.operatorName ?? charger.address
         }

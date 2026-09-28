@@ -39,6 +39,44 @@ enum AppIdentity {
     }
 }
 
+// The wording About, Help, the About panel and the Road Events tab share for
+// data credits, licences and the notices NZTA's terms of use ask for. Kept
+// here (Foundation-only) so the tests can check it covers every host the API
+// client contacts (TrafficAPIService.dataSources).
+enum AppCredits {
+    static let dataProvider = "NZ Transport Agency Waka Kotahi (NZTA)"
+    static let licenceName = "Creative Commons Attribution 4.0 International (CC BY 4.0)"
+    static let licenceURL = "https://creativecommons.org/licenses/by/4.0/"
+    static let termsURL = "https://www.nzta.govt.nz/traffic-and-travel-information/use-our-data/terms-of-use"
+    static let releasesURL = AppIdentity.projectURL + "/releases"
+
+    static let attribution = "Traffic and travel information is provided by \(dataProvider) and participating regional councils, and used under the \(licenceName) licence. Road event, sign and journey text is reformatted for display."
+
+    // CC BY 4.0 asks for the credit, a licence link and a note of changes.
+    static let evAttribution = "EV charging station data: EV Roam, NZ Transport Agency Waka Kotahi, licensed under CC BY 4.0. Connector details are reformatted for display."
+
+    static let notAffiliated = "NZ Traffic is an independent viewer for this public data. It is not affiliated with or endorsed by NZTA."
+
+    // NZTA terms of use, clause 3(c): users must be told the events feed
+    // covers only "notable", officially verified events.
+    static let notableEventsNotice = "Road events cover notable events — ones that may cause delays or need caution — and are published only once NZTA or another official source has verified them, so not every incident on the road is listed."
+
+    /// Where the offline cache lives (OfflineCache.defaultDirectory).
+    static let offlineCachePath = "~/Library/Application Support/\(AppIdentity.supportFolderName)/OfflineCache"
+
+    static let offlineCacheNote = "The last successful camera, road event, VMS and travel time responses are saved in \(offlineCachePath) so they can be shown offline, and camera images are cached (up to 200 MB) in the app's Caches folder. Clear Offline Cache (Settings or the Help menu) deletes both."
+
+    // Ad-hoc signed and not notarized, so a downloaded copy is quarantined.
+    // macOS 15 removed the Control-click › Open override; this is the flow
+    // from macOS 15 on (the app needs macOS 27).
+    static let gatekeeperSteps = [
+        "Open NZ Traffic once. macOS says Apple could not verify it is free of malware; click Done.",
+        "Open System Settings › Privacy & Security, scroll down to Security, and click Open Anyway next to the message about NZ Traffic.",
+        "Enter your password (or use Touch ID), then click Open Anyway again when macOS asks. You only need to do this once per download."
+    ]
+    static let quarantineCommand = "xattr -dr com.apple.quarantine \"/Applications/NZ Traffic.app\""
+}
+
 // One-time carry-over of state the pre-rename build left behind. Changing the
 // bundle identifier moves the app to a new UserDefaults domain (every `nzta.*`
 // preference, including hasSeenWelcome) and the offline cache used to live in

@@ -1,4 +1,7 @@
 build/
+# Release DMGs, checksums and dSYM zips are published as GitHub Release
+# assets (./package_dmg.sh writes them here), never committed.
+dist/
 Resources/*.iconset/
 
 .DS_Store
